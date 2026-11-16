@@ -8532,11 +8532,11 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
     if (activeFile !== file0) return // the jump already tried another file: no section guess
     if (activeFile) return // image/margin click in a file tab: ratio maps main layout onto file text
   } else if (activeFile) return // no canvas hit in a file tab: nowhere honest to go
-  if (pvSrcList().length > 1) return // included files destroy a main-line/layout ratio
   if (at && at.sec) { // no source text within reach: the section start is the honest anchor
     jumpPos(posOfLine(getT(), at.sec.line))
     return
   }
+  if (pvSrcList().length > 1) return // included files destroy a main-line/layout ratio
   const r = pv.getBoundingClientRect() // fallback for a single source only
   const ratio = Math.max(0, Math.min(1, (e.clientY - r.top + pv.scrollTop) / pv.scrollHeight))
   const lines = getT().split('\n'), total = lines.length || 1

@@ -54,6 +54,20 @@ Chapter text before its image.
 
 Chapter tail after the image.
 '''
+BLANK_PAGE = '''#import "lib/util.typ": unused
+
+= Alpha
+
+Alpha body.
+
+#pagebreak()
+
+#pagebreak()
+
+= Beta
+
+Beta tail line.
+'''
 LINES = MAIN.split('\n')
 
 PAGE_IN_VIEW = """(n) => {
@@ -173,3 +187,12 @@ def test_a_click_on_an_image_lands_on_its_image_call(page):
     _click(page, 6, 0.22, 0.157)  # image inside the included file
     expect(page.locator('#tabs button.tab[aria-selected="true"]')).to_have_text(re.compile('part\\.typ'))
     assert _line(page) == 5 and _col(page) == 0
+
+def test_a_click_in_blank_space_reaches_the_section_start(page):
+    _setup(page, 'e2e_sync_section', 'Section fallback doc', BLANK_PAGE, pages=3)
+
+    page.click('#cm .cm-content')
+    page.keyboard.press('ControlOrMeta+Home')
+    page.wait_for_timeout(700)
+    _click(page, 2, 0.5, 0.5)  # empty page between Alpha and Beta
+    assert _line(page) == 3, _line(page)  # section start, not the page ratio
