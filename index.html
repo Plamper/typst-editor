@@ -3076,17 +3076,18 @@ function pvMat(m1, m2) { // PDF matrix concat, same order as the renderer: m1 th
 }
 function pvImgSig(page, id) { // decoded pixels sampled into a short identity: a logo repeats, two photos at the same spot do not
   if (!id) return ''
-  try {
-    const o = page.objs.get(String(id))
-    if (!o) return ''
-    const d = o.data
-    const head = (o.width || 0) + 'x' + (o.height || 0)
-    if (!d || !d.length) return head
-    let h = 2166136261
-    const step = Math.max(1, Math.floor(d.length / 512)) // bounded work for full-page raster images
-    for (let i = 0; i < d.length; i += step) h = Math.imul(h ^ d[i], 16777619)
-    return head + ':' + d.length + ':' + (h >>> 0).toString(36)
-  } catch (e) { return '' } // image object not resolved: geometry stays the only hint
+  let o = typeof id === 'object' ? id : null // inline images come as the decoded object itself, no store entry
+  if (!o) for (const store of [page.objs, page.commonObjs]) {
+    try { o = store && store.get(String(id)); if (o) break } catch (e) {} // large images live in commonObjs, not page.objs
+  }
+  if (!o) return '' // image object not resolved: geometry stays the only hint
+  const d = o.data
+  const head = (o.width || 0) + 'x' + (o.height || 0)
+  if (!d || !d.length) return head
+  let h = 2166136261
+  const step = Math.max(1, Math.floor(d.length / 512)) // bounded work for full-page raster images
+  for (let i = 0; i < d.length; i += step) h = Math.imul(h ^ d[i], 16777619)
+  return head + ':' + d.length + ':' + (h >>> 0).toString(36)
 }
 async function pvPageImgs(page, v) { // image boxes from the content stream: images have no text and no annotation to guess from
   const OPS = window.pdfjsLib && pdfjsLib.OPS
@@ -3106,7 +3107,7 @@ async function pvPageImgs(page, v) { // image boxes from the content stream: ima
   const add = (id, m) => {
     const b = box(m)
     if (b.x1 - b.x0 < 2 || b.y1 - b.y0 < 2) return // hairline/background fill: no honest hit area
-    out.push({ ...b, w: b.x1 - b.x0, h: b.y1 - b.y0, id: String(id || ''), sig: pvImgSig(page, id), vw: v.width, vh: v.height })
+    out.push({ ...b, w: b.x1 - b.x0, h: b.y1 - b.y0, id: typeof id === 'object' ? 'inline' : String(id || ''), sig: pvImgSig(page, id), vw: v.width, vh: v.height })
   }
   for (let i = 0; i < list.fnArray.length; i++) {
     const op = list.fnArray[i], a = list.argsArray[i]
@@ -3306,12 +3307,13 @@ async function pvLoadOutline(doc, id) { // bookmarks with pages: the honest anch
   pvOutlineGen = id // sync only trusts the outline of the render that is on screen
   try { paintOutline() } catch (e) {} // sidebar badges follow the PDF, not the cursor
 }
-function srcMask(t) { // document with raw blocks and comments blanked (newlines kept): structure regexes only see real markup
+function srcMask(t) { // document with raw blocks, URLs and comments blanked (newlines kept): structure regexes only see real markup
   return String(t)
     .replace(/```[\s\S]*?```/g, m => m.replace(/[^\n]/g, ' '))
+    .replace(/https?:\/\/[^\s`<]*/g, m => ' '.repeat(m.length)) // a URL is one literal token: no markup or comment starts inside
     .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
     .replace(/`[^`\n]*`/g, m => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:])\/\/([^\n]*)/g, (m, p) => p + ' '.repeat(m.length - p.length)) // a bare URL keeps its "//"
+    .replace(/\/\/[^\n]*/g, m => ' '.repeat(m.length)) // only lowercase http(s) is a URL, every other // is a comment
 }
 function srcHeadings(t) { // source headings outside raw blocks/comments (line, level, raw title)
   const lines = String(t).split('\n'), mask = srcMask(t).split('\n'), out = []
@@ -7453,24 +7455,24 @@ function pvTextSrcLine(items, it, pi) { // PDF text -> the line and file that ow
   }
   return null
 }
-function pvImgMatch() { // PDF image boxes -> image() lines: one-to-one, nearest document position wins
+function pvImgMatch() { // PDF image boxes -> image() lines: the closest pair wins first, so a box without a source cannot take a real image's slot
   const boxes = pvImgBoxes(), srcs = pvSrcImages(), out = []
   if (!boxes.length || !srcs.length) return out
-  const used = new Set(), total = cm.state.doc.lines || 1
-  for (const b of boxes) {
-    const y = b.y0 + b.h / 2
+  const total = cm.state.doc.lines || 1, pairs = []
+  for (let bi = 0; bi < boxes.length; bi++) {
+    const b = boxes[bi], y = b.y0 + b.h / 2
     const near = pvImgHint(b), own = near ? pvTextSrcLine(pvTexts[b.page] || [], near, b.page) : null
     const hint = own ? own.order : pvPageHint(b.page, total, pvTexts.length, pvSecAtY(b.page, y), y / (b.vh || 1))
-    let best = -1, bd = Infinity
-    for (let i = 0; i < srcs.length; i++) {
-      if (used.has(i)) continue
-      const d = Math.abs(srcs[i].order - hint)
-      if (d < bd) { bd = d; best = i }
-    }
-    if (best < 0) continue
-    used.add(best)
-    out.push({ ...b, src: srcs[best] })
+    for (let si = 0; si < srcs.length; si++) pairs.push([Math.abs(srcs[si].order - hint), bi, si])
   }
+  pairs.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2])
+  const boxUsed = new Set(), srcUsed = new Set()
+  for (const [, bi, si] of pairs) {
+    if (boxUsed.has(bi) || srcUsed.has(si)) continue
+    boxUsed.add(bi); srcUsed.add(si)
+    out.push({ ...boxes[bi], src: srcs[si] })
+  }
+  out.sort((a, b) => a.page - b.page || a.y0 - b.y0 || a.x0 - b.x0) // click lookup walks the page in reading order
   return out
 }
 function pvImgAt(pi, x, y, sx, sy) { // click inside an image box -> that image's source line
@@ -7520,6 +7522,8 @@ function pvMathLines(items) { // display math: math-font runs alone on their vis
   return out
 }
 function pvSrcMath() { // block formulas with their visible glyphs and a source spot for every glyph
+  const sig = pvSrcSig()
+  if (pvSrcMathMemo && pvSrcMathMemo.sig === sig) return pvSrcMathMemo.out
   const main = pvMainText(), mainN = main.split('\n').length, out = []
   let loose = 0
   for (const src of pvSrcList()) {
@@ -7553,8 +7557,16 @@ function pvSrcMath() { // block formulas with their visible glyphs and a source 
       if (s) out.push({ key: src.key || '', line: sp.line, end: sp.line, s, own, order: base + sp.line })
     }
   }
-  return out.sort((a, b) => a.order - b.order)
+  pvSrcMathMemo = { sig, out: out.sort((a, b) => a.order - b.order) }
+  return pvSrcMathMemo.out
 }
+function pvSrcSig() { // every source text: a memo must never survive an edit
+  let h = 2166136261
+  const mix = s => { for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) }
+  for (const s of pvSrcList()) { mix(s.key || ''); mix(s.text || '') }
+  return h >>> 0
+}
+let pvSrcMathMemo = null // { sig, out }
 function pvAlign(a, b) { // glyphs of one PDF math line -> a formula (skips on the formula side are free: fraction parts)
   const n = a.length, m = b.length, d = Array.from({ length: n + 1 }, () => new Int16Array(m + 1)), map = new Int32Array(n).fill(-1)
   if (!n || !m) return { cost: n, map }
@@ -7576,8 +7588,17 @@ function pvMathCands(L, hint, srcs) { // formulas that explain enough of this vi
   const out = []
   for (const f of srcs) {
     const al = pvAlign(L.s, f.s)
-    const ratio = al.cost / Math.max(1, L.s.length)
-    if (ratio > PV_MATH_MAX_COST) continue
+    let ratio = al.cost / Math.max(1, L.s.length)
+    if (ratio > PV_MATH_MAX_COST) { // a wide table row holds several cells: judge the glyphs this formula really covers
+      let a = -1, b = -1
+      for (let i = 0; i < al.map.length; i++) if (al.map[i] >= 0) { if (a < 0) a = i; b = i }
+      const win = b - a + 1
+      if (win < 2) continue // a lone glyph in a longer row proves nothing
+      let err = 0
+      for (let i = a; i <= b; i++) if (al.map[i] < 0) err++
+      ratio = err / win
+      if (ratio > PV_MATH_MAX_COST) continue
+    }
     out.push({ src: f, map: al.map, ratio, score: ratio * 1000 + Math.abs(f.order - hint) })
   }
   return out.sort((a, b) => a.score - b.score)
@@ -7585,15 +7606,31 @@ function pvMathCands(L, hint, srcs) { // formulas that explain enough of this vi
 function pvMathMatch() { // PDF math lines -> formulas: glyph similarity first, the page position breaks ties
   const srcs = pvSrcMath(), out = []
   if (!srcs.length) return out
-  const total = cm.state.doc.lines || 1
+  const total = cm.state.doc.lines || 1, sig = pvMathSig(srcs)
+  const memo = pvMathMemo
+  if (memo && memo.sig === sig && memo.outline === pvOutlineGen && memo.shown === shownN && memo.total === total
+    && memo.texts.length === pvTexts.length && memo.texts.every((t, i) => t === pvTexts[i])) return memo.out
   for (let pi = 0; pi < pvTexts.length; pi++) for (const L of pvMathLines(pvTexts[pi] || [])) {
     const y = (L.y0 + L.y1) / 2
     const hint = pvPageHint(pi, total, pvTexts.length, pvSecAtY(pi, y), y / (L.vh || 1))
     const cands = pvMathCands(L, hint, srcs)
     if (cands.length) out.push({ page: pi, line: L, src: cands[0].src, map: cands[0].map, cands })
   }
+  pvMathMemo = { sig, outline: pvOutlineGen, shown: shownN, total, texts: pvTexts.slice(), out }
   return out
 }
+function pvMathSig(srcs) { // formula content only: typing prose elsewhere keeps the match table
+  let h = 2166136261
+  const mix = s => { for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) }
+  const num = n => { h = Math.imul(h ^ (n | 0), 16777619) }
+  for (const f of srcs) {
+    mix(f.key || ''); mix(f.s)
+    num(f.line); num(f.end); num(f.order)
+    for (const o of f.own) { num(o.line); num(o.at) }
+  }
+  return h >>> 0
+}
+let pvMathMemo = null // { sig, outline, shown, total, texts, out }
 function pvMathIndex(line, x) { // clicked x -> the glyph under it (nearest center)
   let best = 0, bd = Infinity
   for (let i = 0; i < line.own.length; i++) {
@@ -7826,6 +7863,21 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
       }
       return -1
     }
+    const urlEnd = (from, content) => { // lowercase http(s) links are one literal token, Typst parses no markup inside
+      if (line.slice(from, from + 8) !== 'https://' && line.slice(from, from + 7) !== 'http://') return 0
+      let j = from, depth = 0
+      while (j < n) {
+        const c = line[j]
+        if (/\s/.test(c) || c === '`' || c === '<') break
+        if (c === '[') depth++
+        else if (c === ']') {
+          if (depth) depth--
+          else if (content) break // inside [...], an unmatched ] closes the block before the link does
+        }
+        j++
+      }
+      return j
+    }
     const math = (from, to) => { // math source -> the glyphs the PDF shows; commands map to their Unicode symbol
       for (let j = from; j < to;) {
         const c = line[j]
@@ -7844,10 +7896,11 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
       while (j < n && depth) {
         const c = line[j]
         if (c === '\\' && j + 1 < n) { emit(line[j + 1], j + 1); j += 2; continue }
-        if (c === '/' && line[j + 1] === '/') { // a bare URL keeps its "//"
-          if (line[j - 1] === ':') { emit('/', j); emit('/', j + 1); j += 2; continue }
-          break
+        if (c === 'h') { // inside [...], a balanced bracket pair stays part of the link
+          const u = urlEnd(j, true)
+          if (u) { word(line.slice(j, u), j); j = u; continue }
         }
+        if (c === '/' && line[j + 1] === '/') break // a URL was consumed above, so this is always a comment
         if (c === '/' && line[j + 1] === '*') {
           const end = line.indexOf('*/', j + 2)
           if (end < 0) { block = 1; return n }
@@ -7908,10 +7961,11 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
         else i++
         continue
       }
-      if (c === '/' && c2 === '/') { // a bare URL keeps its "//"
-        if (line[i - 1] === ':') { emit('/', i); emit('/', i + 1); i += 2; continue }
-        break
+      if (c === 'h') { // lowercase http(s) is a link: slashes, stars and brackets inside stay literal text
+        const u = urlEnd(i)
+        if (u) { word(line.slice(i, u), i); i = u; continue }
       }
+      if (c === '/' && c2 === '/') break // a URL was consumed above, so this is always a comment
       if (c === '/' && c2 === '*') { block = 1; i += 2; continue }
       if (c === '\\' && i + 1 < n) { emit(line[i + 1], i + 1); i += 2; continue }
       if (c === '<') {
