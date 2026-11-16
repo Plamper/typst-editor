@@ -40,6 +40,7 @@ test('a URL keeps its own slashes, stars and brackets as literal text', () => {
   const view = ctx.srcViewScan('https://x.example/*y* tail\nnext line stays')
   assert.equal(view.lines[1].s, 'next line stays') // a /* inside a URL never opens a block comment
   assert.equal(ctx.srcViewScan('#box[https://x.example/*y*] tail').lines[0].s, 'https://x.example/*y* tail')
+  assert.equal(ctx.srcViewScan('#box[https://x.example/a[b]] tail').lines[0].s, 'https://x.example/a[b] tail') // balanced brackets stay in the link
 })
 
 test('a real comment after a URL still ends the line, a URL after a comment stays hidden', () => {

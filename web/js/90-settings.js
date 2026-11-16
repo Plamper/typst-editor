@@ -1292,9 +1292,20 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
       }
       return -1
     }
-    const urlEnd = (from, stop) => { // lowercase http(s) links are one literal token, Typst parses no markup inside
-      const m = /^https?:\/\/[^\s`<]*/.exec(line.slice(from, stop === undefined ? n : stop))
-      return m ? from + m[0].length : 0
+    const urlEnd = (from, content) => { // lowercase http(s) links are one literal token, Typst parses no markup inside
+      if (line.slice(from, from + 8) !== 'https://' && line.slice(from, from + 7) !== 'http://') return 0
+      let j = from, depth = 0
+      while (j < n) {
+        const c = line[j]
+        if (/\s/.test(c) || c === '`' || c === '<') break
+        if (c === '[') depth++
+        else if (c === ']') {
+          if (depth) depth--
+          else if (content) break // inside [...], an unmatched ] closes the block before the link does
+        }
+        j++
+      }
+      return j
     }
     const math = (from, to) => { // math source -> the glyphs the PDF shows; commands map to their Unicode symbol
       for (let j = from; j < to;) {
@@ -1314,9 +1325,8 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
       while (j < n && depth) {
         const c = line[j]
         if (c === '\\' && j + 1 < n) { emit(line[j + 1], j + 1); j += 2; continue }
-        if (c === 'h') { // inside [...], the closing bracket ends the link before Typst does
-          const close = line.indexOf(']', j)
-          const u = urlEnd(j, close < 0 ? n : close)
+        if (c === 'h') { // inside [...], a balanced bracket pair stays part of the link
+          const u = urlEnd(j, true)
           if (u) { word(line.slice(j, u), j); j = u; continue }
         }
         if (c === '/' && line[j + 1] === '/') break // a URL was consumed above, so this is always a comment
