@@ -74,3 +74,18 @@ test('a displayed formula with no matching source line never hijacks a click', (
   assert.equal(c.pvMathMatch().length, 0)
   assert.equal(c.pvMathAt(0, 15, 120, 1, 1), null)
 })
+
+test('every cell of a wide formula row keeps its own source line and letter', async () => {
+  const source = '= Wide\n\n#grid(\n  columns: 3,\n  [$ x = 1 $],\n  [$ y = 2 $],\n  [$ z = 3 $],\n)\n'
+  const c = formulaCtx(source, () => 5)
+  c.pvTexts = [row(60, ['x', '=', '1', 'y', '=', '2', 'z', '=', '3'])]
+  assert.equal(c.pvMathMatch().length, 1, 'the wide row lost its formula anchors')
+  const lines = source.split('\n')
+  for (const [glyph, line, at, x] of [['x', 5, 5, 15], ['y', 6, 5, 45], ['z', 7, 5, 75]]) {
+    const hit = c.pvMathAt(0, x, 60, 1, 1)
+    assert.ok(hit, 'no formula hit on ' + glyph)
+    assert.equal(hit.src.line, line)
+    await c.pvJumpMath(hit)
+    assert.deepEqual(c.calls.at(-1), [line, lines[line - 1].indexOf(glyph)])
+  }
+})

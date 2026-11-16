@@ -1007,8 +1007,17 @@ function pvMathCands(L, hint, srcs) { // formulas that explain enough of this vi
   const out = []
   for (const f of srcs) {
     const al = pvAlign(L.s, f.s)
-    const ratio = al.cost / Math.max(1, L.s.length)
-    if (ratio > PV_MATH_MAX_COST) continue
+    let ratio = al.cost / Math.max(1, L.s.length)
+    if (ratio > PV_MATH_MAX_COST) { // a wide table row holds several cells: judge the glyphs this formula really covers
+      let a = -1, b = -1
+      for (let i = 0; i < al.map.length; i++) if (al.map[i] >= 0) { if (a < 0) a = i; b = i }
+      const win = b - a + 1
+      if (win < 2) continue // a lone glyph in a longer row proves nothing
+      let err = 0
+      for (let i = a; i <= b; i++) if (al.map[i] < 0) err++
+      ratio = err / win
+      if (ratio > PV_MATH_MAX_COST) continue
+    }
     out.push({ src: f, map: al.map, ratio, score: ratio * 1000 + Math.abs(f.order - hint) })
   }
   return out.sort((a, b) => a.score - b.score)
