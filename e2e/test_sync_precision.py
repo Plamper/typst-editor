@@ -163,3 +163,13 @@ def test_text_object_clicks_hit_the_exact_source_line_and_letter(page):
     _click(page, 5, 0.30, 0.087)  # "int" in the fenced raw block
     assert _line(page) == 24, _line(page)
     assert 20 <= _col(page) <= 22 and LINES[23][_col(page)] in 'int', _col(page)
+
+def test_a_click_on_an_image_lands_on_its_image_call(page):
+    _setup(page, 'e2e_sync_image_click', 'Image click doc', MAIN)
+
+    _click(page, 2, 0.287, 0.128)  # the image-only page
+    assert _line(page) == 11 and _col(page) == 0
+
+    _click(page, 6, 0.22, 0.157)  # image inside the included file
+    expect(page.locator('#tabs button.tab[aria-selected="true"]')).to_have_text(re.compile('part\\.typ'))
+    assert _line(page) == 5 and _col(page) == 0

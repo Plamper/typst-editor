@@ -1994,11 +1994,15 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
     const file0 = activeFile
     const mh = pvMathAt(pi, x, y, sx, sy) // display formula: its source line beats glyph needles
     if (mh && await pvJumpMath(mh)) return
+    const ih = pvImgAt(pi, x, y, sx, sy)
+    const onText = best && bd <= 4 // really on the glyphs, not merely near them (a caption below a figure)
+    if (ih && !onText) { if (await pvJumpSrc(ih.src, 0)) return } // inside the image: the image call owns the click
     if (best) {
       const hint = hintAt(yv)
       const col = pvClickCol(best, x, r.width, cv.width, cv)
       if (await pvJumpBest(pvClickNeedles(items, best, col), hint, pi, best)) return
     }
+    if (ih && await pvJumpSrc(ih.src, 0)) return
     if (!best || activeFile === file0) { // no text under the click: nearest readable text still owns the spot
       for (const { it: near } of pvNearItems(items, x, y, sx, sy, best)) {
         const col = pvClickCol(near, x, r.width, cv.width, cv) // blank space above/below a line still has a word column
