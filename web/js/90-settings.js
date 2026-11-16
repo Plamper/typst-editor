@@ -1053,10 +1053,11 @@ async function pvJumpSrc(src, col) { // preview object -> its file and line/colu
   jumpPos(posOfLine(getT(), line) + Math.max(0, col || 0))
   return true
 }
-async function pvJumpMath(hit) { // clicked formula glyph -> the same spot in the source formula
-  const al = pvAlign(hit.line.s, hit.src.s), k = al.map[hit.i]
+async function pvJumpMath(hit) { // clicked formula glyph -> the same line and letter in the source formula
+  const map = hit.map || pvAlign(hit.line.s, hit.src.s).map, k = map[hit.i]
   const at = k >= 0 ? hit.src.own[k] : null
-  return pvJumpSrc(hit.src, at && at.line === hit.src.line ? at.at : 0)
+  if (!at) return false // no matching glyph: text anchoring owns the click
+  return pvJumpSrc({ ...hit.src, line: at.line }, at.at)
 }
 function pvScrollBox(b) { // cursor on an image/formula line -> center its rendered box
   const cv = pvCanvasList()[b.page], pv = $('preview')
