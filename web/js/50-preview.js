@@ -1,6 +1,7 @@
 // --- Typst preview: main file + uploads as shadow files in compiler ---
 let renderN = 0, renderT = 0, oldPdf = null, pvTexts = [] // text anchors per page: click hits exact (tables too)
 let pvLinks = [], pvOutline = [], pvOutlineGen = -1 // PDF layer: link boxes per page (viewport units) + outline with resolved pages + render generation it belongs to
+let pvImgs = [], pvImgNeed = 0 // image boxes per page (operator list), only filled when the document actually draws images
 let cmpWarns = [] // compiler warnings of the last good render (shown as yellow marks, never block)
 let cmpWait = 0, lastInfra = false // compiler missing / last render infra error (watchdog heals)
 const typstReady = () => !!window.$typst?.resetShadow // true once lazy bundle arrived (exports only; preview compiles in the worker below)
@@ -286,7 +287,7 @@ async function shadowAll(main) { // files + templates as shadow: main-thread fal
   await $typst.addSource('/main.typ', main)
   return current()
 }
-const pvStale = (id, myDoc, myTplName) => id !== renderN || myDoc !== docId || myTplName !== tplName // render epoch/doc guard: file tabs keep the document preview alive
+const pvStale = (id, myDoc, myTplName) => id !== renderN || myDoc !== docId || myTplName !== tplName // a newer result is on screen: drop older work
 function pvSrcList() { // live source texts for honest cross-file anchors: [{key, text}]
   const out = []
   try {
@@ -344,6 +345,8 @@ async function render() {
     pvTexts = Array.from({ length: n }, () => []) // dense: sync math indexes by page (holes would crash it)
     pvTextDone = Array.from({ length: n }, () => false)
     pvLinks = Array.from({ length: n }, () => [])
+    pvImgs = Array.from({ length: n }, () => [])
+    pvImgNeed = pvHasImages() ? 1 : 0 // no image() in any reachable source: skip operator lists entirely
     pvSlots = sizes.map((v, k) => {
       const s = document.createElement('div')
       s.className = 'pvPage'; s.dataset.page = k + 1; s.dataset.r = v.height / v.width; s.dataset.w = v.width
@@ -412,10 +415,12 @@ async function pvDraw(slot, doc, id, detached) { // rasterize one slot (backing 
     pvFitCanvas(c) // CSS size only, not canvas.width
     const tc = await page.getTextContent() // click anchors: each visible word knows its spot
     if (id !== renderN) return
-    const boxes = pvBoxes(tc, v), links = await pvPageLinks(doc, page, v)
+    const boxes = pvBoxes(tc, v, page), links = await pvPageLinks(doc, page, v)
+    const imgs = pvImgNeed ? await pvPageImgs(page, v) : []
     if (id !== renderN) return
     pvTexts[p - 1] = boxes // both anchors land after the last await: a newer render starts empty
     pvLinks[p - 1] = links
+    pvImgs[p - 1] = imgs
     pvPaintLinks(slot, p - 1)
     try { pvTextDone[p - 1] = true } catch (e) {}
     slot.dataset.done = '1'
@@ -449,15 +454,77 @@ function pvWatch(doc, id, myDoc, myTplName) { // draw on scroll into view (+2 vi
   }, { root: $('preview'), rootMargin: '200% 0' + 'px' }) // string split: one literal with space+letters trips check_i18n
   for (const s of pvSlots) pvObs.observe(s)
 }
-function pvBoxes(tc, v) { // textContent -> click anchors in viewport px (raster-independent)
+function pvBoxes(tc, v, page) { // textContent -> click anchors in viewport px (raster-independent)
   const tr = v.transform, a = tr[0], b = tr[1], cc = tr[2], d = tr[3], ee = tr[4], ff = tr[5]
   const ax = Math.abs(a) || 1, ay = Math.abs(d) || 1
   return tc.items.map(it => {
     const m = it.transform || [], rot = Math.abs(m[1] || 0) >= 0.01 || Math.abs(m[2] || 0) >= 0.01 // rotated: keep the text for anchors, never for clicks
     const w = (it.width || 0) * ax, h = (it.height || 0) * ay
     const x = a * it.transform[4] + cc * it.transform[5] + ee, y = b * it.transform[4] + d * it.transform[5] + ff
-    return { s: it.str, x: x + w / 2, x0: x, w, h: h || 10, y: y - (h || 10) / 2, vw: v.width, vh: v.height, rot }
+    return { s: it.str, x: x + w / 2, x0: x, w, h: h || 10, y: y - (h || 10) / 2, vw: v.width, vh: v.height, rot, fam: page ? pvFontName(page, it.fontName) : '' }
   })
+}
+function pvFontName(page, fn) { // embedded base font name: the only honest way to tell math from body text (NewCMMath, STIXTwoMath, …)
+  if (!fn) return ''
+  try { const f = page.commonObjs.get(fn); return String((f && f.name) || '') } catch (e) { return '' }
+}
+function pvMat(m1, m2) { // PDF matrix concat, same order as the renderer: m1 then m2
+  return [
+    m1[0] * m2[0] + m1[2] * m2[1], m1[1] * m2[0] + m1[3] * m2[1],
+    m1[0] * m2[2] + m1[2] * m2[3], m1[1] * m2[2] + m1[3] * m2[3],
+    m1[0] * m2[4] + m1[2] * m2[5] + m1[4], m1[1] * m2[4] + m1[3] * m2[5] + m1[5]
+  ]
+}
+async function pvPageImgs(page, v) { // image boxes from the content stream: images have no text and no annotation to guess from
+  const OPS = window.pdfjsLib && pdfjsLib.OPS
+  if (!OPS) return []
+  let list
+  try { list = await page.getOperatorList() } catch (e) { return [] } // broken content stream: no anchors, never throw into the render
+  const out = [], stack = []
+  let ctm = [1, 0, 0, 1, 0, 0]
+  const box = m => { // unit square under the current matrix -> viewport box (rotation and scale included)
+    const q = [[0, 0], [1, 0], [0, 1], [1, 1]].map(([u, w]) => {
+      const x = m[0] * u + m[2] * w + m[4], y = m[1] * u + m[3] * w + m[5]
+      return [v.transform[0] * x + v.transform[2] * y + v.transform[4], v.transform[1] * x + v.transform[3] * y + v.transform[5]]
+    })
+    const xs = q.map(p => p[0]), ys = q.map(p => p[1])
+    return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) }
+  }
+  const add = (id, m) => {
+    const b = box(m)
+    if (b.x1 - b.x0 < 2 || b.y1 - b.y0 < 2) return // hairline/background fill: no honest hit area
+    out.push({ ...b, w: b.x1 - b.x0, h: b.y1 - b.y0, id: String(id || ''), vw: v.width, vh: v.height })
+  }
+  for (let i = 0; i < list.fnArray.length; i++) {
+    const op = list.fnArray[i], a = list.argsArray[i]
+    if (op === OPS.save) stack.push(ctm)
+    else if (op === OPS.restore) { if (stack.length) ctm = stack.pop() }
+    else if (op === OPS.transform) { if (Array.isArray(a) && a.length >= 6) ctm = pvMat(ctm, a) }
+    else if (op === OPS.paintFormXObjectBegin) { stack.push(ctm); if (a && Array.isArray(a[0]) && a[0].length >= 6) ctm = pvMat(ctm, a[0]) }
+    else if (op === OPS.paintFormXObjectEnd) { if (stack.length) ctm = stack.pop() }
+    else if (op === OPS.paintImageXObject || op === OPS.paintJpegXObject || op === OPS.paintInlineImageXObject || op === OPS.paintImageMaskXObject) add(a && a[0], ctm)
+  }
+  return out
+}
+function pvHasImages() { // cheap source scan: operator lists cost real time on long documents without any image
+  try { return pvSrcList().some(s => s.text && /(?:^|[^\w])image\s*\(/.test(s.text)) } catch (e) { return true }
+}
+function pvImgBoxes() { // stable images in reading order: a logo repeated at the same spot on many pages is decoration
+  const out = []
+  for (let pi = 0; pi < pvImgs.length; pi++) for (const b of pvImgs[pi] || []) {
+    if (!b.id || pvImgRepeat(pi, b)) continue
+    out.push({ ...b, page: pi })
+  }
+  out.sort((a, b) => a.page - b.page || a.y0 - b.y0 || a.x0 - b.x0)
+  return out
+}
+function pvImgRepeat(pi, b) { // same size and spot on another page: header/footer decoration (ids differ per page)
+  for (let k = 0; k < pvImgs.length; k++) {
+    if (k === pi) continue
+    const hit = (pvImgs[k] || []).some(o => Math.abs(o.x0 - b.x0) <= 2 && Math.abs(o.y0 - b.y0) <= 2 && Math.abs(o.w - b.w) <= 2 && Math.abs(o.h - b.h) <= 2)
+    if (hit) return true
+  }
+  return false
 }
 const PV_LINK_SCHEME = /^(https?|mailto):/i // only schemes a browser tab may open safely from a PDF
 async function pvDestTarget(doc, dest) { // PDF destination (name or explicit array) -> page + top; null: unresolvable
@@ -689,11 +756,11 @@ function pvSecAtY(pi, y) { // preview point -> section: several headings share a
   }
   return { sec, next }
 }
-function pvPageMeta(doc, p, scale) { // one page: text anchors + link boxes (indexed past the visible window)
+function pvPageMeta(doc, p, scale) { // one page: text anchors + link boxes + image boxes (indexed past the visible window)
   return doc.getPage(p).then(async page => {
     const v = page.getViewport({ scale })
     const tc = await page.getTextContent()
-    return { items: pvBoxes(tc, v), links: await pvPageLinks(doc, page, v) }
+    return { items: pvBoxes(tc, v, page), links: await pvPageLinks(doc, page, v), imgs: pvImgNeed ? await pvPageImgs(page, v) : [] }
   })
 }
 if (pvBox0 && pvBox0.addEventListener) pvBox0.addEventListener('click', e => { // internal PDF destination: external links open natively
@@ -716,6 +783,7 @@ async function pvTextAll(doc, id, myDoc, myTplName) { // every page gets anchors
       if (pvStale(id, myDoc, myTplName)) return
       pvTexts[p - 1] = meta.items
       pvLinks[p - 1] = meta.links
+      pvImgs[p - 1] = meta.imgs
       pvPaintLinks(pvSlots[p - 1], p - 1)
       try { pvTextDone[p - 1] = true } catch (e) {}
       if (p % 8 === 0) await new Promise(r => setTimeout(r, 0)) // yield: typing stays fluid on long docs
@@ -834,7 +902,8 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
     const doc = await pdfjsLib.getDocument({ data: cmp.result }).promise
     if (pvStale(id, myDoc, myTplName)) { doc.destroy(); return }
     oldPdf?.destroy(); oldPdf = doc
-    const pages = [], texts = [] // double buffer: old pages stay visible until all new ones are ready (no flicker/scroll jump)
+    const pages = [], texts = [], imgs = [] // double buffer: old pages stay visible until all new ones are ready (no flicker/scroll jump)
+    pvImgNeed = pvHasImages() ? 1 : 0
     for (let p = 1; p <= doc.numPages; p++) {
       const page = await doc.getPage(p), v = page.getViewport({ scale: 2 }), c = document.createElement('canvas')
       if (p === 1) pvPageSize = page.getViewport({ scale: 1 }) // width/page zoom works in the fallback too
@@ -844,7 +913,8 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
       sizeCanvas(c) // CSS width only, not canvas.width
       const tc = await page.getTextContent() // click anchors: each visible word knows its spot
       if (pvStale(id, myDoc, myTplName)) return
-      texts.push(pvBoxes(tc, v))
+      texts.push(pvBoxes(tc, v, page))
+      imgs.push(pvImgNeed ? await pvPageImgs(page, v) : [])
       pages.push(c)
     }
     if (pvStale(id, myDoc, myTplName)) return
@@ -855,6 +925,7 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
     preview.replaceChildren(...pages)
     pvTexts = texts
     pvLinks = texts.map(() => []) // fallback: no annotation overlay (bare canvases)
+    pvImgs = imgs
     try { pvTextDone = texts.map(() => true) } catch (e) {}
     preview.scrollTop = st
     pvSelfWrite(preview)

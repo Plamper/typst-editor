@@ -723,8 +723,12 @@ function pvCanvasList() { // virtual slots first, fallback bare canvases
   return [...pv.querySelectorAll('canvas')]
 }
 function pvPosIn(txt, s, off, hint) { // exact needle first, then its words across source line breaks and markup
+  const seen = pvViewPos(txt, s, off, hint) // visible text only: URLs, markup and raw pipes never capture the click
+  if (seen >= 0) return seen
   const at = locateNear(txt, s, hint)
   if (at >= 0) return at + off
+  const heard = pvViewWords(txt, s, off, hint) // the clicked word with its neighbours: exact letter, even when the run differs
+  if (heard >= 0) return heard
   const words = pvNormWords(s)
   if (!words.length) return -1
   const o = Math.max(0, Math.min(off, s.length))
@@ -750,26 +754,31 @@ function pvNormWords(s) { // syncText words with their raw span: "don’t" -> do
 function pvHerePos(needles, hint, pi, anchor) { // source position of the best needle in the current file; -1: none
   const list = (needles || []).filter(n => n && n.s && n.s.trim().length >= 2)
   const cur = activeFile || ''
-  for (const nd of list) {
-    const s = nd.s.trim(), off = Math.max(0, Math.min(nd.off || 0, s.length)) // clicked column inside the PDF line
-    if (!cur && anchor) { // heading clicks: the PDF line's own height decides between repeated titles
-      const lines = getT().split('\n'), matches = []
-      let pos = 0
-      lines.forEach((text, i) => {
-        if (/^\s*=+\s/.test(text) && syncPlain(text).includes(syncPlain(s))) {
-          const hit = syncAnchor(lines, i + 1, pvTexts, pvSecAtLine(i + 1))
-          if (hit && hit.pi === pi && hit.items.includes(anchor)) {
-            const at = text.indexOf(s)
-            matches.push({ pos: at >= 0 ? pos + at + off : pos, distance: Math.abs(hit.it.y - anchor.y) })
-          }
+  if (!cur && anchor) { // heading clicks: the PDF line's own height decides between repeated titles
+    const lines = getT().split('\n'), matches = []
+    let pos = 0
+    lines.forEach((text, i) => {
+      if (/^\s*=+\s/.test(text) && list.some(nd => syncPlain(text).includes(syncPlain(nd.s.trim())))) {
+        const nd = list.find(n => syncPlain(text).includes(syncPlain(n.s.trim())))
+        const s = nd.s.trim(), off = Math.max(0, Math.min(nd.off || 0, s.length))
+        const hit = syncAnchor(lines, i + 1, pvTexts, pvSecAtLine(i + 1))
+        if (hit && hit.pi === pi && hit.items.includes(anchor)) {
+          const at = text.indexOf(s)
+          matches.push({ pos: at >= 0 ? pos + at + off : pos, distance: Math.abs(hit.it.y - anchor.y) })
         }
-        pos += text.length + 1
-      })
-      matches.sort((a, b) => a.distance - b.distance)
-      if (matches.length && (matches.length === 1 || matches[0].distance < matches[1].distance)) return matches[0].pos
-      if (matches.length > 1) continue
-    }
-    const at = pvPosIn(getT(), s, off, hint)
+      }
+      pos += text.length + 1
+    })
+    matches.sort((a, b) => a.distance - b.distance)
+    if (matches.length && (matches.length === 1 || matches[0].distance < matches[1].distance)) return matches[0].pos
+  }
+  const total = getT()
+  for (const nd of list) { // needles are ordered by confidence: paragraph context first, then the clicked run
+    const s = nd.s.trim(), off = Math.max(0, Math.min(nd.off || 0, s.length))
+    let at = pvViewPos(total, s, off, hint) // visible words: markup and URLs never capture the click
+    if (at < 0) { const p = locateNear(total, s, hint); if (p >= 0) at = p + off }
+    if (at < 0) at = pvViewWords(total, s, off, hint)
+    if (at < 0) at = pvPosIn(total, s, off, hint) // last resort: the old word matcher
     if (at >= 0) return at
   }
   return -1
@@ -816,35 +825,308 @@ async function pvJumpBest(needles, hint, pi, anchor) { // current file, else the
   }
   return false
 }
+function pvMainText() { return activeFile ? shadow : getT() } // main.typ, also while a text tab is open
+function pvFileAnchor(key, main) { // main line where a text file enters the page (include first, import as weak hint)
+  if (!key) return 0
+  const want = tabName(key).replace(/^\.?\//, '').replace(/\.typ$/i, '')
+  const mask = srcMask(main).split('\n')
+  let weak = 0
+  for (let i = 0; i < mask.length; i++) {
+    const m = mask[i].match(/^\s*#?\s*(include|import)\s*(?:<([^>]+)>|"([^"]+)"|([^\s:,]+))/)
+    if (!m) continue
+    const path = String(m[2] || m[3] || m[4] || '').replace(/^\.?\//, '').replace(/\.typ$/i, '')
+    if (path !== want && path.split('/').pop() !== want.split('/').pop()) continue
+    if (m[1] === 'include') return i + 1
+    if (!weak) weak = i + 1
+  }
+  return weak
+}
+function pvSrcImages() { // image() calls that can reach the page, in render order
+  const main = pvMainText(), mainN = main.split('\n').length, out = []
+  let loose = 0
+  for (const src of pvSrcList()) {
+    if (!src || !src.text) continue
+    const base = src.key ? (pvFileAnchor(src.key, main) || mainN + (++loose) * 1e5) : 0
+    for (const o of srcObjs(src.text).images) out.push({ key: src.key || '', line: o.line, order: base + o.line })
+  }
+  return out.sort((a, b) => a.order - b.order)
+}
+function pvImgHint(b) { // the text above the image names the page's own source line best
+  const items = pvTexts[b.page] || [], y = (b.y0 + b.y1) / 2
+  let best = null, bd = Infinity
+  for (const it of items) {
+    if (it.rot || !it.s.trim() || syncText(it.s).length < 4) continue
+    const d = it.y <= y ? y - it.y : (it.y - y) * 4 // text below only when nothing is above
+    if (d < bd) { bd = d; best = it }
+  }
+  return best
+}
+function pvTextSrcLine(items, it, pi) { // PDF text -> the line and file that own it (cross-file images need this)
+  const needles = pvClickNeedles(items, it, 0)
+  const total = cm.state.doc.lines || 1
+  const hint = pvPageHint(pi, total, pvTexts.length, pvSecAtY(pi, it.y), it.y / (it.vh || 1))
+  const cur = activeFile || '', list = pvSrcList().slice().sort((a, b) => (a.key === cur ? -1 : b.key === cur ? 1 : 0))
+  for (const src of list) {
+    const txt = src.text || '', n = txt.split('\n').length
+    if (!txt) continue
+    const h = Math.max(1, Math.min(n, Math.round(hint / Math.max(1, total) * n)))
+    for (const nd of needles) {
+      const at = pvPosIn(txt, nd.s.trim(), nd.off || 0, h)
+      if (at >= 0) return { key: src.key || '', line: txt.slice(0, at).split('\n').length, order: (src.key ? pvFileAnchor(src.key, pvMainText()) : 0) + txt.slice(0, at).split('\n').length }
+    }
+  }
+  return null
+}
+function pvImgMatch() { // PDF image boxes -> image() lines: one-to-one, nearest document position wins
+  const boxes = pvImgBoxes(), srcs = pvSrcImages(), out = []
+  if (!boxes.length || !srcs.length) return out
+  const used = new Set(), total = cm.state.doc.lines || 1
+  for (const b of boxes) {
+    const y = b.y0 + b.h / 2
+    const near = pvImgHint(b), own = near ? pvTextSrcLine(pvTexts[b.page] || [], near, b.page) : null
+    const hint = own ? own.order : pvPageHint(b.page, total, pvTexts.length, pvSecAtY(b.page, y), y / (b.vh || 1))
+    let best = -1, bd = Infinity
+    for (let i = 0; i < srcs.length; i++) {
+      if (used.has(i)) continue
+      const d = Math.abs(srcs[i].order - hint)
+      if (d < bd) { bd = d; best = i }
+    }
+    if (best < 0) continue
+    used.add(best)
+    out.push({ ...b, src: srcs[best] })
+  }
+  return out
+}
+function pvImgAt(pi, x, y, sx, sy) { // click inside an image box -> that image's source line
+  for (const b of pvImgMatch()) {
+    if (b.page === pi && x >= b.x0 * sx - 2 && x <= b.x1 * sx + 2 && y >= b.y0 * sy - 2 && y <= b.y1 * sy + 2) return b
+  }
+  return null
+}
+function pvImgLineHit(line) { // cursor on an image/figure line -> its rendered box
+  const lines = getT().split('\n'), key = activeFile || ''
+  let best = null, bd = Infinity
+  for (const b of pvImgMatch()) {
+    if ((b.src.key || '') !== key) continue
+    const from = pvFigureStart(lines, b.src.line) || b.src.line
+    if (line < from || line > pvCallEnd(lines, from)) continue
+    const d = Math.abs(line - b.src.line)
+    if (d < bd) { bd = d; best = b }
+  }
+  return best
+}
+function pvMathNorm(s) { return String(s || '').normalize('NFKC').replace(/\s+/g, '') } // 𝑛 -> n, ligatures kept short
+function pvMathLines(items) { // display math: math-font runs alone on their visual line, glyphs in reading order
+  const isMath = it => !it.rot && it.fam && /math/i.test(it.fam) && String(it.s || '').trim()
+  if (!items.some(isMath)) return []
+  const rest = items.filter(o => !o.rot && String(o.s || '').trim() && !isMath(o)), rows = []
+  for (const it of items.filter(isMath).sort((a, b) => a.y - b.y || a.x0 - b.x0)) {
+    const L = rows[rows.length - 1], h = it.h || 10
+    if (!L || Math.abs(it.y - L.y) > Math.max(2, h * 0.7)) rows.push({ y: it.y, h, items: [it] })
+    else L.items.push(it)
+  }
+  const out = []
+  for (const L of rows) {
+    if (rest.some(o => Math.abs(o.y - L.y) <= Math.max(o.h || 10, L.h) * 0.6)) continue // inline math: ordinary text beside it
+    const iv = L.items.slice().sort((a, b) => a.x0 - b.x0)
+    L.s = ''
+    L.own = []
+    for (const it of iv) for (const ch of pvMathNorm(it.s)) { L.s += ch; L.own.push(it) }
+    if (!L.s) continue
+    L.x0 = Math.min(...iv.map(o => o.x0))
+    L.x1 = Math.max(...iv.map(o => o.x0 + (o.w || 0)))
+    L.y0 = Math.min(...iv.map(o => o.y - (o.h || 10) / 2))
+    L.y1 = Math.max(...iv.map(o => o.y + (o.h || 10) / 2))
+    L.vw = iv[0].vw
+    L.vh = iv[0].vh
+    out.push(L)
+  }
+  return out
+}
+function pvSrcMath() { // block formulas with their visible glyphs and a source spot for every glyph
+  const main = pvMainText(), mainN = main.split('\n').length, out = []
+  let loose = 0
+  for (const src of pvSrcList()) {
+    if (!src || !src.text) continue
+    const view = srcViewOf(src.text), base = src.key ? (pvFileAnchor(src.key, main) || mainN + (++loose) * 1e5) : 0
+    for (const f of srcObjs(src.text).formulas) {
+      let s = ''
+      const own = []
+      for (const L of view.lines) {
+        if (L.line < f.line || L.line > f.end) continue
+        for (let i = 0; i < L.s.length; i++) {
+          const ch = pvMathNorm(L.s[i])
+          for (const c of ch) { s += c; own.push({ line: L.line, at: L.map[i] }) }
+        }
+      }
+      if (s) out.push({ key: src.key || '', line: f.line, end: f.end, s, own, order: base + f.line })
+    }
+  }
+  return out.sort((a, b) => a.order - b.order)
+}
+function pvAlign(a, b) { // glyphs of one PDF math line -> a formula (skips on the formula side are free: fraction parts)
+  const n = a.length, m = b.length, d = Array.from({ length: n + 1 }, () => new Int16Array(m + 1)), map = new Int32Array(n).fill(-1)
+  if (!n || !m) return { cost: n, map }
+  for (let i = 1; i <= n; i++) d[i][0] = i
+  for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1], d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+  }
+  let end = 0
+  for (let j = 1; j <= m; j++) if (d[n][j] < d[n][end]) end = j
+  for (let i = n, j = end; i > 0;) {
+    if (j > 0 && a[i - 1] === b[j - 1] && d[i][j] === d[i - 1][j - 1]) { map[i - 1] = --j; i-- }
+    else if (j > 0 && d[i][j] === d[i][j - 1]) j--
+    else i--
+  }
+  return { cost: d[n][end], map }
+}
+function pvMathMatch() { // PDF math lines -> block formulas: glyph similarity first, the page position breaks ties
+  const srcs = pvSrcMath(), out = []
+  if (!srcs.length) return out
+  const total = cm.state.doc.lines || 1
+  for (let pi = 0; pi < pvTexts.length; pi++) for (const L of pvMathLines(pvTexts[pi] || [])) {
+    const y = (L.y0 + L.y1) / 2
+    const hint = pvPageHint(pi, total, pvTexts.length, pvSecAtY(pi, y), y / (L.vh || 1))
+    let best = null, bs = Infinity
+    for (const f of srcs) {
+      const al = pvAlign(L.s, f.s)
+      const score = al.cost / Math.max(1, L.s.length) * 1000 + Math.abs(f.order - hint)
+      if (score < bs) { bs = score; best = f }
+    }
+    if (best) out.push({ page: pi, line: L, src: best })
+  }
+  return out
+}
+function pvMathIndex(line, x) { // clicked x -> the glyph under it (nearest center)
+  let best = 0, bd = Infinity
+  for (let i = 0; i < line.own.length; i++) {
+    const it = line.own[i], d = Math.abs(it.x0 + (it.w || 0) / 2 - x)
+    if (d < bd) { bd = d; best = i }
+  }
+  return best
+}
+function pvMathAt(pi, x, y, sx, sy) { // click inside a display formula (overlapping fraction lines: nearest glyph decides)
+  let best = null, bd = Infinity, bg = Infinity
+  for (const m of pvMathMatch()) {
+    if (m.page !== pi) continue
+    const L = m.line, x0 = L.x0 * sx, x1 = L.x1 * sx, y0 = L.y0 * sy, y1 = L.y1 * sy
+    const dx = x < x0 ? x0 - x : x > x1 ? x - x1 : 0
+    const dy = y < y0 ? y0 - y : y > y1 ? y - y1 : 0
+    const d = dx * dx + dy * dy
+    if (d > 9) continue // more than 3 CSS px beside a formula: not a hit
+    const i = pvMathIndex(L, x / (sx || 1)), it = L.own[i]
+    const gx = (it.x0 + (it.w || 0) / 2) * sx, gy = it.y * sy
+    const g = (gx - x) * (gx - x) + (gy - y) * (gy - y)
+    if (d < bd || (d === bd && g < bg)) { bd = d; bg = g; best = { ...m, i } }
+  }
+  return best
+}
+function pvMathLineHit(line) { // cursor inside a block formula -> its rendered box (all lines of it)
+  const key = activeFile || ''
+  let best = null
+  for (const m of pvMathMatch()) {
+    if (m.src.key !== key || line < m.src.line || line > m.src.end) continue
+    const L = m.line
+    if (!best) best = { page: m.page, x0: L.x0, x1: L.x1, y0: L.y0, y1: L.y1, h: L.y1 - L.y0, vw: L.vw, vh: L.vh }
+    else {
+      best.x0 = Math.min(best.x0, L.x0); best.x1 = Math.max(best.x1, L.x1)
+      best.y0 = Math.min(best.y0, L.y0); best.y1 = Math.max(best.y1, L.y1)
+      best.h = best.y1 - best.y0
+    }
+  }
+  return best
+}
+async function pvJumpSrc(src, col) { // preview object -> its file and line/column (switch tabs only when needed)
+  const doc = docId, epoch = openN, key = (src && src.key) || ''
+  if (key !== activeFile) {
+    try { if (!await switchTab(key)) return false } catch (e) { return false }
+    if (doc !== docId || epoch !== openN) return false
+  }
+  const line = Math.max(1, Math.min(cm.state.doc.lines || 1, src.line))
+  jumpPos(posOfLine(getT(), line) + Math.max(0, col || 0))
+  return true
+}
+async function pvJumpMath(hit) { // clicked formula glyph -> the same spot in the source formula
+  const al = pvAlign(hit.line.s, hit.src.s), k = al.map[hit.i]
+  const at = k >= 0 ? hit.src.own[k] : null
+  return pvJumpSrc(hit.src, at && at.line === hit.src.line ? at.at : 0)
+}
+function pvScrollBox(b) { // cursor on an image/formula line -> center its rendered box
+  const cv = pvCanvasList()[b.page], pv = $('preview')
+  if (!cv) return false
+  const pr = pv.getBoundingClientRect(), cr = cv.getBoundingClientRect()
+  const sy = cr.height / (b.vh || cv.height || 1)
+  const want = pv.scrollTop + (cr.top - pr.top) + ((b.y0 + b.y1) / 2) * sy - pv.clientHeight / 2
+  syncPage = b.page
+  syncEdOff = 0
+  syncEdX = -1
+  const dy = want - pv.scrollTop
+  if (Math.abs(dy) > 300) smoothScroll(pv, want)
+  else if (Math.abs(dy) > SYNC_PX) smoothFollow(pv, want)
+  return true
+}
 function pvCaptionCut(s) { // Typst adds "Figure 1: " / "Table 1: " in front of a caption that the source does not have
   const m = String(s || '').match(/^(?:figure|table|listing|algorithm|equation|diagram|chart|abbildung|tabelle|diagramm|gleichung|liste)\s+\d+(?:\.\d+)*\s*[:.]\s*/i)
   return m ? m[0].length : 0
 }
-function pvBlockLines(items, it) { // paragraph around the click: same left edge, same size, normal line step
-  const x = it.x0 || 0, h = Math.max(1, it.h || 10)
-  const same = items.filter(o => o.s && o.s.trim() && !o.rot
-    && Math.abs((o.x0 || 0) - x) < 1 && Math.abs((o.h || 0) - h) < 3).sort((a, b) => a.y - b.y)
-  const i = same.indexOf(it)
-  if (i < 0) return [it]
-  const step = (a, b) => { const dy = (b.y || 0) - (a.y || 0); return dy > 1 && dy <= h * 1.8 } // generous leading still one paragraph
-  let a = i, b = i
-  while (a > 0 && step(same[a - 1], same[a])) a--
-  while (b < same.length - 1 && step(same[b], same[b + 1])) b++
-  return same.slice(a, b + 1)
+function pvBlockLines(items, it) { // paragraph around the click: full visual lines, columns split, normal line step
+  const h = Math.max(1, it.h || 10), tol = Math.max(1.5, h * 0.55)
+  const ok = items.filter(o => o.s && o.s.trim() && !o.rot && Math.abs((o.h || 0) - h) < 3)
+  const lines = []
+  for (const o of ok.sort((a, b) => a.y - b.y || a.x0 - b.x0)) {
+    const L = lines[lines.length - 1]
+    if (!L || Math.abs(o.y - L.y) > tol) lines.push({ y: o.y, runs: [[o]] })
+    else L.runs[L.runs.length - 1].push(o)
+  }
+  for (const L of lines) { // wide horizontal gap: two columns, never one paragraph
+    const runs = []
+    for (const o of L.runs[0].slice().sort((a, b) => a.x0 - b.x0)) {
+      const r = runs[runs.length - 1], p = r && r[r.length - 1]
+      if (!r || (o.x0 || 0) - ((p.x0 || 0) + (p.w || 0)) > Math.max(h * 3, 24)) runs.push([o])
+      else r.push(o)
+    }
+    L.runs = runs
+  }
+  const at = lines.findIndex(L => L.runs.some(r => r.includes(it)))
+  if (at < 0) return [it]
+  const range = r => [Math.min(...r.map(o => o.x0 || 0)), Math.max(...r.map(o => (o.x0 || 0) + (o.w || 0)))]
+  const mine = range(lines[at].runs.find(r => r.includes(it)))
+  const row = L => {
+    for (const r of L.runs) {
+      const b = range(r)
+      if (Math.min(b[1], mine[1]) - Math.max(b[0], mine[0]) > Math.min(b[1] - b[0], mine[1] - mine[0]) * 0.5) return r
+    }
+    return null
+  }
+  let a = at, b = at
+  while (a > 0 && lines[a].y - lines[a - 1].y <= h * 1.8 && row(lines[a - 1])) a--
+  while (b < lines.length - 1 && lines[b + 1].y - lines[b].y <= h * 1.8 && row(lines[b + 1])) b++
+  const out = []
+  for (let k = a; k <= b; k++) out.push(...row(lines[k]))
+  return out
 }
 function pvBlockNeedle(items, it, col) { // whole paragraph: a wrapped, repeated line is ambiguous on its own
   const block = pvBlockLines(items, it)
   if (block.length < 2) return []
   return [false, true].map(drop => { // real compound first ("E-Mail"), automatic hyphenation second ("Silbentrennung")
-    let s = '', off = 0, soft = false
+    let s = '', off = 0, soft = false, prev = null
     for (const o of block) {
-      const t = String(o.s || '').trim()
+      const raw = String(o.s || ''), t = raw.trim()
       if (!t) continue
+      const same = prev && Math.abs((o.y || 0) - (prev.y || 0)) < Math.max(1.5, (o.h || 10) * 0.55)
       if (s && soft && drop) s = s.slice(0, -1) // the source word continues on the next line
-      const sep = s && !soft ? 1 : 0
+      let sep = 0
+      if (s) {
+        if (soft) sep = 0
+        else if (same && !/\s$/.test(String(prev.s || ''))) { // run split mid-word: no invented space
+          const gap = (o.x0 || 0) - ((prev.x0 || 0) + (prev.w || 0))
+          sep = gap > Math.max(1, (o.h || 10) * 0.1) ? 1 : 0
+        } else sep = 1
+      }
       if (o === it) off = s.length + sep + (col || 0)
       s += (sep ? ' ' : '') + t
       soft = /[-\u2010\u00ad]$/.test(t)
+      prev = o
     }
     const cut = pvCaptionCut(s)
     return { s: s.slice(cut), off: Math.max(0, off - cut) }
@@ -877,6 +1159,285 @@ function pvClickNeedles(items, it, col) { // clicked item first; short cells and
     if (/\p{L}{3}/u.test(text) && add(text, off - cut2)) break
   }
   return out
+}
+const SRC_MATH = { // visible glyphs for common Typst math commands: tokens still map to the command start
+  sum: '∑', prod: '∏', int: '∫', oint: '∮', infty: '∞', partial: '∂', nabla: '∇',
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', zeta: 'ζ', eta: 'η', theta: 'θ',
+  iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ', nu: 'ν', xi: 'ξ', pi: 'π', rho: 'ρ', sigma: 'σ',
+  tau: 'τ', upsilon: 'υ', phi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω',
+  Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ', Xi: 'Ξ', Pi: 'Π', Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
+  arrow: '→', times: '×', div: '÷', plusminus: '±', minus: '−', equiv: '≡', approx: '≈', neq: '≠', in: '∈', subset: '⊂', supset: '⊃'
+}
+const srcViewCache = new Map() // bounded: pvSrcList alternates between open files, never rescan every call
+function srcViewOf(text) { // visible source text with a raw offset per character (links, raw, math: no URL or markup noise)
+  const raw = String(text), hit = srcViewCache.get(raw)
+  if (hit) return hit
+  const view = srcViewScan(raw)
+  srcViewCache.set(raw, view)
+  if (srcViewCache.size > 8) srcViewCache.delete(srcViewCache.keys().next().value)
+  return view
+}
+function srcViewScan(raw) { // one pass: markup/code/comments are skipped, content blocks and raw stay visible
+  const lines = raw.split('\n'), out = []
+  let block = 0, fence = 0
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li], n = line.length, o = { s: '', map: [] }
+    const emit = (ch, at) => {
+      if (!ch || ch === '\n') return
+      if (/\s/.test(ch)) { if (o.s && !o.s.endsWith(' ')) { o.s += ' '; o.map.push(at) } return }
+      o.s += ch; o.map.push(at)
+    }
+    const word = (w, at) => { for (let k = 0; k < w.length; k++) { o.s += w[k]; o.map.push(at + k) } }
+    if (fence) { // raw block content: every character is visible, indentation included
+      if (new RegExp('^\\s*`{' + fence + ',}\\s*$').test(line)) { fence = 0; out.push({ line: li + 1, s: '', map: [], raw: line }); continue }
+      out.push({ line: li + 1, s: line, map: line.split('').map((_, k) => k), raw: line }); continue
+    }
+    const open = line.match(/^\s*(`{3,})/)
+    if (open) { fence = open[1].length; out.push({ line: li + 1, s: '', map: [], raw: line }); continue }
+    // block comment: skip it, keep the rest of the line
+    let i = 0
+    if (block) {
+      const end = line.indexOf('*/')
+      if (end < 0) { out.push({ line: li + 1, s: '', map: [], raw: line }); continue }
+      block = 0; i = end + 2
+    }
+    const mathEnd = from => {
+      for (let j = from; j < n; j++) {
+        if (line[j] === '\\') { j++; continue }
+        if (line[j] === '$') return j
+      }
+      return -1
+    }
+    const math = (from, to) => { // math source -> the glyphs the PDF shows; commands map to their Unicode symbol
+      for (let j = from; j < to;) {
+        const c = line[j]
+        if (c === '\\' && j + 1 < to) { emit(line[j + 1], j + 1); j += 2; continue }
+        if (/\p{L}/u.test(c)) {
+          let k = j + 1
+          while (k < to && /[\p{L}\p{N}.]/u.test(line[k])) k++
+          word(SRC_MATH[line.slice(j, k)] || line.slice(j, k), j); j = k; continue
+        }
+        if (c === '_' || c === '^' || c === '{' || c === '}') { emit(' ', j); j++; continue } // scripts keep their own tokens
+        emit(c, j); j++
+      }
+    }
+    const content = from => { // from behind '[': visible content, nested code and markup skipped
+      let j = from, depth = 1
+      while (j < n && depth) {
+        const c = line[j]
+        if (c === '\\' && j + 1 < n) { emit(line[j + 1], j + 1); j += 2; continue }
+        if (c === '/' && line[j + 1] === '/') break
+        if (c === '/' && line[j + 1] === '*') {
+          const end = line.indexOf('*/', j + 2)
+          if (end < 0) { block = 1; return n }
+          j = end + 2; continue
+        }
+        if (c === '`') {
+          let r = 1; while (line[j + r] === '`') r++
+          const close = line.indexOf('`'.repeat(r), j + r)
+          if (close < 0) { word(line.slice(j + r), j + r); return n }
+          word(line.slice(j + r, close), j + r); j = close + r; continue
+        }
+        if (c === '$') { const close = mathEnd(j + 1); if (close < 0) { j++; continue } emit(' ', j); math(j + 1, close); emit(' ', close); j = close + 1; continue }
+        if (c === '#') { j = code(j + 1); continue }
+        if (c === '[') { emit(' ', j); depth++; j++; continue }
+        if (c === ']') { depth--; emit(' ', j); j++; continue }
+        if (c === '*' || c === '_') { j++; continue }
+        emit(c, j); j++
+      }
+      return j
+    }
+    const code = from => { // from behind '#': the call itself is invisible, its [content] is not
+      let j = from
+      const nameAt = j
+      while (j < n && /[\w.:-]/.test(line[j])) j++
+      const name = line.slice(nameAt, j)
+      if (name === 'import' || name === 'include' || name === 'let') return n // declarations never render on this line
+      if (line[j] === '(') {
+        let depth = 1; j++
+        while (j < n && depth) {
+          const c = line[j]
+          if (c === '"') { j++; while (j < n && line[j] !== '"') { if (line[j] === '\\') j++; j++ } j++; continue }
+          if (c === '`') {
+            let r = 1; while (line[j + r] === '`') r++
+            const close = line.indexOf('`'.repeat(r), j + r)
+            j = close < 0 ? n : close + r; continue
+          }
+          if (c === '/' && line[j + 1] === '/') return n
+          if (c === '[') { emit(' ', j); j = content(j + 1); emit(' ', j); continue }
+          if (c === '(') { depth++; j++; continue }
+          if (c === '$') { const close = mathEnd(j + 1); if (close >= 0) { emit(' ', j); math(j + 1, close); emit(' ', close); j = close + 1; continue } }
+          if (c === ')') { depth--; j++; continue }
+          j++
+        }
+      }
+      if (name === 'show' || name === 'set') { // show/set rules: the content block is the visible part
+        const at = line.indexOf('[', j)
+        if (at >= 0) { emit(' ', at); j = content(at + 1); emit(' ', j) } else return n
+      } else if (line[j] === '[') { emit(' ', j); j = content(j + 1); emit(' ', j) }
+      return j
+    }
+    const head = line.match(/^(\s*)(=+)\s+/)
+    if (head) i = head[0].length
+    while (i < n) {
+      const c = line[i], c2 = line[i + 1]
+      if (block) {
+        if (c === '*' && c2 === '/') { block = 0; i += 2 }
+        else if (c === '/' && c2 === '*') { block++; i += 2 }
+        else i++
+        continue
+      }
+      if (c === '/' && c2 === '/') break
+      if (c === '/' && c2 === '*') { block = 1; i += 2; continue }
+      if (c === '\\' && i + 1 < n) { emit(line[i + 1], i + 1); i += 2; continue }
+      if (c === '<') {
+        const m = line.slice(i).match(/^<[A-Za-z_][\w:.-]*>/)
+        if (m) { i += m[0].length; continue }
+        emit(c, i); i++; continue
+      }
+      if (c === '`') {
+        let r = 1; while (line[i + r] === '`') r++
+        const close = line.indexOf('`'.repeat(r), i + r)
+        if (close < 0) { word(line.slice(i + r), i + r); i = n; continue }
+        word(line.slice(i + r, close), i + r); i = close + r; continue
+      }
+      if (c === '$') {
+        const close = mathEnd(i + 1)
+        if (close < 0) { i++; continue }
+        emit(' ', i); math(i + 1, close); emit(' ', close); i = close + 1; continue
+      }
+      if (c === '#') { i = code(i + 1); continue }
+      if (c === '[' || c === ']') { emit(' ', i); i++; continue }
+      if (c === '*' || c === '_') { i++; continue }
+      emit(c, i); i++
+    }
+    out.push({ line: li + 1, s: o.s.trim(), map: o.map.slice(o.s.length - o.s.trimStart().length, o.s.length - (o.s.length - o.s.trimEnd().length)), raw: line })
+  }
+  return { lines: out }
+}
+function srcObjs(text) { // source constructs in document order: images, block formulas, tables
+  const raw = String(text), hit = srcObjCache.get(raw)
+  if (hit) return hit
+  const src = raw, lines = src.split('\n'), mask = srcMask(src).split('\n')
+  const images = [], formulas = [], tables = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = mask[i] || ''
+    if (/(?:^|[^\w])image\s*\(/.test(m)) images.push({ line: i + 1 })
+    if (/(?:^|[^\w])table\s*\(/.test(m)) tables.push({ line: i + 1 })
+    if (!/^\s*\$/.test(m)) continue
+    let end = i, closed = (m.match(/(?<!\\)\$/g) || []).length % 2 === 0
+    while (!closed && ++end < lines.length) closed = ((mask[end] || '').match(/(?<!\\)\$/g) || []).length % 2 === 1
+    formulas.push({ line: i + 1, end: end + 1 })
+    i = end
+  }
+  const res = { images, formulas, tables }
+  srcObjCache.set(raw, res)
+  if (srcObjCache.size > 8) srcObjCache.delete(srcObjCache.keys().next().value)
+  return res
+}
+const srcObjCache = new Map() // bounded: sync asks for the same file text on every cursor move
+function srcLineWords(v) { // visible line -> normalized words with their raw offset in the line
+  const out = []
+  for (const m of v.s.matchAll(/[\p{L}\p{N}]+/gu)) out.push({ w: syncText(m[0]), raw: m[0], at: v.map[m.index] })
+  return out
+}
+function pvNormCaret(text) { // syncText words with the raw offset of every character (click -> exact letter)
+  const { s, map } = syncNormMap(String(text))
+  let out = '', om = [], gap = true
+  for (let i = 0; i < s.length;) {
+    const cp = s.codePointAt(i), ch = String.fromCodePoint(cp), step = ch.length
+    if (/[\p{L}\p{N}]/u.test(ch)) {
+      out += ch
+      for (let k = 0; k < step; k++) om.push(map[i + k])
+      gap = false
+    } else if (!gap) { out += ' '; om.push(map[i]); gap = true }
+    i += step
+  }
+  if (out.endsWith(' ')) { out = out.slice(0, -1); om.pop() }
+  return { s: out, map: om }
+}
+function srcViewNorm(view) { // visible document -> normalized words, single spaced, absolute raw offset per character
+  if (view.norm) return view.norm
+  const parts = [], map = []
+  let base = 0, gap = true
+  for (const L of view.lines) {
+    const nm = syncNormMap(L.s)
+    for (let i = 0; i < nm.s.length;) {
+      const cp = nm.s.codePointAt(i), ch = String.fromCodePoint(cp), step = ch.length
+      if (/[\p{L}\p{N}]/u.test(ch)) {
+        parts.push(ch)
+        for (let k = 0; k < step; k++) map.push(base + (L.map[nm.map[i + k]] ?? 0))
+        gap = false
+      } else if (!gap) { parts.push(' '); map.push(base + (L.map[nm.map[i]] ?? 0)); gap = true }
+      i += step
+    }
+    base += (L.raw || '').length + 1
+    if (parts.length && parts[parts.length - 1] !== ' ') { parts.push(' '); map.push(base - 1) } // line break keeps words apart
+    gap = true
+  }
+  while (parts.length && parts[parts.length - 1] === ' ') { parts.pop(); map.pop() }
+  view.norm = { s: parts.join(''), map }
+  return view.norm
+}
+function srcViewWords(view) { // visible document -> words with raw span and a raw offset for every letter
+  if (view.words) return view.words
+  const doc = srcViewNorm(view), out = []
+  for (const m of doc.s.matchAll(/[\p{L}\p{N}]+/gu)) {
+    const at = m.index
+    out.push({ w: m[0], at, raw: doc.map[at], map: doc.map.slice(at, at + m[0].length) })
+  }
+  view.words = out
+  return out
+}
+function pvCaretIndex(nw, off) { // click column in the PDF text -> index in the normalized needle
+  let k = 0
+  while (k < nw.s.length && nw.map[k] < (off || 0)) k++
+  return k
+}
+function pvViewPos(txt, s, off, hint) { // clicked visible text -> source letter (markup, URLs, raw and math stay out of the way)
+  const view = srcViewOf(txt), doc = srcViewNorm(view), nw = pvNormCaret(s)
+  if (nw.s.length < 2 || !doc.s) return -1
+  const hp = posOfLine(txt, hint)
+  const land = at => { // matched run -> the character under the click
+    let k = pvCaretIndex(nw, off)
+    if (k >= nw.s.length) k = nw.s.length - 1
+    let j = at + k
+    return doc.map[Math.max(0, Math.min(doc.s.length - 1, j))] // a space/boundary click keeps its own source spot
+  }
+  let best = -1, bd = Infinity, p = -1
+  while ((p = doc.s.indexOf(nw.s, p + 1)) >= 0) {
+    if ((p && doc.s[p - 1] !== ' ') || (p + nw.s.length < doc.s.length && doc.s[p + nw.s.length] !== ' ')) continue
+    const d = Math.abs(doc.map[p] - hp)
+    if (d < bd) { bd = d; best = p }
+  }
+  return best >= 0 ? land(best) : -1
+}
+function pvViewWords(txt, s, off, hint) { // fallback: the clicked word, context first, then the nearest hint line
+  const view = srcViewOf(txt), words = srcViewWords(view), nw = pvNormCaret(s)
+  if (!words.length || !nw.s) return -1
+  const want = []
+  for (const m of nw.s.matchAll(/[\p{L}\p{N}]+/gu)) want.push({ w: m[0], at: m.index })
+  if (!want.length) return -1
+  const k = pvCaretIndex(nw, off)
+  let wi = want.findIndex(w => k <= w.at + w.w.length)
+  if (wi < 0) wi = want.length - 1
+  const cw = Math.max(0, Math.min(want[wi].w.length - 1, k - want[wi].at))
+  const hp = posOfLine(txt, hint)
+  let best = -1, bd = Infinity
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].w !== want[wi].w) continue
+    let ctx = 0
+    for (let d = 1; d <= 3; d++) {
+      const a = want[wi - d], b = want[wi + d]
+      if (a && i - d >= 0 && words[i - d].w === a.w) ctx++
+      if (b && i + d < words.length && words[i + d].w === b.w) ctx++
+    }
+    const d = Math.abs(words[i].raw - hp) - ctx * 1e6 // context beats a far-away coincidence
+    if (d < bd) { bd = d; best = i }
+  }
+  if (best < 0) return -1
+  const w = words[best]
+  return w.map[Math.min(cw, w.map.length - 1)]
 }
 function syncText(text) {
   return text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim() // NFKC first: 𝐸 -> E -> e
@@ -1227,9 +1788,9 @@ function pvCharW(c) { // rough proportional widths: a straight character count p
   return 0.5
 }
 function pvTextW(s) { let w = 0; for (const c of s) w += pvCharW(c); return w }
-function pvPxWords(cv, it) { // word boxes from the rendered page: justified spaces are wider than any width guess
+function pvPxWords(cv, it, words) { // per-character boxes from rendered ink: justified spaces and real letter edges
   try {
-    const n = (it.s || '').trim().split(/\s+/).length, ctx = n && cv.getContext ? cv.getContext('2d') : null
+    const n = words.length, ctx = n && cv.getContext ? cv.getContext('2d') : null
     if (!ctx) return null
     const px = cv.width / (it.vw || cv.width), py = cv.height / (it.vh || cv.height)
     const x0 = Math.max(0, Math.floor(it.x0 * px)), x1 = Math.min(cv.width, Math.ceil((it.x0 + it.w) * px))
@@ -1248,39 +1809,79 @@ function pvPxWords(cv, it) { // word boxes from the rendered page: justified spa
       else runs.push([x, x])
     }
     if (runs.length < n) return null // touching letters: no honest word boxes left
-    while (runs.length > n) { // merge the narrowest gap: a letter gap, never a word space
-      let g = 0
-      for (let i = 1; i < runs.length; i++) if (runs[i][0] - runs[i - 1][1] < runs[g + 1][0] - runs[g][1]) g = i - 1
-      runs[g][1] = runs[g + 1][1]
-      runs.splice(g + 1, 1)
+    const groups = runs.map(r => [r])
+    const narrowest = () => {
+      let g = 1, best = Infinity
+      for (let i = 1; i < groups.length; i++) {
+        const a = groups[i - 1][groups[i - 1].length - 1][1], b = groups[i][0][0]
+        if (b - a < best) { best = b - a; g = i }
+      }
+      return g
     }
-    return runs.map(r => [x0 + r[0], x0 + r[1]])
+    while (groups.length > n) { // merge the narrowest gap: a letter gap, never a word space
+      const g = narrowest()
+      groups[g - 1] = groups[g - 1].concat(groups[g])
+      groups.splice(g, 1)
+    }
+    return groups.map((g, wi) => pvCharBoxes(g, words[wi][0], x0))
   } catch (e) { return null }
 }
-function pvClickChar(word, frac) { // fraction across a word -> the character boundary under the click
+function pvCharBoxes(runs, word, base) { // glyph runs -> one box per character (ligatures keep their letter count)
+  const chars = [...word]
+  let rs = runs.map(r => [r[0] + base, r[1] + base])
+  while (rs.length > chars.length) { // i-dot, accents: merge the narrowest gap inside the glyph
+    let g = 1, best = Infinity
+    for (let i = 1; i < rs.length; i++) if (rs[i][0] - rs[i - 1][1] < best) { best = rs[i][0] - rs[i - 1][1]; g = i }
+    rs[g - 1][1] = rs[g][1]
+    rs.splice(g, 1)
+  }
+  if (rs.length === chars.length) return rs
+  const start = rs.length ? rs[0][0] : base, end = rs.length ? rs[rs.length - 1][1] : base
+  const total = chars.reduce((a, c) => a + pvCharW(c), 0) || 1
+  let cum = 0
+  return chars.map(c => {
+    const a = start + (end - start) * cum / total
+    cum += pvCharW(c)
+    return [a, start + (end - start) * cum / total]
+  })
+}
+function pvCharUnits(word, k) { // character index -> code units (never stop inside a surrogate pair)
+  let i = 0
+  for (const c of word) { if (!k--) break; i += c.length }
+  return i
+}
+function pvClickChar(word, frac) { // proportional fallback when no canvas pixels are available
   let total = 0
   for (const c of word) total += pvCharW(c)
   const at = Math.max(0, Math.min(1, frac)) * total
-  let cum = 0, i = 0
+  let cum = 0, k = 0
   for (const c of word) {
-    const w = pvCharW(c)
-    if (at < cum + w / 2) break // nearest boundary: the right half of a letter puts the caret behind it
-    cum += w
-    i += c.length // code units: never stop inside a surrogate pair
+    if (at < cum + pvCharW(c) / 2) break
+    cum += pvCharW(c)
+    k++
   }
-  return i
+  return pvCharUnits(word, k)
 }
 function pvClickCol(it, x, cssW, baseW, cv) { // click x -> the clicked letter, not the word start
   const raw = it.s || '', body = raw.trim()
   if (!body) return 0
   const words = [...body.matchAll(/\S+/g)]
-  const boxes = cv && !/[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/.test(body) ? pvPxWords(cv, it) : null
-  if (boxes) { // rendered pixels: exact word edges, even across justified spaces
-    const at = x * (cv.width / cssW), d = boxes.map(b => at < b[0] ? b[0] - at : at > b[1] ? at - b[1] : 0)
-    let best = 0
-    for (let i = 1; i < d.length; i++) if (d[i] < d[best]) best = i // ties go left: the end of a word belongs to it
-    const b = boxes[best], f = b[1] > b[0] ? (at - b[0]) / (b[1] - b[0]) : 1
-    return words[best].index + pvClickChar(words[best][0], f)
+  const boxes = cv && !/[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/.test(body) ? pvPxWords(cv, it, words) : null
+  if (boxes) { // rendered pixels: real word edges and real letter boundaries, even across justified spaces
+    const at = x * (cv.width / cssW), span = b => [b[0][0], b[b.length - 1][1]]
+    let best = 0, bd = Infinity
+    for (let i = 0; i < boxes.length; i++) {
+      const b = span(boxes[i]), d = at < b[0] ? b[0] - at : at > b[1] ? at - b[1] : 0
+      if (d < bd) { bd = d; best = i } // ties go left: the end of a word belongs to it
+    }
+    const b = boxes[best]
+    let k = 0, kb = Infinity
+    for (let i = 0; i <= b.length; i++) { // caret boundaries: every letter start plus the word end
+      const bx = i < b.length ? b[i][0] : b[b.length - 1][1]
+      const d = Math.abs(at - bx)
+      if (d <= kb) { kb = d; k = i } // ties go right: the right half of a letter puts the caret behind it
+    }
+    return words[best].index + pvCharUnits(words[best][0], k)
   }
   const scale = cssW / (it.vw || baseW || 1), w = (it.w || 0) * scale
   if (w <= 0) return 0
@@ -1391,12 +1992,14 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
     const total = cm.state.doc.lines || 1
     const hintAt = y => pvPageHint(pi, total, pvTexts.length, at, y / vh)
     const file0 = activeFile
+    const mh = pvMathAt(pi, x, y, sx, sy) // display formula: its source line beats glyph needles
+    if (mh && await pvJumpMath(mh)) return
     if (best) {
       const hint = hintAt(yv)
       const col = pvClickCol(best, x, r.width, cv.width, cv)
       if (await pvJumpBest(pvClickNeedles(items, best, col), hint, pi, best)) return
     }
-    if (!best || activeFile === file0) { // clicked text missed: try the nearest readable text in this file
+    if (!best || activeFile === file0) { // no text under the click: nearest readable text still owns the spot
       for (const { it: near } of pvNearItems(items, x, y, sx, sy, best)) {
         const col = pvClickCol(near, x, r.width, cv.width, cv) // blank space above/below a line still has a word column
         if (pvJumpHere(pvClickNeedles(items, near, col), hintAt(near.y), pi, near)) return
