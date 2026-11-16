@@ -500,6 +500,20 @@ function pvMat(m1, m2) { // PDF matrix concat, same order as the renderer: m1 th
     m1[0] * m2[4] + m1[2] * m2[5] + m1[4], m1[1] * m2[4] + m1[3] * m2[5] + m1[5]
   ]
 }
+function pvImgSig(page, id) { // decoded pixels sampled into a short identity: a logo repeats, two photos at the same spot do not
+  if (!id) return ''
+  try {
+    const o = page.objs.get(String(id))
+    if (!o) return ''
+    const d = o.data
+    const head = (o.width || 0) + 'x' + (o.height || 0)
+    if (!d || !d.length) return head
+    let h = 2166136261
+    const step = Math.max(1, Math.floor(d.length / 512)) // bounded work for full-page raster images
+    for (let i = 0; i < d.length; i += step) h = Math.imul(h ^ d[i], 16777619)
+    return head + ':' + d.length + ':' + (h >>> 0).toString(36)
+  } catch (e) { return '' } // image object not resolved: geometry stays the only hint
+}
 async function pvPageImgs(page, v) { // image boxes from the content stream: images have no text and no annotation to guess from
   const OPS = window.pdfjsLib && pdfjsLib.OPS
   if (!OPS) return []
@@ -518,7 +532,7 @@ async function pvPageImgs(page, v) { // image boxes from the content stream: ima
   const add = (id, m) => {
     const b = box(m)
     if (b.x1 - b.x0 < 2 || b.y1 - b.y0 < 2) return // hairline/background fill: no honest hit area
-    out.push({ ...b, w: b.x1 - b.x0, h: b.y1 - b.y0, id: String(id || ''), vw: v.width, vh: v.height })
+    out.push({ ...b, w: b.x1 - b.x0, h: b.y1 - b.y0, id: String(id || ''), sig: pvImgSig(page, id), vw: v.width, vh: v.height })
   }
   for (let i = 0; i < list.fnArray.length; i++) {
     const op = list.fnArray[i], a = list.argsArray[i]
@@ -546,7 +560,8 @@ function pvImgBoxes() { // stable images in reading order: a logo repeated at th
 function pvImgRepeat(pi, b) { // same size and spot on another page: header/footer decoration (ids differ per page)
   for (let k = 0; k < pvImgs.length; k++) {
     if (k === pi) continue
-    const hit = (pvImgs[k] || []).some(o => Math.abs(o.x0 - b.x0) <= 2 && Math.abs(o.y0 - b.y0) <= 2 && Math.abs(o.w - b.w) <= 2 && Math.abs(o.h - b.h) <= 2)
+    const hit = (pvImgs[k] || []).some(o => (!b.sig || !o.sig || b.sig === o.sig) // content equal; no fingerprint: geometry only
+      && Math.abs(o.x0 - b.x0) <= 2 && Math.abs(o.y0 - b.y0) <= 2 && Math.abs(o.w - b.w) <= 2 && Math.abs(o.h - b.h) <= 2)
     if (hit) return true
   }
   return false
