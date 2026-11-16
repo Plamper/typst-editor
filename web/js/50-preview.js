@@ -212,7 +212,14 @@ setInterval(() => { // watchdog: dead render (init race, dropped retry) heals it
 }, 3000)
 const fileCache = new Map() // name -> {mtime, bytes}: reload binaries only on change
 function queueRender() { clearTimeout(renderT); renderT = setTimeout(render, RENDER_MS) } // fixed 300ms compile debounce
-async function pvFiles() { // file list + bytes + chips + bib keys (no compiler mapping: worker preview and main-thread export share it)
+async function pvFiles() { // stale list after a co-editor deleted a file: refresh once, then compile without it
+  try { return await pvFilesOnce() } catch (e) {
+    if (!e || e.status !== 404) throw e
+    filesDirty = true
+    return pvFilesOnce()
+  }
+}
+async function pvFilesOnce() { // file list + bytes + chips + bib keys (no compiler mapping: worker preview and main-thread export share it)
   const myDoc = docId, epoch = openN
   if (!myDoc) return null
   if (!await loadDocResources() || myDoc !== docId || epoch !== openN) return null
@@ -244,7 +251,7 @@ async function pvFiles() { // file list + bytes + chips + bib keys (no compiler 
       if (myDoc !== docId) return // next doc: drop, never fill its cache
       if (!rr.ok) {
         const message = t('preview.fileLoadFailed', { name: f.name, status: rr.status })
-        throw Object.assign(new Error(message), { diags: [{ severity: 'error', message }] }) // never compile with a missing or outdated input
+        throw Object.assign(new Error(message), { status: rr.status, diags: [{ severity: 'error', message }] }) // never compile with a missing or outdated input
       }
       const bytes = new Uint8Array(await rr.arrayBuffer())
       if (myDoc !== docId || epoch !== openN) return
