@@ -27,6 +27,25 @@ test('a raw image box is hit even when no source line is matched to it', () => {
   assert.equal(c.pvImgHit(0, 5, 45, 1, 1), false) // outside the picture: blank margin keeps the normal fallback
   assert.equal(c.pvImgHit(1, 60, 45, 1, 1), false) // that page has no raw boxes
 })
+test('a decoration box without a source cannot steal the first image line', () => {
+  const settings = read('90-settings.js')
+  const c = vm.createContext({
+    cm: { state: { doc: { lines: 30 } } },
+    pvTexts: [[]],
+    pvImgBoxes: () => [
+      { page: 0, x0: 10, y0: 20, x1: 60, y1: 40, w: 50, h: 20, id: 'deco', sig: 'deco', vh: 1000 },
+      { page: 0, x0: 10, y0: 300, x1: 60, y1: 340, w: 50, h: 40, id: 'img1', sig: 'one', vh: 1000 },
+      { page: 0, x0: 10, y0: 600, x1: 60, y1: 640, w: 50, h: 40, id: 'img2', sig: 'two', vh: 1000 },
+    ],
+    pvSrcImages: () => [{ key: '', line: 10, order: 10 }, { key: '', line: 20, order: 20 }],
+    pvImgHint: () => null,
+    pvTextSrcLine: () => null,
+    pvPageHint: (pi, total, n, sec, frac) => Math.round(frac * total),
+    pvSecAtY: () => null,
+  })
+  vm.runInContext(settings.slice(settings.indexOf('function pvImgMatch'), settings.indexOf('function pvImgAt')), c)
+  assert.equal(JSON.stringify(c.pvImgMatch().map(m => [m.id, m.src.line])), JSON.stringify([['img1', 10], ['img2', 20]]))
+})
 test('inline images hash their own pixels and large images resolve from commonObjs', async () => {
   const OPS = { save: 1, restore: 2, transform: 3, paintFormXObjectBegin: 4, paintFormXObjectEnd: 5, paintImageXObject: 6, paintJpegXObject: 7, paintInlineImageXObject: 8, paintImageMaskXObject: 9 }
   const c = vm.createContext({ window: { pdfjsLib: { OPS } }, pdfjsLib: { OPS } })

@@ -884,24 +884,24 @@ function pvTextSrcLine(items, it, pi) { // PDF text -> the line and file that ow
   }
   return null
 }
-function pvImgMatch() { // PDF image boxes -> image() lines: one-to-one, nearest document position wins
+function pvImgMatch() { // PDF image boxes -> image() lines: the closest pair wins first, so a box without a source cannot take a real image's slot
   const boxes = pvImgBoxes(), srcs = pvSrcImages(), out = []
   if (!boxes.length || !srcs.length) return out
-  const used = new Set(), total = cm.state.doc.lines || 1
-  for (const b of boxes) {
-    const y = b.y0 + b.h / 2
+  const total = cm.state.doc.lines || 1, pairs = []
+  for (let bi = 0; bi < boxes.length; bi++) {
+    const b = boxes[bi], y = b.y0 + b.h / 2
     const near = pvImgHint(b), own = near ? pvTextSrcLine(pvTexts[b.page] || [], near, b.page) : null
     const hint = own ? own.order : pvPageHint(b.page, total, pvTexts.length, pvSecAtY(b.page, y), y / (b.vh || 1))
-    let best = -1, bd = Infinity
-    for (let i = 0; i < srcs.length; i++) {
-      if (used.has(i)) continue
-      const d = Math.abs(srcs[i].order - hint)
-      if (d < bd) { bd = d; best = i }
-    }
-    if (best < 0) continue
-    used.add(best)
-    out.push({ ...b, src: srcs[best] })
+    for (let si = 0; si < srcs.length; si++) pairs.push([Math.abs(srcs[si].order - hint), bi, si])
   }
+  pairs.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2])
+  const boxUsed = new Set(), srcUsed = new Set()
+  for (const [, bi, si] of pairs) {
+    if (boxUsed.has(bi) || srcUsed.has(si)) continue
+    boxUsed.add(bi); srcUsed.add(si)
+    out.push({ ...boxes[bi], src: srcs[si] })
+  }
+  out.sort((a, b) => a.page - b.page || a.y0 - b.y0 || a.x0 - b.x0) // click lookup walks the page in reading order
   return out
 }
 function pvImgAt(pi, x, y, sx, sy) { // click inside an image box -> that image's source line
