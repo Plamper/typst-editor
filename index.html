@@ -7194,13 +7194,20 @@ function syncToEd() {
   if (!pv.clientHeight || document.body.classList.contains('editonly')) return
   const pi = pvViewPage(pv, syncEdOff), slot = pi >= 0 ? pv.querySelectorAll('.pvPage')[pi] : null
   if (!slot) return
-  if (!(pvTexts[pi] || []).length) { syncEdMiss = !pvTextDone[pi]; return } // pvTextAll retries once; a page without text is done
-  syncEdMiss = false
   const pr = pv.getBoundingClientRect(), sr = slot.getBoundingClientRect()
   const frac = Math.max(0, Math.min(1, (pr.top + pv.clientHeight / 2 + syncEdOff - sr.top) / (sr.height || 1)))
-  const vh = pvTexts[pi][0].vh || 1
+  const items = pvTexts[pi] || []
+  if (!items.length) { // page without text (full-page image, scan): section + page ratio still points at a line
+    syncEdMiss = !pvTextDone[pi]
+    if (syncEdMiss) return
+    const vh = (pvPageSize && pvPageSize.height) || 1
+    const line = pvPageHint(pi, cm.state.doc.lines || 1, pvTexts.length, pvSecAtY(pi, frac * vh), frac)
+    smoothFollow(cm.scrollDOM, cmTop(posOfLine(getT(), line)))
+    return
+  }
+  syncEdMiss = false
+  const vh = items[0].vh || 1, vw = items[0].vw || 1
   const line = pvPageHint(pi, cm.state.doc.lines || 1, pvTexts.length, pvSecAtY(pi, frac * vh), frac)
-  const items = pvTexts[pi], vw = items[0].vw || 1
   const near = pvNearItems(items, (syncEdX >= 0 ? syncEdX : 0.5) * vw, frac * vh, 1, 1, null) // no running header/footer, no needle-less lone letters
     .filter(({ it }) => it.y >= vh * 0.05 && it.y <= vh * 0.95
       && (syncText(it.s || '').length >= 4 || pvBlockLines(items, it).length > 1)).slice(0, 3)

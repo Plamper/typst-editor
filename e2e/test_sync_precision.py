@@ -211,3 +211,32 @@ def test_cursor_on_an_image_line_shows_its_page(page):
     assert _line(page) == 11, _line(page)
     page.wait_for_timeout(900)
     assert page.evaluate(PAGE_IN_VIEW, 2), 'cursor on the image line did not show its page'
+
+def test_a_textless_page_scrolls_the_editor_to_its_line(page):
+    register(page, 'e2e_sync_textless')
+    create_doc(page, 'Textless page doc')
+    doc = _project(page, 'Textless page doc')
+    assert page.request.post(f"/api/docs/{doc['id']}/files", multipart={
+        'f': {'name': 'dot.png', 'mimeType': 'image/png', 'buffer': _png()}}).ok
+    filler = '\n'.join(f'Filler line {i:03d}.' for i in range(80))
+    source = filler + '\n\n#pagebreak()\n\n#image("dot.png", width: 200pt)\n\n#pagebreak()\n\nLast tail line.\n'
+    page.reload()
+    page.wait_for_function('window.__booted === true')
+    page.locator('aside .doc.sub', has_text='Textless page doc').first.click()
+    type_source(page, source)
+    expect(page.locator('#preview .pvPage[data-done] canvas').first).to_be_visible(timeout=PREVIEW_TIMEOUT)
+    page.wait_for_timeout(1500)
+
+    pages = page.locator('#preview .pvPage').count()
+    assert pages >= 3, pages
+    page.click('#cm .cm-content')
+    page.keyboard.press('ControlOrMeta+Home')
+    page.wait_for_timeout(700)
+    before = page.evaluate("() => document.querySelector('#cm .cm-scroller').scrollTop")
+
+    slot = page.locator(f'#preview .pvPage[data-page="{pages - 1}"]')  # image page: tail page minus one
+    slot.scroll_into_view_if_needed()
+    page.wait_for_timeout(1500)  # reader scroll -> follow estimate
+    after = page.evaluate("() => document.querySelector('#cm .cm-scroller').scrollTop")
+    assert after > before + 200, f'textless page did not move the editor: {before} -> {after}'
+    assert page.evaluate(PAGE_IN_VIEW, pages - 1)
