@@ -56,3 +56,13 @@ test('a mapping failure leaves the shadow unmapped for the next render', async (
   assert.equal(posted[0].fail, 'map')
   assert.equal(posted[0].mapped, false)
 })
+
+test('incremental compiles keep the compiler cache, a full remap resets it once', async () => {
+  const { c, state } = workerContext()
+  await work(c, job(1, true))
+  await work(c, job(2, false))
+  await work(c, job(3, false))
+  assert.equal(state.resets, 1)
+  assert.equal(state.mapped, 1) // one remap, not one per keystroke
+  assert.equal(state.seen, '= Hi')
+})

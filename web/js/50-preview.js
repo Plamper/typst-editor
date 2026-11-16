@@ -60,7 +60,7 @@ onmessage = function (e) {
       } // tpl first, files win: doc-local beats global on collision (see .update-review/resource-contract.md)
       await T.addSource('/main.typ', j.main)
       var c = await T.getCompiler()
-      await c.reset()
+      if (j.full) await c.reset() // remapped shadow only: resetting every keystroke drops the incremental cache
       var r = await c.compile({ mainFilePath: '/main.typ', format: 1, diagnostics: 'full' })
       var pdf = r.result
       try { diags = fix(r.diagnostics || [], 0) } catch (e2) {}
@@ -284,6 +284,8 @@ async function shadowAll(main) { // files + templates as shadow: main-thread fal
   if (pf.sig !== shadowSig) { // files/templates changed: full remap once, else only main.typ below
     shadowSig = '' // half-mapped on throw: force remap next time
     await $typst.resetShadow()
+    const comp = await $typst.getCompiler()
+    await comp.reset() // remapped shadow only: resetting every keystroke drops the incremental cache
     if (!current()) return false
     for (const t of (pf.tpl || pvResTpl())) { await $typst.mapShadow('/' + t.name, new TextEncoder().encode(t.content)); if (!current()) return false }
     for (const [n, c] of fileCache) { await $typst.mapShadow('/' + n, c.bytes); if (!current()) return false }
@@ -901,7 +903,6 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
     await shadowAll(window.changeSession ? sessionMainText() : activeFile ? shadow : getT()) // file tab: preview still compiles main.typ
     if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted full compile
     const compiler = await $typst.getCompiler()
-    await compiler.reset() // same reset $typst.pdf() did before compiling
     cmp = await compiler.compile({ mainFilePath: '/main.typ', format: 1, diagnostics: 'full' }) // 1 = pdf: bytes + diagnostics in one compile
     if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted pdfjs work
     const doc = await pdfjsLib.getDocument({ data: cmp.result }).promise
