@@ -29,7 +29,7 @@ test('a repeated cursor move reuses the source formula list, an edit rebuilds it
 
 test('a repeated cursor move reuses the math match, a new render or formula rebuilds it', () => {
   const formula = { key: '', line: 3, end: 3, s: 'x+y', own: [{ line: 3, at: 0 }], order: 3 }
-  const state = { src: [formula], cands: 0 }
+  const state = { src: [formula], cands: 0, srcSig: 1 }
   const line = { s: 'x+y', own: [{ x0: 0, w: 5 }], x0: 0, x1: 20, y0: 10, y1: 20, vw: 100, vh: 100 }
   const c = vm.createContext({
     cm: { state: { doc: { lines: 20 } } },
@@ -37,6 +37,7 @@ test('a repeated cursor move reuses the math match, a new render or formula rebu
     pvOutlineGen: 1,
     shownN: 1,
     pvSrcMath: () => state.src,
+    pvSrcSig: () => state.srcSig,
     pvMathLines: () => [line],
     pvPageHint: () => 2,
     pvSecAtY: () => null,
@@ -51,8 +52,13 @@ test('a repeated cursor move reuses the math match, a new render or formula rebu
   const rendered = c.pvMathMatch()
   assert.notEqual(one, rendered) // a render swaps the page items
   assert.equal(state.cands, 2)
+  state.srcSig = 2 // a heading edit can move sections without touching a formula
+  const moved = c.pvMathMatch()
+  assert.notEqual(rendered, moved)
+  assert.equal(state.cands, 3)
+  state.srcSig = 3
   state.src = [{ ...formula, s: 'x+z' }]
   const edited = c.pvMathMatch()
-  assert.notEqual(rendered, edited) // the formula changed
-  assert.equal(state.cands, 3)
+  assert.notEqual(moved, edited) // the formula changed
+  assert.equal(state.cands, 4)
 })
