@@ -117,7 +117,7 @@ def _ready(page, pages=PAGES, headings=2):
     expect(page.locator('#ol .pg')).to_have_count(headings, timeout=PREVIEW_TIMEOUT)
 
 
-def _setup(page, slug, title, source, pages=PAGES, headings=2, resources=True):
+def _setup(page, slug, title, source, pages=PAGES, headings=2, resources=True, extra_typ=None):
     register(page, slug)
     create_doc(page, title)
     doc = _project(page, title)
@@ -128,6 +128,9 @@ def _setup(page, slug, title, source, pages=PAGES, headings=2, resources=True):
                                  data={'name': 'lib/util.typ', 'content': '#let unused = 1'}).ok
         assert page.request.post(f"/api/projects/{doc['project_id']}/resources",
                                  data={'name': 'part.typ', 'content': PART}).ok
+    if extra_typ:  # a second source file: the multi-source guard must be exercised, not bypassed
+        assert page.request.post(f"/api/docs/{doc['id']}/files", multipart={
+            'f': {'name': extra_typ, 'mimeType': 'text/plain', 'buffer': b'= Extra\n'}}).ok
     page.reload()
     page.wait_for_function('window.__booted === true')
     page.locator('aside .doc.sub', has_text=title).first.click()
@@ -189,7 +192,7 @@ def test_a_click_on_an_image_lands_on_its_image_call(page):
     assert _line(page) == 5 and _col(page) == 0
 
 def test_a_click_in_blank_space_reaches_the_section_start(page):
-    _setup(page, 'e2e_sync_section', 'Section fallback doc', BLANK_PAGE, pages=3)
+    _setup(page, 'e2e_sync_section', 'Section fallback doc', BLANK_PAGE, pages=3, extra_typ='extra.typ')
 
     page.click('#cm .cm-content')
     page.keyboard.press('ControlOrMeta+Home')
