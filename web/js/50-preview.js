@@ -719,7 +719,7 @@ function srcMask(t) { // document with raw blocks and comments blanked (newlines
     .replace(/```[\s\S]*?```/g, m => m.replace(/[^\n]/g, ' '))
     .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
     .replace(/`[^`\n]*`/g, m => m.replace(/[^\n]/g, ' '))
-    .replace(/\/\/[^\n]*/g, m => m.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:])\/\/([^\n]*)/g, (m, p) => p + ' '.repeat(m.length - p.length)) // a bare URL keeps its "//"
 }
 function srcHeadings(t) { // source headings outside raw blocks/comments (line, level, raw title)
   const lines = String(t).split('\n'), mask = srcMask(t).split('\n'), out = []

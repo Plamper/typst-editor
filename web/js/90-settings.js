@@ -1233,7 +1233,10 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
       while (j < n && depth) {
         const c = line[j]
         if (c === '\\' && j + 1 < n) { emit(line[j + 1], j + 1); j += 2; continue }
-        if (c === '/' && line[j + 1] === '/') break
+        if (c === '/' && line[j + 1] === '/') { // a bare URL keeps its "//"
+          if (line[j - 1] === ':') { emit('/', j); emit('/', j + 1); j += 2; continue }
+          break
+        }
         if (c === '/' && line[j + 1] === '*') {
           const end = line.indexOf('*/', j + 2)
           if (end < 0) { block = 1; return n }
@@ -1294,7 +1297,10 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
         else i++
         continue
       }
-      if (c === '/' && c2 === '/') break
+      if (c === '/' && c2 === '/') { // a bare URL keeps its "//"
+        if (line[i - 1] === ':') { emit('/', i); emit('/', i + 1); i += 2; continue }
+        break
+      }
       if (c === '/' && c2 === '*') { block = 1; i += 2; continue }
       if (c === '\\' && i + 1 < n) { emit(line[i + 1], i + 1); i += 2; continue }
       if (c === '<') {
