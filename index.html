@@ -2573,7 +2573,7 @@ function pullRemote(ev) {
   queueRender()
 }
 // --- Typst preview: main file + uploads as shadow files in compiler ---
-let renderN = 0, renderT = 0, oldPdf = null, pvTexts = [] // text anchors per page: click hits exact (tables too)
+let renderN = 0, shownN = 0, renderT = 0, oldPdf = null, pvTexts = [] // renderN: newest request, shownN: newest result on screen (text anchors below)
 let pvLinks = [], pvOutline = [], pvOutlineGen = -1 // PDF layer: link boxes per page (viewport units) + outline with resolved pages + render generation it belongs to
 let pvImgs = [], pvImgNeed = 0 // image boxes per page (operator list), only filled when the document actually draws images
 let cmpWarns = [] // compiler warnings of the last good render (shown as yellow marks, never block)
@@ -2868,7 +2868,7 @@ async function shadowAll(main) { // files + templates as shadow: main-thread fal
   await $typst.addSource('/main.typ', main)
   return current()
 }
-const pvStale = (id, myDoc, myTplName) => id !== renderN || myDoc !== docId || myTplName !== tplName // a newer result is on screen: drop older work
+const pvStale = (id, myDoc, myTplName) => id < shownN || myDoc !== docId || myTplName !== tplName // a newer result is on screen: drop older work
 function pvSrcList() { // live source texts for honest cross-file anchors: [{key, text}]
   const out = []
   try {
@@ -2946,6 +2946,7 @@ async function render() {
     }
     if (pvStale(id, myDoc, myTplName)) { try { doc.destroy() } catch (e) {} return } // template/closed view: never swap a stale render in
     const anchor = pvAnchorRead(preview) // at swap time: the awaits above take seconds, an early anchor goes stale
+    shownN = id // a compiled result newer than the screen wins, even when another render is still queued
     preview.replaceChildren(...pvSlots)
     pvAnchorBack(preview, anchor)
     scrollApplyPreview() // first render of a reopened doc: back to its saved page + offset
@@ -2986,7 +2987,7 @@ async function pvDraw(slot, doc, id, detached) { // rasterize one slot (backing 
   try {
     const p = +slot.dataset.page
     const page = await doc.getPage(p)
-    if (id !== renderN || (!detached && !slot.isConnected)) return
+    if (id < shownN || (!detached && !slot.isConnected)) return
     const v = page.getViewport({ scale: pvScale })
     const c = slot.firstChild
     c.width = Math.ceil(v.width); c.height = Math.ceil(v.height) // backing = viewport, never touch after
@@ -2995,10 +2996,10 @@ async function pvDraw(slot, doc, id, detached) { // rasterize one slot (backing 
     await page.render({ canvasContext: c.getContext('2d'), viewport: v }).promise
     pvFitCanvas(c) // CSS size only, not canvas.width
     const tc = await page.getTextContent() // click anchors: each visible word knows its spot
-    if (id !== renderN) return
+    if (id < shownN) return
     const boxes = pvBoxes(tc, v, page), links = await pvPageLinks(doc, page, v)
     const imgs = pvImgNeed ? await pvPageImgs(page, v) : []
-    if (id !== renderN) return
+    if (id < shownN) return
     pvTexts[p - 1] = boxes // both anchors land after the last await: a newer render starts empty
     pvLinks[p - 1] = links
     pvImgs[p - 1] = imgs
@@ -3029,7 +3030,7 @@ function pvSweep() {
 function pvWatch(doc, id, myDoc, myTplName) { // draw on scroll into view (+2 viewports buffer), sweep the rest
   if (pvObs) pvObs.disconnect()
   pvObs = new IntersectionObserver(es => {
-    if (id !== renderN || (myDoc !== undefined && (myDoc !== docId || myTplName !== tplName))) return
+    if (id < shownN || (myDoc !== undefined && (myDoc !== docId || myTplName !== tplName))) return
     for (const en of es) if (en.isIntersecting) pvDraw(en.target, doc, id)
     pvSweep()
   }, { root: $('preview'), rootMargin: '200% 0' + 'px' }) // string split: one literal with space+letters trips check_i18n
@@ -3257,14 +3258,14 @@ async function pvLoadOutline(doc, id) { // bookmarks with pages: the honest anch
   const out = []
   const walk = async (list, depth) => {
     for (const it of list || []) {
-      if (id !== renderN) return
+      if (id < shownN) return
       const target = it && it.dest ? await pvDestTarget(doc, it.dest) : null
       if (target) out.push({ title: String((it && it.title) || ''), page: target.page, depth })
       if (it && it.items && it.items.length) await walk(it.items, depth + 1)
     }
   }
   await walk(root, 0)
-  if (id !== renderN) return
+  if (id < shownN) return
   pvOutline = out
   pvOutlineGen = id // sync only trusts the outline of the render that is on screen
   try { paintOutline() } catch (e) {} // sidebar badges follow the PDF, not the cursor
@@ -3291,7 +3292,7 @@ function srcOutlineLine(t) { // line of a real #outline( call outside raw/code (
 function pvOlNorm(s) { return syncPlain(String(s)).replace(/^\d+(?:\s+\d+)*\s+/, '') } // heading text: no labels/markup, no "1.2 "
 function pvOlBare(s) { return pvOlNorm(s).replace(/^(?:\d+(?:\s+\d+)*|[a-z]|[ivxlcdm]+)\s+/, '') } // also letters/roman: template numbering
 function pvOlMatch(text, from, anyGen) { // PDF bookmark index for a source heading, in document order; -1: not in the outline
-  if (!pvOutline.length || (!anyGen && pvOutlineGen !== renderN)) return -1
+  if (!pvOutline.length || (!anyGen && pvOutlineGen !== shownN)) return -1
   const want = pvOlNorm(text)
   if (!want) return -1
   for (let k = from; k < pvOutline.length; k++) if (pvOlNorm(pvOutline[k].title) === want) return k
@@ -3300,7 +3301,7 @@ function pvOlMatch(text, from, anyGen) { // PDF bookmark index for a source head
   return -1
 }
 function pvSections() { // source heading line -> PDF page, in document order (the anchor chain)
-  if (pvOutlineGen !== renderN) return [] // outline of an older render: no pages it could honestly give
+  if (pvOutlineGen !== shownN) return [] // outline of an older render: no pages it could honestly give
   const out = []
   let at = 0
   for (const h of srcHeadings(getT())) {
@@ -3502,6 +3503,7 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
     for (const c of pages) sizeCanvas(c) // pvZoom just changed above: resize the new pages, not the old ones in the DOM
     if (pvStale(id, myDoc, myTplName)) return // template/closed view: never swap a stale render in
     const st = preview.scrollTop // read at swap time: follow-scroll during render is kept
+    shownN = id
     preview.replaceChildren(...pages)
     pvTexts = texts
     pvLinks = texts.map(() => []) // fallback: no annotation overlay (bare canvases)

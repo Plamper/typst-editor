@@ -14,7 +14,7 @@ vm.runInContext(syncSlice, ctx)
 const page = texts => texts.map((s, y) => ({ s, y: y * 20, vh: 800 }))
 function outlineCtx(extra) { // real source parser + heading matcher, not stubs
   const c = vm.createContext({ posOfLine: (t, ln) => { let p = 0; for (let i = 1; i < ln; i++) p = t.indexOf('\n', p) + 1; return p },
-    renderN: 1, pvOutline: [], pvOutlineGen: 1, ...extra })
+    renderN: 1, shownN: 1, pvOutline: [], pvOutlineGen: 1, ...extra })
   vm.runInContext(syncSlice, c)
   vm.runInContext(pvSlice, c)
   vm.runInContext(outlineSlice, c)

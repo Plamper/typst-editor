@@ -66,3 +66,13 @@ test('incremental compiles keep the compiler cache, a full remap resets it once'
   assert.equal(state.mapped, 1) // one remap, not one per keystroke
   assert.equal(state.seen, '= Hi')
 })
+
+test('an older finished compile is shown while a newer render is still queued', () => {
+  const line = preview.slice(preview.indexOf('const pvStale'), preview.indexOf('\n', preview.indexOf('const pvStale')))
+  const c = vm.createContext({ shownN: 2, docId: 'doc', tplName: '' })
+  vm.runInContext(line + '\n;globalThis.__stale = pvStale', c)
+  assert.equal(c.__stale(3, 'doc', ''), false) // finished after the screen, still useful
+  assert.equal(c.__stale(2, 'doc', ''), false) // exactly what is on screen
+  assert.equal(c.__stale(1, 'doc', ''), true) // older than the screen
+  assert.equal(c.__stale(3, 'other', ''), true) // other document
+})
