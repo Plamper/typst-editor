@@ -103,6 +103,105 @@ test('an older render never reads pages or writes anchors after a newer state cl
   assert.equal(gets, 1)
 })
 
+function renderContext() {
+  const src = preview.slice(preview.indexOf('const pvStale'), preview.indexOf('function pvCssW'))
+  const pending = new Map(), docs = {}, gates = {}, shown = []
+  const el = () => ({
+    style: {}, dataset: {}, children: [], firstChild: null, clientHeight: 800,
+    append(c) { this.children.push(c); if (!this.firstChild) this.firstChild = c },
+    appendChild(c) { this.append(c) },
+    querySelector: () => null,
+    replaceChildren(...c) { this.children = c },
+    getBoundingClientRect: () => ({ top: 0, bottom: 800, height: 800 }),
+  })
+  const page = { getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }) }
+  const previewEl = el()
+  const pdfjsLib = {
+    getDocument: ({ data }) => {
+      const gate = gates[data]
+      const doc = {
+        numPages: 1, destroyed: false,
+        getPage: () => gate ? gate.then(() => page) : Promise.resolve(page),
+        destroy() { this.destroyed = true },
+      }
+      docs[data] = doc
+      return { promise: Promise.resolve(doc) }
+    },
+  }
+  const c = vm.createContext({
+    window: { pdfjsLib }, pdfjsLib, navigator: { onLine: true }, console,
+    document: { createElement: el, createTextNode: () => ({}) },
+    $: id => id === 'preview' ? previewEl : el(),
+    t: key => key, toast() {}, el: () => el(), noteCompiler() {},
+    renderN: 0, shownN: 0, pvMetaGen: 0, oldPdf: null, pvSlots: [], pvJobN: 0,
+    cmpWarns: [], lastInfra: false, errLines: [], errKey: '', lastErrToast: '',
+    docId: 'doc', tplName: '', openN: 1, activeFile: '', shadow: '', fileCache: new Map(),
+    getT: () => 'main', pvWorkerFail: false, pvWorkerOk: true, pvEnsureWorker: () => true,
+    pvBar() {}, pvFiles: async () => ({ sig: 'sig', tpl: [] }),
+    pvCall: (job, id) => new Promise(resolve => pending.set(id, pdf => resolve({ pdf, diags: [] }))),
+    pvScale: 2, pvZoom: 100, pvHasImages: () => false,
+    pvCssW: w => w, pvBlank() {}, pvModeApply() {}, pvDraw: async () => {},
+    pvAnchorRead: () => ({ page: -1 }), pvAnchorBack() {}, scrollApplyPreview() {},
+    pvWatch() {}, pvTextAll() {}, pvLoadOutline: async () => {},
+    clearErr() {}, paintErr: () => { c.__errors = (c.__errors || 0) + 1 },
+  })
+  c.__errors = 0
+  vm.runInContext(src, c)
+  const wait = async fn => { for (let i = 0; i < 200; i++) { if (fn()) return; await new Promise(r => setImmediate(r)) } throw new Error('timeout') }
+  return {
+    c, docs, previewEl, wait,
+    render: () => c.render(),
+    queued: id => wait(() => pending.has(id)),
+    resolve: (id, pdf) => pending.get(id)(pdf),
+    gate: pdf => {
+      let open
+      const p = new Promise(resolve => { open = resolve })
+      p.open = open
+      gates[pdf] = p
+    },
+    open: pdf => gates[pdf].open(),
+  }
+}
+
+test('a finished render is shown although a newer one is already queued', async () => {
+  const env = renderContext()
+  const one = env.render()
+  await env.queued(1)
+  const two = env.render()
+  await env.queued(2)
+  env.resolve(1, 'pdf1')
+  await env.wait(() => env.c.shownN === 1) // the finished compile wins over the queued one
+  assert.equal(env.c.oldPdf, env.docs.pdf1)
+  assert.equal(env.previewEl.children.length, 1)
+  assert.equal(env.docs.pdf1.destroyed, false) // what is on screen stays alive
+  env.resolve(2, 'pdf2')
+  await env.wait(() => env.c.shownN === 2)
+  assert.equal(env.c.oldPdf, env.docs.pdf2)
+  assert.equal(env.docs.pdf1.destroyed, true) // released only at the swap
+  assert.equal(env.c.__errors, 0)
+  await Promise.all([one, two])
+})
+
+test('a render that lost the screen releases its pdf, the shown one stays', async () => {
+  const env = renderContext()
+  env.gate('pdf1')
+  const one = env.render()
+  await env.queued(1)
+  const two = env.render()
+  await env.queued(2)
+  env.resolve(1, 'pdf1')
+  await env.wait(() => env.docs.pdf1 && env.c.pvMetaGen === 1) // parked while reading the first page
+  env.resolve(2, 'pdf2')
+  await env.wait(() => env.c.shownN === 2)
+  assert.equal(env.c.oldPdf, env.docs.pdf2)
+  env.open('pdf1')
+  await env.wait(() => env.docs.pdf1.destroyed) // older page state: released, never swapped
+  assert.equal(env.c.shownN, 2)
+  assert.equal(env.previewEl.children.length, 1)
+  assert.equal(env.c.__errors, 0)
+  await Promise.all([one, two])
+})
+
 test('block formulas read only their own source lines, never the whole file', () => {
   const src = settings.slice(settings.indexOf('function pvSrcMath'), settings.indexOf('function pvAlign'))
   const lines = [
