@@ -1,5 +1,5 @@
 // --- Typst preview: main file + uploads as shadow files in compiler ---
-let renderN = 0, shownN = 0, renderT = 0, oldPdf = null, pvTexts = [] // renderN: newest request, shownN: newest result on screen (text anchors below)
+let renderN = 0, shownN = 0, pvMetaGen = 0, renderT = 0, oldPdf = null, pvTexts = [] // renderN: newest request, shownN: newest result on screen, pvMetaGen: render that owns the page state (text anchors below)
 let pvLinks = [], pvOutline = [], pvOutlineGen = -1 // PDF layer: link boxes per page (viewport units) + outline with resolved pages + render generation it belongs to
 let pvImgs = [], pvImgNeed = 0 // image boxes per page (operator list), only filled when the document actually draws images
 let cmpWarns = [] // compiler warnings of the last good render (shown as yellow marks, never block)
@@ -321,6 +321,11 @@ function pvSrcList() { // live source texts for honest cross-file anchors: [{key
   } catch (e) {}
   return out
 }
+function pvMetaClaim(id) { // the shared page state can only be taken by a result at least as new as the last one
+  if (id < pvMetaGen) return false
+  pvMetaGen = id
+  return true
+}
 async function render() {
   const id = ++renderN, preview = $('preview'), myDoc = docId, myTplName = tplName, myEpoch = openN
   if (!myDoc || myTplName) return
@@ -329,7 +334,7 @@ async function render() {
   if (!window.pdfjsLib) { $('cdnLine').style.display = 'block'; lastInfra = true; setTimeout(() => { if (docId) render() }, 3000); return } // lib blocked: retry later
   if (!pvWorkerOk) { noteCompiler(preview); lastInfra = true; return } // worker boots: ready-handler re-renders
   cmpWait = 0; typstT0 = 0; $('cdnLine').style.display = 'none'
-  let wDiags = null // worker diags of this render: empty-pdf failures tag along (compile resolves, pdf.js throws)
+  let wDiags = null, doc = null // worker diags of this render: empty-pdf failures tag along (compile resolves, pdf.js throws)
   try {
     const main = window.changeSession ? sessionMainText() : activeFile ? shadow : getT() // file tab: preview still compiles main.typ
     const pf = await pvFiles()
@@ -342,18 +347,18 @@ async function render() {
     if (!m || m.skip || pvStale(id, myDoc, myTplName)) return
     wDiags = m.diags
     if (pvStale(id, myDoc, myTplName)) return
-    const doc = await pdfjsLib.getDocument({ data: m.pdf }).promise
+    doc = await pdfjsLib.getDocument({ data: m.pdf }).promise
     if (pvStale(id, myDoc, myTplName)) { try { doc.destroy() } catch (e) {} return }
-    oldPdf?.destroy(); oldPdf = doc
     const n = doc.numPages
+    if (!pvMetaClaim(id)) { try { doc.destroy() } catch (e) {} return } // a newer result already owns the page state
     pvScale = n > 60 ? 1 : n > 25 ? 1.4 : 2 // render scale by page count: 100 pages stay usable
     const sizes = []
     for (let p = 1; p <= n; p++) { // sizes only (no raster): slots keep total height, no scroll jump
       const pg = await doc.getPage(p)
       sizes.push(pg.getViewport({ scale: 1 }))
-      if (pvStale(id, myDoc, myTplName)) { try { doc.destroy() } catch (e) {} return }
+      if (pvStale(id, myDoc, myTplName) || id !== pvMetaGen) { try { doc.destroy() } catch (e) {} return }
     }
-    if (pvStale(id, myDoc, myTplName)) { try { doc.destroy() } catch (e) {} return }
+    if (pvStale(id, myDoc, myTplName) || id !== pvMetaGen) { try { doc.destroy() } catch (e) {} return }
     pvPageSize = sizes[0]
     pvModeApply() // width/page zoom follows current layout
     pvTexts = Array.from({ length: n }, () => []) // dense: sync math indexes by page (holes would crash it)
@@ -375,12 +380,14 @@ async function render() {
     const first = a0.page >= 0 ? a0.page : 0, hv = Math.max(1, Math.ceil(preview.clientHeight / Math.max(1, (pvSlots[0] ? parseFloat(pvSlots[0].style.height) : 600))) + 1)
     for (let k = first; k < Math.min(pvSlots.length, first + hv + 1); k++) { // no blank flash: visible pages are ready before the old ones go
       try { await pvDraw(pvSlots[k], doc, id, true) } catch (e) {}
-      if (pvStale(id, myDoc, myTplName)) { try { doc.destroy() } catch (e) {} return }
+      if (pvStale(id, myDoc, myTplName) || id !== pvMetaGen) { try { doc.destroy() } catch (e) {} return }
     }
-    if (pvStale(id, myDoc, myTplName)) { try { doc.destroy() } catch (e) {} return } // template/closed view: never swap a stale render in
+    if (pvStale(id, myDoc, myTplName) || id !== pvMetaGen) { try { doc.destroy() } catch (e) {} return } // template/closed view or newer page state: never swap a stale render in
     const anchor = pvAnchorRead(preview) // at swap time: the awaits above take seconds, an early anchor goes stale
     shownN = id // a compiled result newer than the screen wins, even when another render is still queued
     preview.replaceChildren(...pvSlots)
+    try { oldPdf?.destroy() } catch (e) {} // only the document that was really on screen may be released here
+    oldPdf = doc
     pvAnchorBack(preview, anchor)
     scrollApplyPreview() // first render of a reopened doc: back to its saved page + offset
     pvWatch(doc, id, myDoc, myTplName) // visible pages (+ buffer) rasterize, far ones evict
@@ -389,22 +396,25 @@ async function render() {
     clearErr() // running again: clear marks
     cmpWarns = (wDiags || []).filter(d => d && d.severity === 'warning'); if (cmpWarns.length) paintErr()
     lastInfra = false
-  } catch (e) { if (!pvStale(id, myDoc, myTplName)) { // error: keep last render, red lines, never wrong empty text
-    cmpDiags = ((e && e.diags) || wDiags || []).filter(d => d && d.severity === 'error'); paintErr() // worker diags only: main-thread shadows are stale here (errDiags stays in renderDirect)
-    const firstMsg = (errLines[0] && errLines[0].msg || '').split('\n')[0].slice(0, 200)
-    const lined = errLines.some(e => e.line)
-    if (!$('preview').querySelector('.pvPage[data-done]')) {
-      const p = el('p', 'empty') // real message, not generic: package errors live in other files
-      p.append(document.createTextNode(firstMsg ? t('preview.couldNotRender', { msg: firstMsg }) : t('preview.couldNotRenderBare')))
-      const btn = el('button', null, t('preview.tryAgain')); btn.onclick = () => render(); p.appendChild(btn)
-      if (pvObs) pvObs.disconnect()
-      pvSlots = []; pvPageSize = null
-      $('preview').replaceChildren(p)
-      if (firstMsg) { if (navigator.onLine !== false) toast(t('preview.typstError', { msg: firstMsg.slice(0, 140) })) } // offline: inline message suffices, no toast spam (2E gate, worker path)
-      else if (navigator.onLine !== false) toast(t('preview.loadFailed'), () => render())
-    } else if (errLines.length && !lined && errKey !== lastErrToast && navigator.onLine !== false) { lastErrToast = errKey; toast(t('preview.typstError', { msg: firstMsg.slice(0, 140) })) } // line errors: red marks + badge suffice, no toast per keystroke
-    lastInfra = !errLines.length && !$('preview').querySelector('.pvPage[data-done]') // infra (not content): watchdog retries
-  } }
+  } catch (e) {
+    if (doc && doc !== oldPdf) { try { doc.destroy() } catch (e2) {} } // failed before the swap: never leave an unshown document alive
+    if (!pvStale(id, myDoc, myTplName) && id >= pvMetaGen) { // error: keep last render, red lines, never wrong empty text
+      cmpDiags = ((e && e.diags) || wDiags || []).filter(d => d && d.severity === 'error'); paintErr() // worker diags only: main-thread shadows are stale here (errDiags stays in renderDirect)
+      const firstMsg = (errLines[0] && errLines[0].msg || '').split('\n')[0].slice(0, 200)
+      const lined = errLines.some(e => e.line)
+      if (!$('preview').querySelector('.pvPage[data-done]')) {
+        const p = el('p', 'empty') // real message, not generic: package errors live in other files
+        p.append(document.createTextNode(firstMsg ? t('preview.couldNotRender', { msg: firstMsg }) : t('preview.couldNotRenderBare')))
+        const btn = el('button', null, t('preview.tryAgain')); btn.onclick = () => render(); p.appendChild(btn)
+        if (pvObs) pvObs.disconnect()
+        pvSlots = []; pvPageSize = null
+        $('preview').replaceChildren(p)
+        if (firstMsg) { if (navigator.onLine !== false) toast(t('preview.typstError', { msg: firstMsg.slice(0, 140) })) } // offline: inline message suffices, no toast spam (2E gate, worker path)
+        else if (navigator.onLine !== false) toast(t('preview.loadFailed'), () => render())
+      } else if (errLines.length && !lined && errKey !== lastErrToast && navigator.onLine !== false) { lastErrToast = errKey; toast(t('preview.typstError', { msg: firstMsg.slice(0, 140) })) } // line errors: red marks + badge suffice, no toast per keystroke
+      lastInfra = !errLines.length && !$('preview').querySelector('.pvPage[data-done]') // infra (not content): watchdog retries
+    }
+  }
 }
 function pvCssW(w) { return w * pvZoom / 100 } // css px at current zoom (backing/pvScale = true size)
 function pvBlank(c) { c.style.width = '100%'; c.style.height = '100%' } // unrasterized: fill the slot (white page look)
@@ -415,12 +425,12 @@ function pvFitCanvas(c) { // CSS size from zoom, scale-aware (sizeCanvas in 90-s
   c.style.height = 'auto'
 }
 async function pvDraw(slot, doc, id, detached) { // rasterize one slot (backing freed again when far outside); detached: slot not in the DOM yet (pre-draw before the swap)
-  if ((!detached && !slot.isConnected) || slot.dataset.done || slot.dataset.busy) return
+  if ((!detached && !slot.isConnected) || slot.dataset.done || slot.dataset.busy || id !== pvMetaGen) return // newer page state: this slot will never be shown
   slot.dataset.busy = '1'
   try {
     const p = +slot.dataset.page
     const page = await doc.getPage(p)
-    if (id < shownN || (!detached && !slot.isConnected)) return
+    if (id < shownN || id !== pvMetaGen || (!detached && !slot.isConnected)) return
     const v = page.getViewport({ scale: pvScale })
     const c = slot.firstChild
     c.width = Math.ceil(v.width); c.height = Math.ceil(v.height) // backing = viewport, never touch after
@@ -429,10 +439,10 @@ async function pvDraw(slot, doc, id, detached) { // rasterize one slot (backing 
     await page.render({ canvasContext: c.getContext('2d'), viewport: v }).promise
     pvFitCanvas(c) // CSS size only, not canvas.width
     const tc = await page.getTextContent() // click anchors: each visible word knows its spot
-    if (id < shownN) return
+    if (id < shownN || id !== pvMetaGen) return
     const boxes = pvBoxes(tc, v, page), links = await pvPageLinks(doc, page, v)
     const imgs = pvImgNeed ? await pvPageImgs(page, v) : []
-    if (id < shownN) return
+    if (id < shownN || id !== pvMetaGen) return
     pvTexts[p - 1] = boxes // both anchors land after the last await: a newer render starts empty
     pvLinks[p - 1] = links
     pvImgs[p - 1] = imgs
@@ -463,7 +473,7 @@ function pvSweep() {
 function pvWatch(doc, id, myDoc, myTplName) { // draw on scroll into view (+2 viewports buffer), sweep the rest
   if (pvObs) pvObs.disconnect()
   pvObs = new IntersectionObserver(es => {
-    if (id < shownN || (myDoc !== undefined && (myDoc !== docId || myTplName !== tplName))) return
+    if (id < shownN || id !== pvMetaGen || (myDoc !== undefined && (myDoc !== docId || myTplName !== tplName))) return
     for (const en of es) if (en.isIntersecting) pvDraw(en.target, doc, id)
     pvSweep()
   }, { root: $('preview'), rootMargin: '200% 0' + 'px' }) // string split: one literal with space+letters trips check_i18n
@@ -688,17 +698,18 @@ function pvGotoTarget(target) { // internal jump: destination page, refined by i
 async function pvLoadOutline(doc, id) { // bookmarks with pages: the honest anchor chain for source -> PDF
   let root = []
   try { root = await doc.getOutline() || [] } catch (e) { return }
+  if (id !== pvMetaGen) return // page state was replaced while the outline loaded
   const out = []
   const walk = async (list, depth) => {
     for (const it of list || []) {
-      if (id < shownN) return
+      if (id < shownN || id !== pvMetaGen) return
       const target = it && it.dest ? await pvDestTarget(doc, it.dest) : null
       if (target) out.push({ title: String((it && it.title) || ''), page: target.page, depth })
       if (it && it.items && it.items.length) await walk(it.items, depth + 1)
     }
   }
   await walk(root, 0)
-  if (id < shownN) return
+  if (id < shownN || id !== pvMetaGen) return
   pvOutline = out
   pvOutlineGen = id // sync only trusts the outline of the render that is on screen
   try { paintOutline() } catch (e) {} // sidebar badges follow the PDF, not the cursor
@@ -791,11 +802,11 @@ if (pvBox0 && pvBox0.addEventListener) pvBox0.addEventListener('click', e => { /
 async function pvTextAll(doc, id, myDoc, myTplName) { // every page gets anchors + links: sync works past the visible window
   try {
     for (let p = 1; p <= pvTexts.length; p++) {
-      if (pvStale(id, myDoc, myTplName)) return
+      if (pvStale(id, myDoc, myTplName) || id !== pvMetaGen) return
       if (pvTextDone[p - 1]) continue
       let meta
       try { meta = await pvPageMeta(doc, p, pvScale) } catch (e) { continue }
-      if (pvStale(id, myDoc, myTplName)) return
+      if (pvStale(id, myDoc, myTplName) || id !== pvMetaGen) return
       pvTexts[p - 1] = meta.items
       pvLinks[p - 1] = meta.links
       pvImgs[p - 1] = meta.imgs
@@ -907,15 +918,15 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
   if (!typstReady()) { noteCompiler(preview); lastInfra = true; ensureTypst().then(() => { if (docId) render() }).catch(() => {}); return } // loads in background, renders after
   if (!window.pdfjsLib) { $('cdnLine').style.display = 'block'; lastInfra = true; setTimeout(() => { if (docId) render() }, 3000); return } // lib blocked: retry later
   cmpWait = 0; typstT0 = 0; $('cdnLine').style.display = 'none'
+  let doc = null
   try {
     await shadowAll(window.changeSession ? sessionMainText() : activeFile ? shadow : getT()) // file tab: preview still compiles main.typ
     if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted full compile
     const compiler = await $typst.getCompiler()
     cmp = await compiler.compile({ mainFilePath: '/main.typ', format: 1, diagnostics: 'full' }) // 1 = pdf: bytes + diagnostics in one compile
     if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted pdfjs work
-    const doc = await pdfjsLib.getDocument({ data: cmp.result }).promise
+    doc = await pdfjsLib.getDocument({ data: cmp.result }).promise
     if (pvStale(id, myDoc, myTplName)) { doc.destroy(); return }
-    oldPdf?.destroy(); oldPdf = doc
     const pages = [], texts = [], imgs = [] // double buffer: old pages stay visible until all new ones are ready (no flicker/scroll jump)
     pvImgNeed = pvHasImages() ? 1 : 0
     for (let p = 1; p <= doc.numPages; p++) {
@@ -926,18 +937,21 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
       await page.render({ canvasContext: c.getContext('2d'), viewport: v }).promise
       sizeCanvas(c) // CSS width only, not canvas.width
       const tc = await page.getTextContent() // click anchors: each visible word knows its spot
-      if (pvStale(id, myDoc, myTplName)) return
+      if (pvStale(id, myDoc, myTplName)) { try { doc.destroy() } catch (e) {} return }
       texts.push(pvBoxes(tc, v, page))
       imgs.push(pvImgNeed ? await pvPageImgs(page, v) : [])
       pages.push(c)
     }
-    if (pvStale(id, myDoc, myTplName)) return
+    if (pvStale(id, myDoc, myTplName)) { try { doc.destroy() } catch (e) {} return }
     pvModeApply() // width/page zoom follows the fallback layout too
     for (const c of pages) sizeCanvas(c) // pvZoom just changed above: resize the new pages, not the old ones in the DOM
-    if (pvStale(id, myDoc, myTplName)) return // template/closed view: never swap a stale render in
+    if (pvStale(id, myDoc, myTplName)) { try { doc.destroy() } catch (e) {} return } // template/closed view: never swap a stale render in
     const st = preview.scrollTop // read at swap time: follow-scroll during render is kept
     shownN = id
+    pvMetaGen = id // page state now belongs to this render
     preview.replaceChildren(...pages)
+    try { oldPdf?.destroy() } catch (e) {} // only the document that was really on screen may be released here
+    oldPdf = doc
     pvTexts = texts
     pvLinks = texts.map(() => []) // fallback: no annotation overlay (bare canvases)
     pvImgs = imgs
@@ -948,22 +962,25 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
     pvLoadOutline(doc, id).catch(() => {}) // badges keep the last outline until the new one is ready
     clearErr() // running again: clear marks
     lastInfra = false
-  } catch (e) { if (!pvStale(id, myDoc, myTplName)) { // error: keep last render, red lines, never wrong empty text
-    const diags = cmp ? (cmp.diagnostics || []).filter(d => d.severity === 'error') : e.diags || await errDiags()
-    if (pvStale(id, myDoc, myTplName)) return
-    cmpDiags = diags; paintErr()
-    const firstMsg = (errLines[0] && errLines[0].msg || '').split('\n')[0].slice(0, 200)
-    const lined = errLines.some(e => e.line)
-    if (!$('preview').querySelector('canvas')) {
-      const p = el('p', 'empty') // real message, not generic: package errors live in other files
-      p.append(document.createTextNode(firstMsg ? t('preview.couldNotRender', { msg: firstMsg }) : t('preview.couldNotRenderBare')))
-      const btn = el('button', null, t('preview.tryAgain')); btn.onclick = () => render(); p.appendChild(btn)
-      $('preview').replaceChildren(p)
-      if (firstMsg) { if (navigator.onLine !== false) toast(t('preview.typstError', { msg: firstMsg.slice(0, 140) })) } // offline: inline message suffices, no toast spam
-      else if (navigator.onLine !== false) toast(t('preview.loadFailed'), () => render())
-    } else if (errLines.length && !lined && errKey !== lastErrToast && navigator.onLine !== false) { lastErrToast = errKey; toast(t('preview.typstError', { msg: firstMsg.slice(0, 140) })) } // line errors: red marks + badge suffice, no toast per keystroke
-    lastInfra = !errLines.length && !$('preview').querySelector('canvas') // infra (not content): watchdog retries
-  } }
+  } catch (e) {
+    if (doc && doc !== oldPdf) { try { doc.destroy() } catch (e2) {} } // failed before the swap: never leave an unshown document alive
+    if (!pvStale(id, myDoc, myTplName) && id >= pvMetaGen) { // error: keep last render, red lines, never wrong empty text
+      const diags = cmp ? (cmp.diagnostics || []).filter(d => d.severity === 'error') : e.diags || await errDiags()
+      if (pvStale(id, myDoc, myTplName)) return
+      cmpDiags = diags; paintErr()
+      const firstMsg = (errLines[0] && errLines[0].msg || '').split('\n')[0].slice(0, 200)
+      const lined = errLines.some(e => e.line)
+      if (!$('preview').querySelector('canvas')) {
+        const p = el('p', 'empty') // real message, not generic: package errors live in other files
+        p.append(document.createTextNode(firstMsg ? t('preview.couldNotRender', { msg: firstMsg }) : t('preview.couldNotRenderBare')))
+        const btn = el('button', null, t('preview.tryAgain')); btn.onclick = () => render(); p.appendChild(btn)
+        $('preview').replaceChildren(p)
+        if (firstMsg) { if (navigator.onLine !== false) toast(t('preview.typstError', { msg: firstMsg.slice(0, 140) })) } // offline: inline message suffices, no toast spam
+        else if (navigator.onLine !== false) toast(t('preview.loadFailed'), () => render())
+      } else if (errLines.length && !lined && errKey !== lastErrToast && navigator.onLine !== false) { lastErrToast = errKey; toast(t('preview.typstError', { msg: firstMsg.slice(0, 140) })) } // line errors: red marks + badge suffice, no toast per keystroke
+      lastInfra = !errLines.length && !$('preview').querySelector('canvas') // infra (not content): watchdog retries
+    }
+  }
 }
 let lastErrToast = '' // same non-line error: toast once, not per render
 let errKey = '', errLines = [], cmpDiags = [] // compiler errors: lint renders ranges (F1+F20), badge keeps one row per line

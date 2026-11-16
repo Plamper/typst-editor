@@ -78,6 +78,31 @@ test('an older finished compile is shown while a newer render is still queued', 
   assert.equal(c.__stale(3, 'other', ''), true) // other document
 })
 
+test('a newer prepared page state is never taken over by an older render', () => {
+  const src = preview.slice(preview.indexOf('function pvMetaClaim'), preview.indexOf('async function render()'))
+  const c = vm.createContext({ pvMetaGen: 0 })
+  vm.runInContext(src, c)
+  assert.equal(c.pvMetaClaim(2), true)
+  assert.equal(c.pvMetaClaim(1), false) // older compile finished late: no page state for it
+  assert.equal(c.pvMetaClaim(2), true) // the same render may reclaim on a retry
+  assert.equal(c.pvMetaClaim(3), true)
+  assert.equal(c.pvMetaGen, 3)
+})
+
+test('an older render never reads pages or writes anchors after a newer state claimed them', async () => {
+  const src = preview.slice(preview.indexOf('async function pvDraw'), preview.indexOf('function pvEvict'))
+  const c = vm.createContext({ pvMetaGen: 2, shownN: 1, pvScale: 2 })
+  vm.runInContext(src, c)
+  const slot = { isConnected: false, dataset: { page: '1' } }
+  let gets = 0
+  const doc = { getPage: async () => { gets++; throw new Error('stop') } }
+  await c.pvDraw(slot, doc, 1, true) // older render: blocked before page access
+  assert.equal(gets, 0)
+  assert.equal(slot.dataset.busy, undefined)
+  await assert.rejects(c.pvDraw(slot, doc, 2, true), /stop/) // owner: proceeds
+  assert.equal(gets, 1)
+})
+
 test('block formulas read only their own source lines, never the whole file', () => {
   const src = settings.slice(settings.indexOf('function pvSrcMath'), settings.indexOf('function pvAlign'))
   const lines = [
