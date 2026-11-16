@@ -1266,6 +1266,10 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
       }
       return -1
     }
+    const urlEnd = (from, stop) => { // lowercase http(s) links are one literal token, Typst parses no markup inside
+      const m = /^https?:\/\/[^\s`<]*/.exec(line.slice(from, stop === undefined ? n : stop))
+      return m ? from + m[0].length : 0
+    }
     const math = (from, to) => { // math source -> the glyphs the PDF shows; commands map to their Unicode symbol
       for (let j = from; j < to;) {
         const c = line[j]
@@ -1284,10 +1288,12 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
       while (j < n && depth) {
         const c = line[j]
         if (c === '\\' && j + 1 < n) { emit(line[j + 1], j + 1); j += 2; continue }
-        if (c === '/' && line[j + 1] === '/') { // a bare URL keeps its "//"
-          if (line[j - 1] === ':') { emit('/', j); emit('/', j + 1); j += 2; continue }
-          break
+        if (c === 'h') { // inside [...], the closing bracket ends the link before Typst does
+          const close = line.indexOf(']', j)
+          const u = urlEnd(j, close < 0 ? n : close)
+          if (u) { word(line.slice(j, u), j); j = u; continue }
         }
+        if (c === '/' && line[j + 1] === '/') break // a URL was consumed above, so this is always a comment
         if (c === '/' && line[j + 1] === '*') {
           const end = line.indexOf('*/', j + 2)
           if (end < 0) { block = 1; return n }
@@ -1348,10 +1354,11 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
         else i++
         continue
       }
-      if (c === '/' && c2 === '/') { // a bare URL keeps its "//"
-        if (line[i - 1] === ':') { emit('/', i); emit('/', i + 1); i += 2; continue }
-        break
+      if (c === 'h') { // lowercase http(s) is a link: slashes, stars and brackets inside stay literal text
+        const u = urlEnd(i)
+        if (u) { word(line.slice(i, u), i); i = u; continue }
       }
+      if (c === '/' && c2 === '/') break // a URL was consumed above, so this is always a comment
       if (c === '/' && c2 === '*') { block = 1; i += 2; continue }
       if (c === '\\' && i + 1 < n) { emit(line[i + 1], i + 1); i += 2; continue }
       if (c === '<') {

@@ -732,12 +732,13 @@ async function pvLoadOutline(doc, id) { // bookmarks with pages: the honest anch
   pvOutlineGen = id // sync only trusts the outline of the render that is on screen
   try { paintOutline() } catch (e) {} // sidebar badges follow the PDF, not the cursor
 }
-function srcMask(t) { // document with raw blocks and comments blanked (newlines kept): structure regexes only see real markup
+function srcMask(t) { // document with raw blocks, URLs and comments blanked (newlines kept): structure regexes only see real markup
   return String(t)
     .replace(/```[\s\S]*?```/g, m => m.replace(/[^\n]/g, ' '))
+    .replace(/https?:\/\/[^\s`<]*/g, m => ' '.repeat(m.length)) // a URL is one literal token: no markup or comment starts inside
     .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
     .replace(/`[^`\n]*`/g, m => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:])\/\/([^\n]*)/g, (m, p) => p + ' '.repeat(m.length - p.length)) // a bare URL keeps its "//"
+    .replace(/\/\/[^\n]*/g, m => ' '.repeat(m.length)) // only lowercase http(s) is a URL, every other // is a comment
 }
 function srcHeadings(t) { // source headings outside raw blocks/comments (line, level, raw title)
   const lines = String(t).split('\n'), mask = srcMask(t).split('\n'), out = []
