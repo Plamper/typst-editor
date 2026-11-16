@@ -76,3 +76,22 @@ test('an older finished compile is shown while a newer render is still queued', 
   assert.equal(c.__stale(1, 'doc', ''), true) // older than the screen
   assert.equal(c.__stale(3, 'other', ''), true) // other document
 })
+
+test('equal length drift never applies editor changes to the wrong Yjs positions', () => {
+  const slice = sync.slice(sync.indexOf('function pushLocal'), sync.indexOf('function pullRemote'))
+  const state = { inserted: false, wrote: '' }
+  const c = vm.createContext({
+    window: {},
+    ydoc: { transact: fn => fn() },
+    ytext: { length: 3, toString: () => 'abc', insert: () => { state.inserted = true }, delete: () => {} },
+    shadow: 'xyz',
+    getT: () => 'xQyz',
+    setYText: v => { state.wrote = v }
+  })
+  vm.runInContext(slice + ';globalThis.__push = pushLocal', c)
+  const changes = { iterChanges: cb => cb(1, 1, 1, 1, { toString: () => 'Q' }) }
+  c.__push(changes, 3)
+  assert.equal(state.inserted, false)
+  assert.equal(state.wrote, 'xQyz')
+  assert.equal(c.shadow, 'xQyz')
+})

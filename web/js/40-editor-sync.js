@@ -27,7 +27,7 @@ function setYText(v) { // replace Y content with minimal edit (never delete+rein
 }
 function pushLocal(changes, oldLen) {
   if (window.suggestionDraft || window.changeSession) return
-  if (changes && ytext.length === oldLen && shadow.length === oldLen) { // in sync: apply CM changes 1:1
+  if (changes && ytext.length === oldLen && shadow.length === oldLen && ytext.toString() === shadow) { // in sync: apply CM changes 1:1
     ydoc.transact(() => {
       let adj = 0 // later changes shift by earlier ones (iterChanges reports old-doc positions)
       changes.iterChanges((fromA, toA, _fb, _tb, ins) => {
