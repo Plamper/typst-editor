@@ -7606,7 +7606,7 @@ function pvMathCands(L, hint, srcs) { // formulas that explain enough of this vi
 function pvMathMatch() { // PDF math lines -> formulas: glyph similarity first, the page position breaks ties
   const srcs = pvSrcMath(), out = []
   if (!srcs.length) return out
-  const total = cm.state.doc.lines || 1, sig = pvMathSig(srcs)
+  const total = cm.state.doc.lines || 1, sig = pvSrcSig() // any source edit may move a section or a formula
   const memo = pvMathMemo
   if (memo && memo.sig === sig && memo.outline === pvOutlineGen && memo.shown === shownN && memo.total === total
     && memo.texts.length === pvTexts.length && memo.texts.every((t, i) => t === pvTexts[i])) return memo.out
@@ -7618,17 +7618,6 @@ function pvMathMatch() { // PDF math lines -> formulas: glyph similarity first, 
   }
   pvMathMemo = { sig, outline: pvOutlineGen, shown: shownN, total, texts: pvTexts.slice(), out }
   return out
-}
-function pvMathSig(srcs) { // formula content only: typing prose elsewhere keeps the match table
-  let h = 2166136261
-  const mix = s => { for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) }
-  const num = n => { h = Math.imul(h ^ (n | 0), 16777619) }
-  for (const f of srcs) {
-    mix(f.key || ''); mix(f.s)
-    num(f.line); num(f.end); num(f.order)
-    for (const o of f.own) { num(o.line); num(o.at) }
-  }
-  return h >>> 0
 }
 let pvMathMemo = null // { sig, outline, shown, total, texts, out }
 function pvMathIndex(line, x) { // clicked x -> the glyph under it (nearest center)
