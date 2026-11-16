@@ -201,6 +201,16 @@ test('a figure command anchors to its own caption before its table cells', () =>
   const pages = [page(['Name', 'Value']), page(['Table 1: Fundamental constants.'])]
   assert.equal(ctx.syncNearHit(lines, 1, pages).pi, 1)
 })
+test('a line without its own text sits between the content above and below', () => {
+  const pair = {
+    back: { it: { s: 'Above.', x0: 10, w: 50, y: 100, h: 10, vw: 800, vh: 600 }, pi: 0 },
+    fwd: { it: { s: 'Below.', x0: 10, w: 50, y: 140, h: 10, vw: 800, vh: 600 }, pi: 0 }
+  }
+  assert.equal(ctx.pvGuessBetween(pair).y0, 120) // center between both text boxes
+  assert.equal(ctx.pvGuessBetween({ ...pair, fwd: { ...pair.fwd, pi: 1 } }).y0, 110) // other page: just below the text above
+  assert.equal(ctx.pvGuessBetween({ back: pair.back, fwd: null }).y0, 110)
+  assert.equal(ctx.pvGuessBetween(null), null)
+})
 test('inline commands with one nested bracket level keep their visible text', () => {
   assert.equal(ctx.syncPlain('#grid(columns: (1fr, 1fr))[hidden]'), 'hidden')
   assert.equal(ctx.syncPlain('#link("a b")[Label]'), 'label')

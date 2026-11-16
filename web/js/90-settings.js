@@ -1677,7 +1677,7 @@ function pvFigureHint(lines, line, pages, sec) { // cursor inside a figure call:
   }
   return null
 }
-function syncNearHit(lines, line, pages, sec) { // blank/command lines still move the paper: next content for a command, the text above for a blank
+function syncNearPair(lines, line, pages, sec) { // nearest anchored content above and below (blank/command lines)
   const mask = srcMask(lines.join('\n')).split('\n') // a fenced example is text, never a real page/column break
   const scan = (from, to, dir) => {
     for (let ln = from; dir > 0 ? ln <= to : ln >= to; ln += dir) {
@@ -1692,11 +1692,41 @@ function syncNearHit(lines, line, pages, sec) { // blank/command lines still mov
   const from = pvFigureStart(lines, line)
   const end = from ? pvCallEnd(lines, from) : 0
   const inFig = from > 0 && line <= end
-  const back = () => scan(line - 1, Math.max(1, line - 12), -1)
-  const fwd = () => scan(line + 1, inFig ? end : Math.min(lines.length, line + 12), 1) // inside a figure: its own span only
-  const hint = () => pvFigureHint(lines, line, pages, sec)
-  const cmd = pvCmdLine(lines[line - 1]) // #pagebreak()/#figure(: the next content
-  return hint() || (cmd ? (fwd() || back()) : (back() || fwd()))
+  return {
+    back: scan(line - 1, Math.max(1, line - 12), -1),
+    fwd: scan(line + 1, inFig ? end : Math.min(lines.length, line + 12), 1) // inside a figure: its own span only
+  }
+}
+function syncNearHit(lines, line, pages, sec) { // blank/command lines still move the paper: next content for a command, the text above for a blank
+  const hint = pvFigureHint(lines, line, pages, sec)
+  if (hint) return hint
+  const pair = syncNearPair(lines, line, pages, sec)
+  return pvCmdLine(lines[line - 1]) ? (pair.fwd || pair.back) : (pair.back || pair.fwd)
+}
+function pvGuessBetween(pair) { // no anchor on this line: the paper space between the text above and below
+  if (!pair || (!pair.back && !pair.fwd)) return null
+  const b = pair.back, f = pair.fwd
+  const box = (it, pi, y) => ({ page: pi, x0: it.x0 || 0, x1: (it.x0 || 0) + (it.w || 0), y0: y, y1: y, h: it.h || 10, vw: it.vw || 1, vh: it.vh || 1 })
+  if (!f) return box(b.it, b.pi, b.it.y + (b.it.h || 10) / 2 + (b.it.h || 10) / 2)
+  if (!b) return box(f.it, f.pi, f.it.y - (f.it.h || 10) / 2 - (f.it.h || 10) / 2)
+  if (b.pi === f.pi) return box(b.it, b.pi, (b.it.y + (b.it.h || 10) / 2 + f.it.y - (f.it.h || 10) / 2) / 2)
+  return box(b.it, b.pi, b.it.y + (b.it.h || 10)) // other page: just below the text above
+}
+function pvGuessLine(line, sec) { // no text anchor at all: proportional inside the section window, else the document
+  const lines = cm.state.doc.lines || 1, n = pvTexts.length
+  if (!n) return null
+  let p0 = 0, p1 = n - 1, l0 = 1, l1 = lines
+  if (sec) {
+    p0 = Math.max(0, sec.page)
+    p1 = Math.max(p0, Math.min(n - 1, sec.endPage))
+    l0 = sec.line
+    l1 = Math.max(l0 + 1, Math.min(lines, sec.endLine || lines))
+  }
+  const f = Math.max(0, Math.min(1, (line - l0) / Math.max(1, l1 - l0)))
+  const page = Math.max(0, Math.min(n - 1, Math.floor(p0 + f * (p1 - p0 + 1) - 1e-9)))
+  const slot = pvSlots && pvSlots[page], h = slot ? (+slot.dataset.w || 0) * (+slot.dataset.r || 0) : (pvPageSize ? pvPageSize.height : 842)
+  const span = p1 - p0 + 1, within = span > 1 ? (p0 + f * span - page) : f
+  return { page, x0: 0, x1: 0, y0: within * h, y1: within * h, h: 1, vw: slot ? +slot.dataset.w || h : h, vh: h }
 }
 function syncToPv(force) { // force: explicit navigation (outline/find), works even with follow off
   if ((!followAll && !force) || !docId || tplName || (activeFile && !window.changeSession)) return
@@ -1707,7 +1737,16 @@ function syncToPv(force) { // force: explicit navigation (outline/find), works e
   const line = cm.state.doc.lineAt(Math.max(0, Math.min(cm.state.doc.length, at))).number
   syncView = -1
   const sec = pvSecAtLine(line)
-  const hit = syncAnchor(lines, line, pvTexts, sec) || syncNearHit(lines, line, pvTexts, sec)
+  const obj = pvImgLineHit(line) || pvMathLineHit(line) // image/formula line: its own box beats any nearby text
+  if (obj) { syncMiss = false; pvScrollBox(obj); return }
+  let hit = syncAnchor(lines, line, pvTexts, sec)
+  if (!hit) {
+    hit = pvFigureHint(lines, line, pvTexts, sec)
+    if (!hit) { // blank/command line: the spot between its neighbours, else a proportional estimate
+      const guess = pvGuessBetween(syncNearPair(lines, line, pvTexts, sec)) || pvGuessLine(line, sec)
+      if (guess) { syncMiss = false; pvScrollBox(guess); return }
+    }
+  }
   if (!hit) { // no matching words: still show the section page, but never yank the preview out of it
     syncMiss = true // a render still in flight gets one retry (see pvTextAll)
     const at = pvViewPage(pv)

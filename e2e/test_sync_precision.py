@@ -196,3 +196,18 @@ def test_a_click_in_blank_space_reaches_the_section_start(page):
     page.wait_for_timeout(700)
     _click(page, 2, 0.5, 0.5)  # empty page between Alpha and Beta
     assert _line(page) == 3, _line(page)  # section start, not the page ratio
+
+def test_cursor_on_an_image_line_shows_its_page(page):
+    _setup(page, 'e2e_sync_img_cursor', 'Image cursor doc', MAIN)
+
+    page.click('#cm .cm-content')
+    page.keyboard.press('ControlOrMeta+Home')
+    page.wait_for_timeout(700)
+    for _ in range(20):  # wrapped lines may need more than 10 steps
+        if _line(page) >= 11:
+            break
+        page.keyboard.press('ArrowDown')
+        page.wait_for_timeout(60)
+    assert _line(page) == 11, _line(page)
+    page.wait_for_timeout(900)
+    assert page.evaluate(PAGE_IN_VIEW, 2), 'cursor on the image line did not show its page'
