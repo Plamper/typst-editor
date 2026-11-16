@@ -27,6 +27,34 @@ test('a raw image box is hit even when no source line is matched to it', () => {
   assert.equal(c.pvImgHit(0, 5, 45, 1, 1), false) // outside the picture: blank margin keeps the normal fallback
   assert.equal(c.pvImgHit(1, 60, 45, 1, 1), false) // that page has no raw boxes
 })
+test('inline images hash their own pixels and large images resolve from commonObjs', async () => {
+  const OPS = { save: 1, restore: 2, transform: 3, paintFormXObjectBegin: 4, paintFormXObjectEnd: 5, paintImageXObject: 6, paintJpegXObject: 7, paintInlineImageXObject: 8, paintImageMaskXObject: 9 }
+  const c = vm.createContext({ window: { pdfjsLib: { OPS } }, pdfjsLib: { OPS } })
+  vm.runInContext(preview.slice(preview.indexOf('function pvMat'), preview.indexOf('const PV_LINK_SCHEME')), c)
+  const view = { transform: [1, 0, 0, 1, 0, 0], width: 100, height: 100 }
+  const inline = data => ({
+    getOperatorList: async () => ({ fnArray: [OPS.transform, OPS.paintInlineImageXObject], argsArray: [[10, 0, 0, 10, 0, 0], [{ width: 4, height: 4, kind: 2, data }]] }),
+    objs: { get: () => { throw new Error('inline images have no object store entry') } },
+  })
+  const one = await c.pvPageImgs(inline(new Uint8Array([1, 2, 3, 4, 5, 6])), view)
+  const other = await c.pvPageImgs(inline(new Uint8Array([9, 2, 3, 4, 5, 6])), view)
+  assert.equal(one.length, 1)
+  assert.equal(one[0].id, 'inline')
+  assert.ok(one[0].sig)
+  assert.notEqual(one[0].sig, other[0].sig) // two different inline pictures are not one decoration
+  c.pvImgs = [one, other]
+  assert.equal(c.pvImgRepeat(0, one[0]), false) // same spot, different pixels: no repeat
+
+  const pixels = new Uint8Array([7, 7, 7, 7])
+  const large = {
+    getOperatorList: async () => ({ fnArray: [OPS.transform, OPS.paintImageXObject], argsArray: [[10, 0, 0, 10, 0, 0], ['g_1']] }),
+    objs: { get: () => { throw new Error('only commonObjs has it') } },
+    commonObjs: { get: id => id === 'g_1' ? { width: 8, height: 8, data: pixels } : null },
+  }
+  const box = await c.pvPageImgs(large, view)
+  assert.equal(box.length, 1)
+  assert.ok(box[0].sig) // a large image is resolved from commonObjs, not dropped to geometry
+})
 test('rendered image boxes carry a content fingerprint', async () => {
   const OPS = { save: 1, restore: 2, transform: 3, paintFormXObjectBegin: 4, paintFormXObjectEnd: 5, paintImageXObject: 6, paintJpegXObject: 7, paintInlineImageXObject: 8, paintImageMaskXObject: 9 }
   const c = vm.createContext({ window: { pdfjsLib: { OPS } }, pdfjsLib: { OPS } })

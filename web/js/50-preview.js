@@ -502,17 +502,18 @@ function pvMat(m1, m2) { // PDF matrix concat, same order as the renderer: m1 th
 }
 function pvImgSig(page, id) { // decoded pixels sampled into a short identity: a logo repeats, two photos at the same spot do not
   if (!id) return ''
-  try {
-    const o = page.objs.get(String(id))
-    if (!o) return ''
-    const d = o.data
-    const head = (o.width || 0) + 'x' + (o.height || 0)
-    if (!d || !d.length) return head
-    let h = 2166136261
-    const step = Math.max(1, Math.floor(d.length / 512)) // bounded work for full-page raster images
-    for (let i = 0; i < d.length; i += step) h = Math.imul(h ^ d[i], 16777619)
-    return head + ':' + d.length + ':' + (h >>> 0).toString(36)
-  } catch (e) { return '' } // image object not resolved: geometry stays the only hint
+  let o = typeof id === 'object' ? id : null // inline images come as the decoded object itself, no store entry
+  if (!o) for (const store of [page.objs, page.commonObjs]) {
+    try { o = store && store.get(String(id)); if (o) break } catch (e) {} // large images live in commonObjs, not page.objs
+  }
+  if (!o) return '' // image object not resolved: geometry stays the only hint
+  const d = o.data
+  const head = (o.width || 0) + 'x' + (o.height || 0)
+  if (!d || !d.length) return head
+  let h = 2166136261
+  const step = Math.max(1, Math.floor(d.length / 512)) // bounded work for full-page raster images
+  for (let i = 0; i < d.length; i += step) h = Math.imul(h ^ d[i], 16777619)
+  return head + ':' + d.length + ':' + (h >>> 0).toString(36)
 }
 async function pvPageImgs(page, v) { // image boxes from the content stream: images have no text and no annotation to guess from
   const OPS = window.pdfjsLib && pdfjsLib.OPS
@@ -532,7 +533,7 @@ async function pvPageImgs(page, v) { // image boxes from the content stream: ima
   const add = (id, m) => {
     const b = box(m)
     if (b.x1 - b.x0 < 2 || b.y1 - b.y0 < 2) return // hairline/background fill: no honest hit area
-    out.push({ ...b, w: b.x1 - b.x0, h: b.y1 - b.y0, id: String(id || ''), sig: pvImgSig(page, id), vw: v.width, vh: v.height })
+    out.push({ ...b, w: b.x1 - b.x0, h: b.y1 - b.y0, id: typeof id === 'object' ? 'inline' : String(id || ''), sig: pvImgSig(page, id), vw: v.width, vh: v.height })
   }
   for (let i = 0; i < list.fnArray.length; i++) {
     const op = list.fnArray[i], a = list.argsArray[i]
