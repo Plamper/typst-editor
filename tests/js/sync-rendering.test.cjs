@@ -5,6 +5,7 @@ const vm = require('node:vm')
 const read = name => fs.readFileSync('web/js/' + name, 'utf8')
 const preview = read('50-preview.js')
 const sync = read('40-editor-sync.js')
+const settings = read('90-settings.js')
 
 function workerContext() {
   const src = preview.slice(preview.indexOf('const PV_WORKER_SRC = `') + 'const PV_WORKER_SRC = `'.length,
@@ -76,6 +77,31 @@ test('an older finished compile is shown while a newer render is still queued', 
   assert.equal(c.__stale(1, 'doc', ''), true) // older than the screen
   assert.equal(c.__stale(3, 'other', ''), true) // other document
 })
+
+test('block formulas read only their own source lines, never the whole file', () => {
+  const src = settings.slice(settings.indexOf('function pvSrcMath'), settings.indexOf('function pvAlign'))
+  const lines = [
+    { line: 1, s: 'intro', map: [0, 1, 2, 3, 4] },
+    { line: 2, s: 'x+1', map: [10, 11, 12] },
+    { line: 3, s: '=y', map: [20, 21] },
+    { line: 4, s: 'tail', map: [0, 1, 2, 3] },
+  ]
+  const guarded = new Proxy(lines, { get (target, prop) { // outside the formula: the old scan touched these
+    if (prop === '0' || prop === '3') throw new Error('scanned a line outside the formula')
+    return target[prop]
+  } })
+  const c = vm.createContext({
+    pvMainText: () => 'main\n', pvSrcList: () => [{ key: '', text: 'src' }], pvFileAnchor: () => 0,
+    srcViewOf: () => ({ lines: guarded }), srcObjs: () => ({ formulas: [{ line: 2, end: 3 }] }),
+    pvMathNorm: s => s,
+  })
+  vm.runInContext(src, c)
+  const out = c.pvSrcMath()
+  assert.equal(out.length, 1)
+  assert.equal(out[0].s, 'x+1=y')
+  assert.equal(JSON.stringify(out[0].own.map(o => [o.line, o.at])), '[[2,10],[2,11],[2,12],[3,20],[3,21]]')
+})
+
 
 test('equal length drift never applies editor changes to the wrong Yjs positions', () => {
   const slice = sync.slice(sync.indexOf('function pushLocal'), sync.indexOf('function pullRemote'))

@@ -7493,8 +7493,8 @@ function pvSrcMath() { // block formulas with their visible glyphs and a source 
     for (const f of srcObjs(src.text).formulas) {
       let s = ''
       const own = []
-      for (const L of view.lines) {
-        if (L.line < f.line || L.line > f.end) continue
+      for (let li = f.line - 1; li < f.end && li < view.lines.length; li++) { // source lines are dense: never scan the whole file per formula
+        const L = view.lines[li]
         for (let i = 0; i < L.s.length; i++) {
           const ch = pvMathNorm(L.s[i])
           for (const c of ch) { s += c; own.push({ line: L.line, at: L.map[i] }) }
