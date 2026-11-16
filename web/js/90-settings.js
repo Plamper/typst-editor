@@ -956,7 +956,8 @@ function pvSrcMath() { // block formulas with their visible glyphs and a source 
   for (const src of pvSrcList()) {
     if (!src || !src.text) continue
     const view = srcViewOf(src.text), base = src.key ? (pvFileAnchor(src.key, main) || mainN + (++loose) * 1e5) : 0
-    for (const f of srcObjs(src.text).formulas) {
+    const blocks = srcObjs(src.text).formulas
+    for (const f of blocks) {
       let s = ''
       const own = []
       for (let li = f.line - 1; li < f.end && li < view.lines.length; li++) { // source lines are dense: never scan the whole file per formula
@@ -967,6 +968,20 @@ function pvSrcMath() { // block formulas with their visible glyphs and a source 
         }
       }
       if (s) out.push({ key: src.key || '', line: f.line, end: f.end, s, own, order: base + f.line })
+    }
+    for (const sp of view.math || []) { // inline formulas (grid/table cells, #math.equation): their own glyphs only
+      if (blocks.some(f => sp.line >= f.line && sp.line <= f.end)) continue // a block formula already owns the line
+      const L = view.lines[sp.line - 1]
+      if (!L) continue
+      let s = ''
+      const own = []
+      for (let i = 0; i < L.s.length; i++) {
+        const at = L.map[i]
+        if (at == null || at < sp.from || at >= sp.to) continue
+        const ch = pvMathNorm(L.s[i])
+        for (const c of ch) { s += c; own.push({ line: sp.line, at }) }
+      }
+      if (s) out.push({ key: src.key || '', line: sp.line, end: sp.line, s, own, order: base + sp.line })
     }
   }
   return out.sort((a, b) => a.order - b.order)
@@ -987,20 +1002,26 @@ function pvAlign(a, b) { // glyphs of one PDF math line -> a formula (skips on t
   }
   return { cost: d[n][end], map }
 }
-function pvMathMatch() { // PDF math lines -> block formulas: glyph similarity first, the page position breaks ties
+const PV_MATH_MAX_COST = 0.5 // unmatched PDF glyphs per glyph: above this the line is not the same formula
+function pvMathCands(L, hint, srcs) { // formulas that explain enough of this visual line, best first
+  const out = []
+  for (const f of srcs) {
+    const al = pvAlign(L.s, f.s)
+    const ratio = al.cost / Math.max(1, L.s.length)
+    if (ratio > PV_MATH_MAX_COST) continue
+    out.push({ src: f, map: al.map, ratio, score: ratio * 1000 + Math.abs(f.order - hint) })
+  }
+  return out.sort((a, b) => a.score - b.score)
+}
+function pvMathMatch() { // PDF math lines -> formulas: glyph similarity first, the page position breaks ties
   const srcs = pvSrcMath(), out = []
   if (!srcs.length) return out
   const total = cm.state.doc.lines || 1
   for (let pi = 0; pi < pvTexts.length; pi++) for (const L of pvMathLines(pvTexts[pi] || [])) {
     const y = (L.y0 + L.y1) / 2
     const hint = pvPageHint(pi, total, pvTexts.length, pvSecAtY(pi, y), y / (L.vh || 1))
-    let best = null, bs = Infinity
-    for (const f of srcs) {
-      const al = pvAlign(L.s, f.s)
-      const score = al.cost / Math.max(1, L.s.length) * 1000 + Math.abs(f.order - hint)
-      if (score < bs) { bs = score; best = f }
-    }
-    if (best) out.push({ page: pi, line: L, src: best })
+    const cands = pvMathCands(L, hint, srcs)
+    if (cands.length) out.push({ page: pi, line: L, src: cands[0].src, map: cands[0].map, cands })
   }
   return out
 }
@@ -1011,6 +1032,13 @@ function pvMathIndex(line, x) { // clicked x -> the glyph under it (nearest cent
     if (d < bd) { bd = d; best = i }
   }
   return best
+}
+function pvMapChunk(map, i) { // contiguous glyphs this formula owns around the clicked one (two grid cells: one cell)
+  if (!map || i < 0 || i >= map.length || map[i] < 0) return 0
+  let a = i, b = i
+  while (a > 0 && map[a - 1] >= 0) a--
+  while (b + 1 < map.length && map[b + 1] >= 0) b++
+  return b - a + 1
 }
 function pvMathAt(pi, x, y, sx, sy) { // click inside a display formula (overlapping fraction lines: nearest glyph decides)
   let best = null, bd = Infinity, bg = Infinity
@@ -1024,7 +1052,17 @@ function pvMathAt(pi, x, y, sx, sy) { // click inside a display formula (overlap
     const i = pvMathIndex(L, x / (sx || 1)), it = L.own[i]
     const gx = (it.x0 + (it.w || 0) / 2) * sx, gy = it.y * sy
     const g = (gx - x) * (gx - x) + (gy - y) * (gy - y)
-    if (d < bd || (d === bd && g < bg)) { bd = d; bg = g; best = { ...m, i } }
+    const cands = m.cands || [{ src: m.src, map: m.map, score: 0 }]
+    let pick = null // a visual row can hold two formulas: the clicked glyph says which one
+    for (const a of cands) {
+      const chunk = pvMapChunk(a.map, i)
+      if (!chunk) continue
+      if (!pick || chunk > pick.chunk || (chunk === pick.chunk && a.score < pick.score)) pick = { ...a, chunk }
+    }
+    if (!pick) pick = { ...cands[0], chunk: 0 } // click on whitespace: nearest formula, as before
+    if (d < bd || (d === bd && (g < bg || (g === bg && pick.chunk > (best ? best.chunk : 0))))) {
+      bd = d; bg = g; best = { ...m, i, src: pick.src, map: pick.map, score: pick.score, chunk: pick.chunk }
+    }
   }
   return best
 }
@@ -1186,7 +1224,7 @@ function srcViewOf(text) { // visible source text with a raw offset per characte
   return view
 }
 function srcViewScan(raw) { // one pass: markup/code/comments are skipped, content blocks and raw stay visible
-  const lines = raw.split('\n'), out = []
+  const lines = raw.split('\n'), out = [], mathSpans = []
   let block = 0, fence = 0
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li], n = line.length, o = { s: '', map: [] }
@@ -1198,6 +1236,7 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
     const word = (w, at) => { for (let k = 0; k < w.length; k++) { o.s += w[k]; o.map.push(at + k) } }
     const wordChar = c => !!c && /[\p{L}\p{N}]/u.test(c) // emphasis between two word chars is literal text
     const literalMark = (str, k) => wordChar(str[k - 1]) && wordChar(str[k + 1])
+    const mathSpan = (from, to) => mathSpans.push({ line: li + 1, from, to }) // formula body in raw line offsets
     if (fence) { // raw block content: every character is visible, indentation included
       if (new RegExp('^\\s*`{' + fence + ',}\\s*$').test(line)) { fence = 0; out.push({ line: li + 1, s: '', map: [], raw: line }); continue }
       out.push({ line: li + 1, s: line, map: line.split('').map((_, k) => k), raw: line }); continue
@@ -1251,7 +1290,7 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
           if (close < 0) { word(line.slice(j + r), j + r); return n }
           word(line.slice(j + r, close), j + r); j = close + r; continue
         }
-        if (c === '$') { const close = mathEnd(j + 1); if (close < 0) { j++; continue } emit(' ', j); math(j + 1, close); emit(' ', close); j = close + 1; continue }
+        if (c === '$') { const close = mathEnd(j + 1); if (close < 0) { j++; continue } mathSpan(j + 1, close); emit(' ', j); math(j + 1, close); emit(' ', close); j = close + 1; continue }
         if (c === '#') { j = code(j + 1); continue }
         if (c === '[') { emit(' ', j); depth++; j++; continue }
         if (c === ']') { depth--; emit(' ', j); j++; continue }
@@ -1279,7 +1318,7 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
           if (c === '/' && line[j + 1] === '/') return n
           if (c === '[') { emit(' ', j); j = content(j + 1); emit(' ', j); continue }
           if (c === '(') { depth++; j++; continue }
-          if (c === '$') { const close = mathEnd(j + 1); if (close >= 0) { emit(' ', j); math(j + 1, close); emit(' ', close); j = close + 1; continue } }
+          if (c === '$') { const close = mathEnd(j + 1); if (close >= 0) { mathSpan(j + 1, close); emit(' ', j); math(j + 1, close); emit(' ', close); j = close + 1; continue } }
           if (c === ')') { depth--; j++; continue }
           j++
         }
@@ -1320,7 +1359,7 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
       if (c === '$') {
         const close = mathEnd(i + 1)
         if (close < 0) { i++; continue }
-        emit(' ', i); math(i + 1, close); emit(' ', close); i = close + 1; continue
+        mathSpan(i + 1, close); emit(' ', i); math(i + 1, close); emit(' ', close); i = close + 1; continue
       }
       if (c === '#') { i = code(i + 1); continue }
       if (c === '[' || c === ']') { emit(' ', i); i++; continue }
@@ -1329,7 +1368,7 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
     }
     out.push({ line: li + 1, s: o.s.trim(), map: o.map.slice(o.s.length - o.s.trimStart().length, o.s.length - (o.s.length - o.s.trimEnd().length)), raw: line })
   }
-  return { lines: out }
+  return { lines: out, math: mathSpans }
 }
 function srcObjs(text) { // source constructs in document order: images, block formulas, tables
   const raw = String(text), hit = srcObjCache.get(raw)
