@@ -1998,10 +1998,11 @@ function pvItemDist(it, x, y, sx, sy) { // CSS distance to the text box, never t
   const dy = y < yc - hh ? yc - hh - y : y > yc + hh ? y - yc - hh : 0
   return dx * dx + dy * dy
 }
-function pvNearItems(items, x, y, sx, sy, skip) { // nearest readable text: a drawing without text still lands on its caption
+function pvNearItems(items, x, y, sx, sy, skip, max) { // nearest readable text: a drawing without text still lands on its caption
   return items
     .filter(it => it !== skip && !it.rot && /\p{L}/u.test(it.s || '')) // single-letter words are text too; numbers and rotated runs stay out
     .map(it => ({ it, d: pvItemDist(it, x, y, sx, sy) }))
+    .filter(o => !max || o.d <= max * max) // max (CSS px): text that far away is another spot, not this click
     .sort((a, b) => a.d - b.d)
     .slice(0, 8)
 }
@@ -2097,8 +2098,8 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
       if (await pvJumpBest(pvClickNeedles(items, best, col), hint, pi, best)) return
     }
     if (ih && await pvJumpSrc(ih.src, 0)) return
-    if (!best || activeFile === file0) { // no text under the click: nearest readable text still owns the spot
-      for (const { it: near } of pvNearItems(items, x, y, sx, sy, best)) {
+    if (!best || activeFile === file0) { // no text under the click: nearby readable text still owns the spot
+      for (const { it: near } of pvNearItems(items, x, y, sx, sy, best, CLICK_PX * 1.5)) {
         const col = pvClickCol(near, x, r.width, cv.width, cv) // blank space above/below a line still has a word column
         if (pvJumpHere(pvClickNeedles(items, near, col), hintAt(near.y), pi, near)) return
       }

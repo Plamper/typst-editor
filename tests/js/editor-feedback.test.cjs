@@ -385,6 +385,17 @@ test('rotated text runs stay out of clicks but keep their anchors', () => {
   assert.equal(near.length, 2)
   assert.ok(near.every(({ it }) => !it.rot))
 })
+test('a click without text under it never takes a far paragraph as anchor', () => {
+  const c = vm.createContext({})
+  vm.runInContext(code.slice(code.indexOf('function pvItemDist'), code.indexOf('function pvOlEq')), c)
+  const items = [
+    { s: 'nahe Zeile', x0: 10, w: 60, y: 100, h: 10 },
+    { s: 'weit weg', x0: 10, w: 60, y: 400, h: 10 },
+  ]
+  const near = c.pvNearItems(items, 10, 105, 1, 1, null, 195) // 1.5 x CLICK_PX: far text is a different spot
+  assert.deepEqual(Array.from(near, n => n.it.s), ['nahe Zeile'])
+  assert.equal(c.pvNearItems(items, 10, 105, 1, 1, null).length, 2) // cursor following still wants the nearest row anywhere
+})
 test('caption prefixes and table rows become needles the source can match', () => {
   const c = vm.createContext({})
   vm.runInContext(code.slice(code.indexOf('function pvCaptionCut'), code.indexOf('function syncToPv')), c)
