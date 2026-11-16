@@ -2,6 +2,10 @@
 import asyncio
 import json
 import re
+import shutil
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import login, make_doc, register_user
@@ -578,6 +582,29 @@ def test_pdf_page_count_parser():
     # /Pages must not count, trailing /Page at buffer end must count
     assert t._pdf_page_count(b"<</Type /Pages>>") is None
     assert t._pdf_page_count(b"<</Type /Page>>") == 1
+
+
+def test_page_count_counts_rendered_pages_not_pdf_markers(monkeypatch):
+    monkeypatch.setattr(t.shutil, "which", lambda _: "/usr/bin/typst")
+
+    def fake_run(cmd, cwd, **_):
+        assert "svg" in cmd  # every page rendered, no PDF object stream to parse
+        for page in (1, 2, 3):
+            (Path(cwd) / f"out-{page}.svg").write_text("<svg/>")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(t.subprocess, "run", fake_run)
+    assert t._compile_pdf_pages("= Hi", []) == 3
+
+
+def test_typst_version_matches_audited_sync_fixtures():
+    typst = shutil.which("typst")
+    if not typst:
+        pytest.skip("typst CLI not installed")
+    out = subprocess.run([typst, "--version"], capture_output=True, text=True, check=True).stdout.strip()
+    assert out.startswith("typst 0.15."), (
+        f"{out}: page count and sync fixtures were audited against Typst 0.15.x; "
+        "re-check _typst_page_files, e2e/test_sync_precision.py and the math-font/image anchors before bumping")
 
 
 def test_view_scale_edges_and_pages_guard(c, monkeypatch):

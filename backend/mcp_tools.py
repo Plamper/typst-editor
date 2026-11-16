@@ -1340,6 +1340,25 @@ def _pdf_page_count(pdf_bytes: bytes) -> int | None:
         return None
 
 
+def _typst_page_files(root: Path, typst: str) -> int | None:
+    """Render every page as SVG and count the files: no PDF object parsing."""
+    cmd = [typst, "compile", "--format", "svg", "main.typ", "out-{p}.svg"]
+    try:
+        proc = subprocess.run(cmd, cwd=root, capture_output=True,
+                              timeout=VIEW_TIMEOUT, env=_typst_env(root),
+                              preexec_fn=_subprocess_preexec())
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log.warning("svg pages compile failed: %s", e)
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return len(list(root.glob("out-*.svg"))) or None
+    except OSError as e:
+        log.warning("svg pages count failed: %s", e)
+        return None
+
+
 def _compile_pngs(main_text: str, files: list[tuple[str, bytes]],
                   pages: str, ppi: int = VIEW_BASE_PPI) -> list[bytes]:
     """Temp-dir typst compile, 10s timeout. Returns PNG bytes (<=20, longest side <=1280)."""
@@ -1401,7 +1420,7 @@ def _compile_pngs(main_text: str, files: list[tuple[str, bytes]],
 
 
 def _compile_pdf_pages(main_text: str, files: list[tuple[str, bytes]]) -> int | None:
-    """Compile to PDF and count pages. None when the count is unknown."""
+    """Count every page of a compile. SVG files first (stable), PDF markers as fallback."""
     with _compile_slot():
         typst = shutil.which("typst")
         if not typst:
@@ -1419,6 +1438,9 @@ def _compile_pdf_pages(main_text: str, files: list[tuple[str, bytes]]) -> int | 
             except OSError as e:
                 log.warning("pdf-pages write failed: %s", e)
                 return None
+            n = _typst_page_files(root, typst)
+            if n is not None:
+                return n
             cmd = [typst, "compile", "--format", "pdf", "main.typ", "out.pdf"]
             try:
                 proc = subprocess.run(cmd, cwd=tmp, capture_output=True,
