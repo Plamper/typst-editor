@@ -20,3 +20,8 @@ test('structure regexes see a call after a bare URL, never inside a real comment
   assert.match(ctx.srcMask('See https://example.com/path #image("dot.png")'), /#image\("dot\.png"\)/)
   assert.doesNotMatch(ctx.srcMask('See // #image("dot.png")'), /#image/)
 })
+
+test('emphasis markers inside a word stay literal text, real delimiters do not', () => {
+  const view = ctx.srcViewScan('Snake_case star*mid*word and *emph* text.')
+  assert.equal(view.lines[0].s, 'Snake_case star*mid*word and emph text.')
+})

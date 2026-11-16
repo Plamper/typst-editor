@@ -1195,6 +1195,8 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
       o.s += ch; o.map.push(at)
     }
     const word = (w, at) => { for (let k = 0; k < w.length; k++) { o.s += w[k]; o.map.push(at + k) } }
+    const wordChar = c => !!c && /[\p{L}\p{N}]/u.test(c) // emphasis between two word chars is literal text
+    const literalMark = (str, k) => wordChar(str[k - 1]) && wordChar(str[k + 1])
     if (fence) { // raw block content: every character is visible, indentation included
       if (new RegExp('^\\s*`{' + fence + ',}\\s*$').test(line)) { fence = 0; out.push({ line: li + 1, s: '', map: [], raw: line }); continue }
       out.push({ line: li + 1, s: line, map: line.split('').map((_, k) => k), raw: line }); continue
@@ -1252,7 +1254,7 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
         if (c === '#') { j = code(j + 1); continue }
         if (c === '[') { emit(' ', j); depth++; j++; continue }
         if (c === ']') { depth--; emit(' ', j); j++; continue }
-        if (c === '*' || c === '_') { j++; continue }
+        if (c === '*' || c === '_') { if (literalMark(line, j)) emit(c, j); j++; continue }
         emit(c, j); j++
       }
       return j
@@ -1321,7 +1323,7 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
       }
       if (c === '#') { i = code(i + 1); continue }
       if (c === '[' || c === ']') { emit(' ', i); i++; continue }
-      if (c === '*' || c === '_') { i++; continue }
+      if (c === '*' || c === '_') { if (literalMark(line, i)) emit(c, i); i++; continue }
       emit(c, i); i++
     }
     out.push({ line: li + 1, s: o.s.trim(), map: o.map.slice(o.s.length - o.s.trimStart().length, o.s.length - (o.s.length - o.s.trimEnd().length)), raw: line })
