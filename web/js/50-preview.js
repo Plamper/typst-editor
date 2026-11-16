@@ -557,6 +557,9 @@ function pvImgBoxes() { // stable images in reading order: a logo repeated at th
   out.sort((a, b) => a.page - b.page || a.y0 - b.y0 || a.x0 - b.x0)
   return out
 }
+function pvImgHit(pi, x, y, sx, sy) { // any raw image under the click, with or without a source match
+  return (pvImgs[pi] || []).some(b => x >= b.x0 * sx - 2 && x <= b.x1 * sx + 2 && y >= b.y0 * sy - 2 && y <= b.y1 * sy + 2)
+}
 function pvImgRepeat(pi, b) { // same size and spot on another page: header/footer decoration (ids differ per page)
   for (let k = 0; k < pvImgs.length; k++) {
     if (k === pi) continue

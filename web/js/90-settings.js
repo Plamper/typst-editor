@@ -2099,7 +2099,8 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
     }
     if (ih && await pvJumpSrc(ih.src, 0)) return
     if (!best || activeFile === file0) { // no text under the click: nearby readable text still owns the spot
-      for (const { it: near } of pvNearItems(items, x, y, sx, sy, best, CLICK_PX * 1.5)) {
+      const cap = pvImgHit(pi, x, y, sx, sy) ? CLICK_PX * 1.5 : 0 // inside a picture: no far paragraph as stand-in for its missing source
+      for (const { it: near } of pvNearItems(items, x, y, sx, sy, best, cap)) {
         const col = pvClickCol(near, x, r.width, cv.width, cv) // blank space above/below a line still has a word column
         if (pvJumpHere(pvClickNeedles(items, near, col), hintAt(near.y), pi, near)) return
       }
