@@ -2622,6 +2622,7 @@ onmessage = function (e) {
   }
   ;(async function () {
     var diags = []
+    var mapped = !j.full // incremental: the shadow files are still the ones the client sent last time
     try {
       if (j.full) { // files/templates changed: full remap once, else only main.typ below (reset would wipe the shadow)
         await T.resetShadow()
@@ -2629,6 +2630,7 @@ onmessage = function (e) {
         for (var k2 = 0; k2 < tp.length; k2++) await T.mapShadow('/' + tp[k2].name, enc.encode(tp[k2].content))
         var fs = j.files || []
         for (var k = 0; k < fs.length; k++) await T.mapShadow('/' + fs[k].name, new Uint8Array(fs[k].bytes))
+        mapped = true // survived the full block: a content error below must not resend every image
       } // tpl first, files win: doc-local beats global on collision (see .update-review/resource-contract.md)
       await T.addSource('/main.typ', j.main)
       var c = await T.getCompiler()
@@ -2637,16 +2639,16 @@ onmessage = function (e) {
       var pdf = r.result
       try { diags = fix(r.diagnostics || [], 0) } catch (e2) {}
       if (pdf && pdf.length) {
-        postMessage({ kind: 'done', id: j.id, pdf: pdf, diags: diags }, [pdf.buffer])
+        postMessage({ kind: 'done', id: j.id, pdf: pdf, diags: diags, mapped: mapped }, [pdf.buffer])
       } else { // content error: resolved without bytes â€” diags carry the positions, message tops the empty state
         var firstMsg = ''
         try { firstMsg = String((diags[0] && diags[0].message) || '') } catch (e4) {}
-        postMessage({ kind: 'done', id: j.id, fail: firstMsg || 'content', diags: diags })
+        postMessage({ kind: 'done', id: j.id, fail: firstMsg || 'content', diags: diags, mapped: mapped })
       }
     } catch (err) {
       var fromTry = []
       try { fromTry = fix((err && err.diagnostics) || diags || [], 0) } catch (e3) {}
-      postMessage({ kind: 'done', id: j.id, fail: String((err && err.message) || err), diags: fromTry })
+      postMessage({ kind: 'done', id: j.id, fail: String((err && err.message) || err), diags: fromTry, mapped: mapped })
     }
   })()
 }
@@ -2735,7 +2737,7 @@ function pvEnsureWorker() { // compile worker (Blob URL: no shell/backend change
     const j = pvJobs.get(m.id)
     if (!j) return
     pvJobs.delete(m.id)
-    if (m.fail) j.bad(Object.assign(new Error(m.fail), { diags: m.diags }))
+    if (m.fail) j.bad(Object.assign(new Error(m.fail), { diags: m.diags, mapped: !!m.mapped }))
     else j.ok(m)
   }
   w.onerror = () => { // worker died: pending jobs fail into the error path, next render falls back
@@ -2761,7 +2763,10 @@ function pvCall(job, id) { // one compile round-trip (rejects into the render er
       if (!message.full) { delete message.files; delete message.tpl }
       pvJobs.set(job.id, {
         ok: m => { pvSentSig = job.sig; pvMapped = true; done(); ok(m) },
-        bad: e => { pvMapped = false; done(); bad(e) }
+        bad: e => { // worker mapped the files before the content error: no full resend next keystroke
+          if (e && e.mapped) { pvSentSig = job.sig; pvMapped = true } else pvMapped = false
+          done(); bad(e)
+        }
       })
       try { w.postMessage(message) } catch (e) { pvJobs.delete(job.id); pvMapped = false; done(); bad(e) }
     }))

@@ -103,3 +103,27 @@ test('persistent server failures stop after two attempts and retain readable dia
   await assert.rejects(c.pvFiles(), error => error.diags[0].message === 'god-test.png: HTTP 503')
   assert.equal(calls, 2)
 })
+
+test('a content error after the worker mapped the files does not resend them', async () => {
+  const source = fs.readFileSync('web/js/50-preview.js', 'utf8'), sent = []
+  const context = vm.createContext({
+    renderN: 1, pvMapped: true, pvSentSig: 'original', pvWorkerFail: false, pvWorkerOk: true,
+    pvJobs: new Map(), pvEnsureWorker: () => ({ postMessage: message => sent.push(message) }), t: key => key
+  })
+  vm.runInContext(source.slice(source.indexOf('let pvTail ='), source.indexOf('let typstT0 =')), context)
+  const tick = () => new Promise(resolve => setImmediate(resolve))
+  const job = (id, sig) => ({ id, sig, cmd: 'work', main: sig, files: [{ name: sig + '.png' }], tpl: [] })
+  const first = context.pvCall(job(1, 'with-image'), 1)
+  await tick()
+  context.pvJobs.get(1).bad(Object.assign(new Error('content'), { mapped: true, diags: [] }))
+  await assert.rejects(first, /content/)
+  assert.equal(context.pvMapped, true)
+  assert.equal(context.pvSentSig, 'with-image')
+  context.renderN = 2
+  const second = context.pvCall(job(2, 'with-image'), 2)
+  await tick()
+  assert.equal(sent[1].full, false)
+  assert.equal(sent[1].files, undefined)
+  context.pvJobs.get(2).ok({})
+  await second
+})
