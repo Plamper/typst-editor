@@ -47,18 +47,38 @@ test('a repeated cursor move reuses the math match, a new render or formula rebu
   const one = c.pvMathMatch(), again = c.pvMathMatch()
   assert.equal(one, again) // same array: no alignment while page and formulas are unchanged
   assert.equal(state.cands, 1)
+  c.pvTexts[0] = [{}] // a page fills in on the same screen: the outer array stays
+  const filled = c.pvMathMatch()
+  assert.notEqual(filled, one)
+  assert.equal(state.cands, 2)
   c.pvTexts = [[{}]]
   c.shownN = 2
   const rendered = c.pvMathMatch()
-  assert.notEqual(one, rendered) // a render swaps the page items
-  assert.equal(state.cands, 2)
+  assert.notEqual(filled, rendered) // a render swaps the page items
+  assert.equal(state.cands, 3)
+  c.pvOutlineGen = 2
+  const outlined = c.pvMathMatch()
+  assert.notEqual(rendered, outlined) // the new outline moves the section window
+  assert.equal(state.cands, 4)
   state.srcSig = 2 // a heading edit can move sections without touching a formula
   const moved = c.pvMathMatch()
-  assert.notEqual(rendered, moved)
-  assert.equal(state.cands, 3)
+  assert.notEqual(outlined, moved)
+  assert.equal(state.cands, 5)
   state.srcSig = 3
   state.src = [{ ...formula, s: 'x+z' }]
   const edited = c.pvMathMatch()
   assert.notEqual(moved, edited) // the formula changed
-  assert.equal(state.cands, 4)
+  assert.equal(state.cands, 6)
+})
+
+test('the source signature sees a tab switch even when the text is identical', () => {
+  const sigSrc = settings.slice(settings.indexOf('function pvSrcSig'), settings.indexOf('let pvSrcMathMemo'))
+  const state = { list: [{ key: '', text: '= A\n' }] }
+  const c = vm.createContext({ pvSrcList: () => state.list })
+  vm.runInContext(sigSrc, c)
+  const one = c.pvSrcSig()
+  state.list = [{ key: 'part.typ', text: '= A\n' }] // same text, other tab
+  assert.notEqual(c.pvSrcSig(), one)
+  state.list = [{ key: 'part.typ', text: '= B\n' }]
+  assert.notEqual(c.pvSrcSig(), one)
 })

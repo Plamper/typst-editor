@@ -1062,8 +1062,19 @@ function pvAlign(a, b) { // glyphs of one PDF math line -> a formula (skips on t
 }
 const PV_MATH_MAX_COST = 0.5 // unmatched PDF glyphs per glyph: above this the line is not the same formula
 function pvMathCands(L, hint, srcs) { // formulas that explain enough of this visual line, best first
-  const out = []
-  for (const f of srcs) {
+  const out = [], n = srcs.length
+  let lo = 0, hi = n
+  while (lo < hi) { // srcs is in document order (pvSrcMath): start at the page hint and walk outwards
+    const mid = (lo + hi) >> 1
+    if (srcs[mid].order < hint) lo = mid + 1
+    else hi = mid
+  }
+  let l = lo - 1, r = lo, best = Infinity, full = false
+  while (l >= 0 || r < n) {
+    const dl = l >= 0 ? Math.abs(srcs[l].order - hint) : Infinity
+    const dr = r < n ? Math.abs(srcs[r].order - hint) : Infinity
+    if (full && Math.min(dl, dr) > best) break // a full map owns every glyph: farther formulas can only lose the click and the line
+    const ix = dl <= dr ? l-- : r++, f = srcs[ix]
     const al = pvAlign(L.s, f.s)
     let ratio = al.cost / Math.max(1, L.s.length)
     if (ratio > PV_MATH_MAX_COST) { // a wide table row holds several cells: judge the glyphs this formula really covers
@@ -1076,9 +1087,12 @@ function pvMathCands(L, hint, srcs) { // formulas that explain enough of this vi
       ratio = err / win
       if (ratio > PV_MATH_MAX_COST) continue
     }
-    out.push({ src: f, map: al.map, ratio, score: ratio * 1000 + Math.abs(f.order - hint) })
+    const score = ratio * 1000 + Math.abs(f.order - hint)
+    out.push({ src: f, map: al.map, ratio, score, ix })
+    full = full || al.cost === 0
+    if (score < best) best = score
   }
-  return out.sort((a, b) => a.score - b.score)
+  return out.sort((a, b) => a.score - b.score || a.ix - b.ix) // ties keep the document order, as a stable scan would
 }
 function pvMathMatch() { // PDF math lines -> formulas: glyph similarity first, the page position breaks ties
   const srcs = pvSrcMath(), out = []
