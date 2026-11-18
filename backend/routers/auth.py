@@ -29,7 +29,6 @@ from backend.services import quota as quota_svc
 from backend.services.apikeys import _ROLE_RANK, KEY_ROLES, me_with_key, mint_api_key
 from backend.services.locks import _drop_user_locks, _named_lock
 from backend.services.proxy import _proxy_trusted
-from backend.services.tutorial import TUTORIAL
 
 log = logging.getLogger("typst.main")
 
@@ -49,6 +48,8 @@ def _invite_ok(invite: str, token: str) -> bool:
 def login(b: Login, res: Response, req: Request) -> dict:
     name = b.username.strip()
     deps.limited(req, "login", name.lower())
+    if config.load().DISABLE_PASSWORD_LOGIN:
+        raise HTTPException(403, "Password login disabled")
     token = auth.create_session(name, b.password)
     if not token:
         log.warning("login failed")
@@ -86,13 +87,14 @@ def register(b: Register, res: Response, req: Request) -> dict:
     name = b.username.strip()
     deps.limited(req, "register", name.lower())
     cfg = config.load()
-    if cfg.REGISTRATION not in ("open", "invite-only", "closed"):
+    if cfg.DISABLE_PASSWORD_LOGIN or cfg.REGISTRATION not in ("open", "invite-only", "closed"):
         log.warning("register blocked (bad mode)")
         raise HTTPException(403, "Registration disabled")
     if not re.fullmatch(NAME_RE, name):
         raise HTTPException(400, "Name: 2-20 chars, letters/numbers/_-")
     if not MIN_PW <= len(b.password) <= MAX_PW:
         raise HTTPException(400, "Password: 8-200 chars")
+    pw_hash = auth.hash_password(b.password)
     with _named_lock("register"):
         try:
             with db.tx() as con:
@@ -108,14 +110,8 @@ def register(b: Register, res: Response, req: Request) -> dict:
                     log.warning("register blocked (invite)%s", ctx)
                     raise HTTPException(403, "Invalid invite code")
                 if con.execute("SELECT 1 FROM users WHERE name=? COLLATE NOCASE", (name,)).fetchone():
-                    auth.check_password("dummy-timing", auth.DUMMY_HASH)
                     raise HTTPException(400, "Registration failed")
-                con.execute("INSERT INTO users (name, hash) VALUES (?,?)", (name, auth.hash_password(b.password)))
-                did, now = db.new_id("d_"), db.now_iso()
-                con.execute("INSERT INTO docs (id, owner, title, content, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-                            (did, name, "Tutorial", TUTORIAL, now, now))
-                from backend.services import projects
-                projects.attach_doc(con, did, check_quota=False)
+                auth.provision_user(con, name, pw_hash)
                 if empty:
                     log.warning("first user created")
         except sqlite3.IntegrityError as e:
@@ -233,8 +229,10 @@ def get_me(req: Request, user: str = Depends(deps.me)) -> dict:
     deps.limited(req, "auth")  # own auth bucket: must not share files_list with preview polling
     con = db.connect()
     try:
-        r = con.execute("SELECT avatar,spell_language FROM users WHERE name=?", (user,)).fetchone()
-        return {"user": user, "hasAvatar": bool(r and r["avatar"]), "spell_language": r["spell_language"] if r else "auto",
+        r = con.execute("SELECT hash, avatar, spell_language FROM users WHERE name=?", (user,)).fetchone()
+        return {"user": user, "hasAvatar": bool(r and r["avatar"]),
+                "has_password": auth.has_password(r["hash"]) if r else True,
+                "spell_language": r["spell_language"] if r else "auto",
                 "storage": {"used": quota_svc.user_bytes(user, con), "limit": quota_svc.user_cap(user, con),
                             "migration_allowance": quota_svc.migration_allowance(user, con)}}
     finally:
@@ -341,11 +339,15 @@ def revoke_key(kid: str, req: Request, authn: tuple[str, str] = Depends(me_with_
         con.close()
 
 
-def check_pw(user: str, password: str) -> None:
+def check_pw(user: str, password: str, allow_passwordless: bool = False) -> None:
     con = db.connect()
     try:
         row = con.execute("SELECT hash FROM users WHERE name=?", (user,)).fetchone()
-        if not row or not auth.check_password(password, row["hash"]):
+        if not row:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong password")
+        if allow_passwordless and not auth.has_password(row["hash"]):
+            return
+        if not auth.check_password(password, row["hash"]):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong password")
     finally:
         con.close()
@@ -354,6 +356,8 @@ def check_pw(user: str, password: str) -> None:
 @router.post("/api/me/password")
 async def change_password(b: PwChange, req: Request, res: Response, user: str = Depends(deps.me)) -> dict:
     deps.limited(req, "pw")
+    if config.load().DISABLE_PASSWORD_LOGIN:
+        raise HTTPException(403, "Password login disabled")
     check_pw(user, b.old)
     if not MIN_PW <= len(b.new) <= MAX_PW:
         raise HTTPException(400, "Password: 8-200 chars")
@@ -376,7 +380,7 @@ async def rename_me(b: NameChange, req: Request, user: str = Depends(deps.me)) -
     new = b.name.strip()
     if not re.fullmatch(NAME_RE, new):
         raise HTTPException(400, "Name: 2-20 chars, letters/numbers/_-")
-    check_pw(user, b.password)
+    check_pw(user, b.password, allow_passwordless=True)
     if new == user:
         return {"user": user}
     # No ON UPDATE CASCADE in schema.sql (adding it needs a real migration,
@@ -386,7 +390,7 @@ async def rename_me(b: NameChange, req: Request, user: str = Depends(deps.me)) -
     try:
         if new.lower() != user.lower() and con.execute("SELECT 1 FROM users WHERE name=? COLLATE NOCASE", (new,)).fetchone():
             raise HTTPException(400, "Rename failed")
-        row = con.execute("SELECT hash, avatar FROM users WHERE name=?", (user,)).fetchone()
+        row = con.execute("SELECT hash, avatar, oidc_issuer, oidc_sub FROM users WHERE name=?", (user,)).fetchone()
         if not row:
             raise HTTPException(404, "User gone")
     finally:
@@ -396,8 +400,9 @@ async def rename_me(b: NameChange, req: Request, user: str = Depends(deps.me)) -
             _dup = con.execute("SELECT name FROM users WHERE name=? COLLATE NOCASE", (new,)).fetchone()
             if _dup and _dup["name"].lower() != user.lower():
                 raise HTTPException(400, "Rename failed")
-            con.execute("INSERT INTO users (name, hash, avatar) VALUES (?,?,?)",
-                        (new, row["hash"], row["avatar"]))
+            con.execute("UPDATE users SET oidc_issuer='', oidc_sub='' WHERE name=?", (user,))
+            con.execute("INSERT INTO users (name, hash, avatar, oidc_issuer, oidc_sub) VALUES (?,?,?,?,?)",
+                        (new, row["hash"], row["avatar"], row["oidc_issuer"], row["oidc_sub"]))
             con.execute("UPDATE users SET migration_bytes=(SELECT migration_bytes FROM users WHERE name=?), spell_language=(SELECT spell_language FROM users WHERE name=?) WHERE name=?", (user, user, new))
             con.execute("UPDATE sessions SET username=? WHERE username=?", (new, user))
             con.execute("UPDATE docs SET owner=? WHERE owner=?", (new, user))
@@ -526,7 +531,7 @@ def get_avatar(username: str, req: Request, user: str = Depends(deps.me)) -> Res
 @router.post("/api/me/delete")
 async def delete_me(b: PwOnly, req: Request, res: Response, user: str = Depends(deps.me)) -> dict:
     deps.limited(req, "pw")
-    check_pw(user, b.password)
+    check_pw(user, b.password, allow_passwordless=True)
     con = db.connect()
     try:
         owned = [r["id"] for r in con.execute("SELECT id FROM docs WHERE owner=?", (user,)).fetchall()]

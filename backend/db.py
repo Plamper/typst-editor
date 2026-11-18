@@ -485,10 +485,21 @@ def _migrate_v30(con: sqlite3.Connection) -> None:
                 "WHERE project_id IS NOT NULL AND trashed=0")
 
 
+def _migrate_v31(con: sqlite3.Connection) -> None:
+    cols = _cols(con, "users")
+    if "oidc_issuer" not in cols:
+        con.execute("ALTER TABLE users ADD COLUMN oidc_issuer TEXT NOT NULL DEFAULT ''")
+    if "oidc_sub" not in cols:
+        con.execute("ALTER TABLE users ADD COLUMN oidc_sub TEXT NOT NULL DEFAULT ''")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc "
+                "ON users(oidc_issuer, oidc_sub) "
+                "WHERE oidc_issuer <> '' AND oidc_sub <> ''")
+
+
 _MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_v1, _migrate_v2, _migrate_v3, _migrate_v4,
     _migrate_v5, _migrate_v6, _migrate_v7, _migrate_v8, _migrate_v9, _migrate_v10,
-    _migrate_v11, _migrate_v12, _migrate_v13, _migrate_v14, _migrate_v15, _migrate_v16, _migrate_v17, _migrate_v18, _migrate_v19, _migrate_v20, _migrate_v21, _migrate_v22, _migrate_v23, _migrate_v24, _migrate_v25, _migrate_v26, _migrate_v27, _migrate_v28, _migrate_v29, _migrate_v30,
+    _migrate_v11, _migrate_v12, _migrate_v13, _migrate_v14, _migrate_v15, _migrate_v16, _migrate_v17, _migrate_v18, _migrate_v19, _migrate_v20, _migrate_v21, _migrate_v22, _migrate_v23, _migrate_v24, _migrate_v25, _migrate_v26, _migrate_v27, _migrate_v28, _migrate_v29, _migrate_v30, _migrate_v31,
 )
 
 
