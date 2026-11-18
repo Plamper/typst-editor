@@ -27,6 +27,7 @@ log = logging.getLogger("typst.main")
 STATE_COOKIE = "typst_oidc_state"
 STATE_TTL = 600
 CACHE_TTL_S = 3600.0
+_HOST_RE = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9a-fA-F:]+\])(?::(\d{1,5}))?$")
 ALLOWED_ALGS = (
     "RS256",
     "RS384",
@@ -66,6 +67,12 @@ def oidc_startup_check(cfg: config.Config) -> None:
     if cfg.DISABLE_PASSWORD_LOGIN and not is_enabled(cfg):
         log.error("refusing to start: DISABLE_PASSWORD_LOGIN=true requires OIDC_ISSUER_URL and OIDC_CLIENT_ID")
         raise SystemExit(1)
+    if is_enabled(cfg):
+        if cfg.OIDC_REDIRECT_URI and not cfg.OIDC_REDIRECT_URI.startswith(("https://", "http://")):
+            log.error("refusing to start: OIDC_REDIRECT_URI must start with https:// or http://")
+            raise SystemExit(1)
+        if not cfg.OIDC_REDIRECT_URI:
+            log.warning("OIDC_REDIRECT_URI is not set: callback URL will be derived from the request Host header; set OIDC_REDIRECT_URI in production")
 
 
 def clear_cache() -> None:
@@ -78,10 +85,24 @@ def _http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=10.0, follow_redirects=False)
 
 
+def _valid_host(host: str) -> bool:
+    if not host:
+        return False
+    m = _HOST_RE.fullmatch(host)
+    if not m:
+        return False
+    port = m.group(1)
+    if port is not None and not 1 <= int(port) <= 65535:
+        return False
+    return True
+
+
 def redirect_uri(req: Request, cfg: config.Config) -> str:
     if cfg.OIDC_REDIRECT_URI:
         return cfg.OIDC_REDIRECT_URI
-    proto = req.url.scheme or "http"
+    proto = (req.url.scheme or "http").lower()
+    if proto not in ("http", "https"):
+        raise OidcError("failed", "Invalid request scheme")
     host = ""
     if _proxy_trusted(req):
         xfp = (req.headers.get("x-forwarded-proto", "") or "").split(",")[-1].strip().lower()
@@ -92,7 +113,7 @@ def redirect_uri(req: Request, cfg: config.Config) -> str:
         host = (req.headers.get("host", "") or "").split(",")[-1].strip()
     if not host:
         host = req.url.netloc
-    if not host or any(c in host for c in "/\\@ \t\r\n"):
+    if not _valid_host(host):
         raise OidcError("failed", "Invalid host header")
     return f"{proto}://{host}/api/oidc/callback"
 
@@ -209,6 +230,7 @@ async def start_login(req: Request, cfg: config.Config, join: str = "") -> tuple
         "nonce": nonce,
         "cv": verifier,
         "join": join[:200],
+        "cb": cb,
         "exp": int(time.time()) + STATE_TTL,
     })
     return auth_url, cookie_val
@@ -445,6 +467,9 @@ async def complete_login(req: Request, cfg: config.Config) -> tuple[str, str]:
     st_data = _verify_state(req.cookies.get(STATE_COOKIE, ""), state)
     disc = await _get_discovery(cfg.OIDC_ISSUER_URL)
     cb = redirect_uri(req, cfg)
+    expected_cb = st_data.get("cb")
+    if isinstance(expected_cb, str) and expected_cb and not hmac.compare_digest(expected_cb, cb):
+        raise OidcError("state_invalid", "Mismatched OIDC redirect_uri")
     tok = await _exchange_code(disc, cfg, code, cb, st_data["cv"])
     claims = await _verify_id_token(tok["id_token"], disc, cfg, st_data["nonce"])
     claims = await _maybe_merge_userinfo(claims, tok, disc, cfg)
