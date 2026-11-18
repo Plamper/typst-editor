@@ -1812,13 +1812,18 @@ def _compile_export_doc(main_text: str, files: list[tuple[str, bytes]], fmt: str
             except OSError as e:
                 raise _bad(f"compile failed: {e}", 500) from e
             return _sized(payload, EXPORT_MIMES["pdf"], False)
+        out = root / "__export__"  # own output folder: an uploaded page-1.png is never exported as a page
+        try:
+            out.mkdir(exist_ok=True)
+        except OSError as e:
+            raise _bad(f"compile failed: {e}", 500) from e
         if f == "svg":
-            _typst_compile(["compile", "--format", "svg", *pg_args, "main.typ", "page-{p}.svg"], tmp)
-            shots = sorted(root.glob("page-*.svg"))
+            _typst_compile(["compile", "--format", "svg", *pg_args, "main.typ", "__export__/page-{p}.svg"], tmp)
+            shots = sorted(out.glob("page-*.svg"), key=_page_no)  # page-10 after page-9
             return _pages_or_zip(shots, EXPORT_MIMES["svg"])
         _typst_compile(["compile", "--format", "png", "--ppi", str(res or EXPORT_PPI),
-                        *pg_args, "main.typ", "page-{p}.png"], tmp)
-        shots = sorted(root.glob("page-*.png"), key=_page_no)
+                        *pg_args, "main.typ", "__export__/page-{p}.png"], tmp)
+        shots = sorted(out.glob("page-*.png"), key=_page_no)
         return _pages_or_zip(shots, EXPORT_MIMES["png"])
 
 
