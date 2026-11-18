@@ -227,11 +227,12 @@ async def revoke_session(sid: str, req: Request, res: Response,
 @router.get("/api/me")
 def get_me(req: Request, user: str = Depends(deps.me)) -> dict:
     deps.limited(req, "auth")  # own auth bucket: must not share files_list with preview polling
+    pw_enabled = not config.load().DISABLE_PASSWORD_LOGIN
     con = db.connect()
     try:
         r = con.execute("SELECT hash, avatar, spell_language FROM users WHERE name=?", (user,)).fetchone()
         return {"user": user, "hasAvatar": bool(r and r["avatar"]),
-                "has_password": auth.has_password(r["hash"]) if r else True,
+                "has_password": bool(pw_enabled and (auth.has_password(r["hash"]) if r else True)),
                 "spell_language": r["spell_language"] if r else "auto",
                 "storage": {"used": quota_svc.user_bytes(user, con), "limit": quota_svc.user_cap(user, con),
                             "migration_allowance": quota_svc.migration_allowance(user, con)}}
@@ -339,13 +340,21 @@ def revoke_key(kid: str, req: Request, authn: tuple[str, str] = Depends(me_with_
         con.close()
 
 
-def check_pw(user: str, password: str, allow_passwordless: bool = False) -> None:
+def check_pw(
+    user: str,
+    password: str,
+    allow_passwordless: bool = False,
+    require_delete_confirm: bool = False,
+    confirm: str = "",
+) -> None:
     con = db.connect()
     try:
         row = con.execute("SELECT hash FROM users WHERE name=?", (user,)).fetchone()
         if not row:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong password")
-        if allow_passwordless and not auth.has_password(row["hash"]):
+        if allow_passwordless and (not auth.has_password(row["hash"]) or config.load().DISABLE_PASSWORD_LOGIN):
+            if require_delete_confirm and confirm != "DELETE":
+                raise HTTPException(400, "Confirmation required")
             return
         if not auth.check_password(password, row["hash"]):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong password")
@@ -386,24 +395,24 @@ async def rename_me(b: NameChange, req: Request, user: str = Depends(deps.me)) -
     # No ON UPDATE CASCADE in schema.sql (adding it needs a real migration,
     # FKs are bare REFERENCES): rename stays an explicit move inside
     # one transaction. Pre-check message is generic (no user enumeration).
-    con = db.connect()
-    try:
-        if new.lower() != user.lower() and con.execute("SELECT 1 FROM users WHERE name=? COLLATE NOCASE", (new,)).fetchone():
-            raise HTTPException(400, "Rename failed")
-        row = con.execute("SELECT hash, avatar, oidc_issuer, oidc_sub FROM users WHERE name=?", (user,)).fetchone()
-        if not row:
-            raise HTTPException(404, "User gone")
-    finally:
-        con.close()
     try:
         with db.tx() as con:
+            row = con.execute(
+                "SELECT hash, avatar, oidc_issuer, oidc_sub, migration_bytes, spell_language FROM users WHERE name=?",
+                (user,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, "User gone")
             _dup = con.execute("SELECT name FROM users WHERE name=? COLLATE NOCASE", (new,)).fetchone()
             if _dup and _dup["name"].lower() != user.lower():
                 raise HTTPException(400, "Rename failed")
             con.execute("UPDATE users SET oidc_issuer='', oidc_sub='' WHERE name=?", (user,))
-            con.execute("INSERT INTO users (name, hash, avatar, oidc_issuer, oidc_sub) VALUES (?,?,?,?,?)",
-                        (new, row["hash"], row["avatar"], row["oidc_issuer"], row["oidc_sub"]))
-            con.execute("UPDATE users SET migration_bytes=(SELECT migration_bytes FROM users WHERE name=?), spell_language=(SELECT spell_language FROM users WHERE name=?) WHERE name=?", (user, user, new))
+            con.execute(
+                "INSERT INTO users (name, hash, avatar, oidc_issuer, oidc_sub, migration_bytes, spell_language) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (new, row["hash"], row["avatar"], row["oidc_issuer"], row["oidc_sub"],
+                 row["migration_bytes"], row["spell_language"]),
+            )
             con.execute("UPDATE sessions SET username=? WHERE username=?", (new, user))
             con.execute("UPDATE docs SET owner=? WHERE owner=?", (new, user))
             con.execute("UPDATE shares SET username=? WHERE username=?", (new, user))
@@ -531,7 +540,7 @@ def get_avatar(username: str, req: Request, user: str = Depends(deps.me)) -> Res
 @router.post("/api/me/delete")
 async def delete_me(b: PwOnly, req: Request, res: Response, user: str = Depends(deps.me)) -> dict:
     deps.limited(req, "pw")
-    check_pw(user, b.password, allow_passwordless=True)
+    check_pw(user, b.password, allow_passwordless=True, require_delete_confirm=True, confirm=b.confirm)
     con = db.connect()
     try:
         owned = [r["id"] for r in con.execute("SELECT id FROM docs WHERE owner=?", (user,)).fetchall()]

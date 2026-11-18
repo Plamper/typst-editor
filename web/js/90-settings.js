@@ -442,7 +442,7 @@ function renderSettings() {
     if (!await ask(t('settings.delAccount'), { noInput: true, ok: t('common.delete'), danger: true })) return
     if (!await ask(t('settings.delSure'), { ph: 'DELETE' }).then(v => v === 'DELETE')) return
     db.disabled = true
-    api('POST', '/api/me/delete', { password: hasPassword ? dpw.value : '' })
+    api('POST', '/api/me/delete', { password: hasPassword ? dpw.value : '', confirm: 'DELETE' })
       .then(() => { location.reload() })
       .catch(e => settingsError(e.message)).finally(() => db.disabled = false)
   }

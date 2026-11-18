@@ -166,6 +166,9 @@ async def no_cache_html(req: Request, call: Any):
             if urlparse(o).netloc.lower() != host:
                 log.warning("csrf-block %s", req.url.path)
                 return JSONResponse({"detail": "Forbidden"}, status_code=403)
+        elif req.headers.get("sec-fetch-site", "").strip().lower() == "cross-site":
+            log.warning("csrf-block sec-fetch-site %s", req.url.path)
+            return JSONResponse({"detail": "Forbidden"}, status_code=403)
     res = await call(req)
     if res.status_code == 200 and (
             req.url.path.rsplit("/", 1)[-1] in deps.IMMUTABLE_SHELL or req.url.path.startswith("/vendor/")):

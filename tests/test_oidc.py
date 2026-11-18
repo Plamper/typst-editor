@@ -442,9 +442,69 @@ def test_oidc_passwordless_rename_and_delete(c, oidc_env):
     _run_oidc_flow(c, idp)
     assert c.get("/api/me").json()["user"] == "Alice_New"
 
-    # Delete without password succeeds.
-    assert c.post("/api/me/delete", json={"password": ""}).status_code == 200
+    # Delete without password requires explicit confirm='DELETE'.
+    assert c.post("/api/me/delete", json={"password": ""}).status_code == 400
+    assert c.post("/api/me/delete", json={"password": "", "confirm": "DELETE"}).status_code == 200
     assert c.get("/api/me").status_code == 401
+
+
+def test_oidc_security_hardening_host_replay_jwks_and_claims(c, oidc_env):
+    idp = oidc_env(
+        _MockIdP("https://idp.example.com", id_token_claims={"sub": "sub-sec", "preferred_username": None}),
+        userinfo_claims_unused="1",
+        RATE_LOGIN_PER_MIN="50",
+    )
+    idp.userinfo_claims = {"sub": "sub-sec", "preferred_username": "sec_user"}
+
+    # 1. Host header with query/fragment is rejected.
+    bad_host = c.get("/api/oidc/login", headers={"host": "testserver?evil=1#frag"}, follow_redirects=False)
+    assert bad_host.status_code == 302
+    assert bad_host.headers["location"] == "/?oidc_error=failed"
+
+    # 2. Multi-tab concurrent login states both remain valid, and each state is single-use.
+    s1 = c.get("/api/oidc/login", follow_redirects=False)
+    s2 = c.get("/api/oidc/login", follow_redirects=False)
+    qs1 = {k: v[0] for k, v in parse_qs(urlparse(s1.headers["location"]).query).items()}
+    qs2 = {k: v[0] for k, v in parse_qs(urlparse(s2.headers["location"]).query).items()}
+
+    # Complete tab 1 (even though tab 2 was started afterwards) + null claim falls back to userinfo.
+    idp.id_token_claims = {"sub": "sub-sec", "preferred_username": None, "nonce": qs1["nonce"]}
+    cb1 = c.get(f"/api/oidc/callback?code=c1&state={qs1['state']}", follow_redirects=False)
+    assert cb1.status_code == 302
+    assert cb1.headers["location"] == "/"
+    assert c.get("/api/me").json()["user"] == "sec_user"
+
+    # Replaying tab 1's state fails even if cookie is re-sent.
+    c.cookies.set(oidc_svc.STATE_COOKIE, s2.cookies[oidc_svc.STATE_COOKIE], path=oidc_svc.STATE_COOKIE_PATH)
+    cb1_replay = c.get(f"/api/oidc/callback?code=c1&state={qs1['state']}", follow_redirects=False)
+    assert cb1_replay.headers["location"] == "/?oidc_error=state_invalid"
+
+    # Redirect URI host mismatch on callback is rejected.
+    c.cookies.set(oidc_svc.STATE_COOKIE, s2.cookies[oidc_svc.STATE_COOKIE], path=oidc_svc.STATE_COOKIE_PATH)
+    cb_mismatch = c.get(
+        f"/api/oidc/callback?code=c2&state={qs2['state']}",
+        headers={"host": "other.example.com"},
+        follow_redirects=False,
+    )
+    assert cb_mismatch.headers["location"] == "/?oidc_error=state_invalid"
+
+    # 3. Empty/whitespace sub claim is rejected.
+    idp.id_token_claims = {"sub": "   "}
+    cb_empty_sub, _ = _run_oidc_flow(c, idp)
+    assert cb_empty_sub.headers["location"] == "/?oidc_error=failed"
+
+    # 4. Unverified email is not used to seed username.
+    idp.id_token_claims = {
+        "sub": "sub-unverified-email",
+        "preferred_username": "",
+        "email": "spoofed@example.com",
+        "email_verified": False,
+        "name": "verified_name",
+    }
+    idp.userinfo_claims = {"sub": "sub-unverified-email"}
+    cb_email, _ = _run_oidc_flow(c, idp)
+    assert cb_email.headers["location"] == "/"
+    assert c.get("/api/me").json()["user"] == "verified_name"
 
 
 def test_migrate_v31_idempotent(tmp_path):
