@@ -46,8 +46,9 @@ function pushLocal(changes, oldLen) {
 function pullRemote(ev) {
   const v = ytext.toString()
   synced = true // server text arrived: saves now write real content
-  if (v === shadow) { if (!window.suggestionDraft && !window.changeSession) jumpWant(); return }
+  if (v === shadow) return
   const old = shadow, delta = ev && ev.delta
+  queueContentRefresh() // a peer's edit changes the counts too
   const map = delta ? deltaMap(delta) : diffMap(old, v)
   shadow = v
   if (window.suggestionDraft || window.changeSession) {
@@ -77,7 +78,6 @@ function pullRemote(ev) {
         selection: { anchor: Math.min(m(sel.anchor, false), v.length), head: Math.min(m(sel.head, true), v.length) } })
     }
   } finally { applying = false }
-  jumpWant() // jump to search hit after open
   if (threads.length) mapThreads(map, true, old.length)
   reanchor()
   paintOutline()
