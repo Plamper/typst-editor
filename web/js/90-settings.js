@@ -1560,6 +1560,7 @@ function srcViewScan(raw) { // one pass over the whole text: a mode stack carrie
         }
       }
       const f = { k: 'e', cl: [], kw: SRC_KW.has(name), hide: SRC_HIDE.has(name), fn: name === 'footnote', name, url: null }
+      if (f.fn) emit(' ', at) // the marker is a gap in the paragraph: a click on it or its back-link lands on the call
       st.push(f)
       if (name) return j + name.length
       if (line[j] === '(') { f.cl.push(')'); return j + 1 } // #(expr)

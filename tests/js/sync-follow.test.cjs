@@ -75,6 +75,11 @@ test('a generated marker keeps the gap it stands in, so a back-link lands beside
   const nd = out.find(n => !/3/.test(n.s)) // the row without the clicked marker
   assert.ok(nd, JSON.stringify(out))
   assert.equal(nd.s.slice(0, nd.off), 'First claim 1 and second claim 2 here. Third claim') // the third marker follows "Third claim", not the row start
+  const v = vm.createContext({})
+  vm.runInContext(slice(settings, 'const SRC_MATH', 'function srcObjs'), v)
+  const L = v.srcViewScan('Short#footnote[Note body.] here').lines[0]
+  assert.equal(L.s, 'Short here')
+  assert.equal(L.map[5], 5) // the gap of the marker sits on the #footnote call
 })
 
 test('a click in a heading with markup keeps the clicked word', () => {
