@@ -311,12 +311,12 @@ test('click column maps to the nearest letter boundary', () => {
   const c = vm.createContext({})
   vm.runInContext(code.slice(code.indexOf('function pvCharW'), code.indexOf("$('preview').addEventListener('click'")), c)
   const item = { s: 'Die erste Methode sammelt', x0: 0, w: 100, vw: 100 }
-  assert.equal(c.pvClickCol(item, 5, 100, 100), 1) // inside "Die": behind the D
-  assert.equal(c.pvClickCol(item, 50, 100, 100), 13) // inside "Methode": behind "Met"
-  assert.equal(c.pvClickCol(item, 34, 100, 100), 9) // just past "erste": the word end, not 0
-  assert.equal(c.pvClickCol(item, 36, 100, 100), 10) // just inside "Methode": its start
-  assert.equal(c.pvClickCol(item, 68, 100, 100), 18) // space after "Methode": the next word, not the line start
-  assert.equal(c.pvClickCol(item, 120, 100, 100), 25) // past the line end: the last word end
+  assert.equal(c.pvClickCol(item, 5, 5, 100, 100, 100, null), 1) // inside "Die": behind the D
+  assert.equal(c.pvClickCol(item, 50, 5, 100, 100, 100, null), 13) // inside "Methode": behind "Met"
+  assert.equal(c.pvClickCol(item, 34, 5, 100, 100, 100, null), 9) // just past "erste": the word end, not 0
+  assert.equal(c.pvClickCol(item, 36, 5, 100, 100, 100, null), 10) // just inside "Methode": its start
+  assert.equal(c.pvClickCol(item, 68, 5, 100, 100, 100, null), 18) // space after "Methode": the next word, not the line start
+  assert.equal(c.pvClickCol(item, 120, 5, 100, 100, 100, null), 25) // past the line end: the last word end
 })
 test('click column follows the rendered pixels of a justified line', () => {
   const c = vm.createContext({})
@@ -329,11 +329,11 @@ test('click column follows the rendered pixels of a justified line', () => {
   }
   const cv = { width: 100, height: 100, getContext: () => ({ getImageData: () => img }) }
   const item = { s: 'aa bb cc', x0: 0, w: 100, vw: 100, y: 0, h: 10, vh: 100 }
-  assert.equal(c.pvClickCol(item, 4, 100, 100, cv), 1) // inside "aa": behind the first a
-  assert.equal(c.pvClickCol(item, 12, 100, 100, cv), 2) // just past "aa": still "aa", its end
-  assert.equal(c.pvClickCol(item, 64, 100, 100, cv), 4) // stretched space: pixels say "bb", the char guess says "cc"
-  assert.equal(c.pvClickCol(item, 70, 100, 100, cv), 5) // space after "bb" closer to "bb": its end
-  assert.equal(c.pvClickCol(item, 85, 100, 100, cv), 6) // wide space closer to "cc": its start
+  assert.equal(c.pvClickCol(item, 4, 5, 100, 10, 100, cv), 1) // inside "aa": behind the first a
+  assert.equal(c.pvClickCol(item, 12, 5, 100, 10, 100, cv), 2) // just past "aa": still "aa", its end
+  assert.equal(c.pvClickCol(item, 64, 5, 100, 10, 100, cv), 4) // stretched space: pixels say "bb", the char guess says "cc"
+  assert.equal(c.pvClickCol(item, 70, 5, 100, 10, 100, cv), 5) // space after "bb" closer to "bb": its end
+  assert.equal(c.pvClickCol(item, 85, 5, 100, 10, 100, cv), 6) // wide space closer to "cc": its start
 })
 test('click column maps scaled canvas pixels through the item offset', () => {
   const c = vm.createContext({})
@@ -346,16 +346,16 @@ test('click column maps scaled canvas pixels through the item offset', () => {
   const cv = { width: 200, height: 20, getContext: () => ({ getImageData: () => img }) }
   const item = { s: 'aa bb cc', x0: 10, w: 180, vw: 200, y: 10, h: 10, vh: 20 }
   // cssW 100 for a 200 px backing: clicks arrive in CSS px, boxes in canvas px
-  assert.equal(c.pvClickCol(item, 6, 100, 200, cv), 0) // "aa" at canvas 10-20, behind the first a is a tie
-  assert.equal(c.pvClickCol(item, 20, 100, 200, cv), 4) // inside "bb", inner gap of "bb" merged: 32-50
-  assert.equal(c.pvClickCol(item, 30, 100, 200, cv), 5) // gap tie stays left: the end of "bb"
-  assert.equal(c.pvClickCol(item, 44, 100, 200, cv), 8) // inside "cc" at canvas 70-90: its end
+  assert.equal(c.pvClickCol(item, 6, 15, 100, 20, 200, cv), 0) // "aa" at canvas 10-20, behind the first a is a tie
+  assert.equal(c.pvClickCol(item, 20, 15, 100, 20, 200, cv), 4) // inside "bb", inner gap of "bb" merged: 32-50
+  assert.equal(c.pvClickCol(item, 30, 15, 100, 20, 200, cv), 5) // gap tie stays left: the end of "bb"
+  assert.equal(c.pvClickCol(item, 44, 15, 100, 20, 200, cv), 8) // inside "cc" at canvas 70-90: its end
   const blind = { width: 180, height: 10, data: new Uint8ClampedArray(180 * 10 * 4) }
   for (let x = 0; x < 180; x++) for (let y = 0; y < 10; y++) blind.data[(y * 180 + x) * 4 + 3] = x < 80 ? 255 : 0 // one run: no word boxes
   const gone = { width: 200, height: 20, getContext: () => ({ getImageData: () => blind }) }
-  assert.equal(c.pvClickCol(item, 95, 100, 200, gone), 8) // estimate still lands on the last word end
+  assert.equal(c.pvClickCol(item, 95, 15, 100, 20, 200, gone), 8) // estimate still lands on the last word end
 })
-test('rotated text runs stay out of clicks but keep their anchors', () => {
+test('rotated text runs become click targets and keep their anchors', () => {
   const c = vm.createContext({})
   vm.runInContext(pvCode.slice(pvCode.indexOf('function pvBoxes'), pvCode.indexOf('const PV_LINK_SCHEME')), c)
   vm.runInContext(code.slice(code.indexOf('function pvItemDist'), code.indexOf('function pvOlEq')), c)
@@ -370,6 +370,8 @@ test('rotated text runs stay out of clicks but keep their anchors', () => {
   assert.deepEqual(Array.from(boxes, b => b.s), ['Normal', 'Seitwärts', 'Schräg', 'Gedreht']) // anchors still name the rotated word
   assert.equal(boxes[0].rot, false)
   assert.equal(boxes[1].rot, true)
+  assert.equal(boxes[1].ang, Math.PI / 2) // its own baseline, not the axis-aligned shadow
+  assert.equal(boxes[1].y0, 200)
   assert.equal(boxes[2].rot, false) // a tiny skew still gets an honest horizontal box
   assert.equal(boxes[3].rot, true)
   assert.equal(boxes[0].x0, 20)
@@ -381,9 +383,11 @@ test('rotated text runs stay out of clicks but keep their anchors', () => {
   assert.equal(boxes[3].y, 32) // and sits within one normal line step below it
   vm.runInContext(code.slice(code.indexOf('function pvBlockLines'), code.indexOf('function pvBlockNeedle')), c)
   assert.deepEqual(Array.from(c.pvBlockLines(boxes, boxes[0]), b => b.s), ['Normal']) // a turned run never joins the paragraph needle
-  const near = c.pvNearItems(boxes, -80, 300, 1, 1, null) // right on "Seitwärts": its box is a lie, the neighbours are not
-  assert.equal(near.length, 2)
-  assert.ok(near.every(({ it }) => !it.rot))
+  assert.equal(c.pvItemDist(boxes[1], 105, 220, 1, 1), 0) // on the vertical strip: a real target now
+  assert.ok(c.pvItemDist(boxes[1], 120, 220, 1, 1) > 0) // beside it: the axis-aligned shadow is not a hit
+  const near = c.pvNearItems(boxes, 105, 220, 1, 1, null)
+  assert.equal(near[0].it.s, 'Seitwärts')
+  assert.equal(near[0].it.rot, true)
 })
 test('a click without text under it never takes a far paragraph as anchor', () => {
   const c = vm.createContext({})
