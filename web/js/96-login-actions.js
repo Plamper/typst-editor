@@ -61,7 +61,7 @@ async function login(u, p) {
     const d = await api('POST', regMode ? '/api/register' : '/api/login', body)
     user = d.user // session via cookie only (HttpOnly)
     $('p').value = ''; $('inv').value = ''
-    try { const who = user, me = await api('GET', '/api/me'); avatarV = me.hasAvatar ? 1 : 0; loadSpell(me.spell_language, who) } catch (e) {} // avatar must show without reload
+    try { const who = user, me = await api('GET', '/api/me'); avatarV = me.hasAvatar ? 1 : 0; hasPassword = me.has_password !== false; loadSpell(me.spell_language, who) } catch (e) {} // avatar must show without reload
     $('login').style.display = 'none'; $('app').classList.add('on')
     cm.measure() // built hidden (login): remeasure sync now, else cursor/clicks off
     paintMe()
@@ -78,6 +78,7 @@ async function login(u, p) {
 }
 $('login').onsubmit = e => { e.preventDefault(); login($('u').value, $('p').value).catch(err => $('err').textContent = err.message) }
 $('out').onclick = () => { try { clearTimeout(sideESTimer); sideES?.close(); sideES = null } catch (e) {}; api('POST', '/api/logout').finally(() => {
+  try { sessionStorage.setItem('typst_logged_out', '1') } catch (e) {}
   location.reload()
 }) }
 let renBusy = false // double-click: no second dialog/POST while one rename flies
@@ -270,9 +271,66 @@ addEventListener('pagehide', () => { // stash latest edits, 2s save may still be
       body: JSON.stringify({ content: ytext.toString(), force: live }), keepalive: true }) // live only: offline text lives in Yjs + stash, REST would fork it (double on reconnect)
 })
 
+function oidcErrMsg(code) {
+  if (code === 'access_denied') return t('login.oidcAccessDenied')
+  if (code === 'registration_disabled') return t('login.oidcRegDisabled')
+  if (code === 'state_invalid') return t('login.oidcStateInvalid')
+  if (code === 'rate_limited') return t('login.oidcRateLimited')
+  return t('login.oidcFailed')
+}
+function checkOidcError() {
+  const q = new URLSearchParams(location.search)
+  if (!q.has('oidc_error')) return false
+  const code = q.get('oidc_error') || ''
+  q.delete('oidc_error')
+  const rest = q.toString()
+  history.replaceState(null, '', location.pathname + (rest ? '?' + rest : ''))
+  $('err').textContent = oidcErrMsg(code)
+  return true
+}
+function consumeLoggedOut() {
+  try {
+    const v = sessionStorage.getItem('typst_logged_out') === '1'
+    if (v) sessionStorage.removeItem('typst_logged_out')
+    return v
+  } catch (e) { return false }
+}
+function loadAuthConfig(hadOidcErr, hadInvite, hadLogout = consumeLoggedOut()) {
+  return api('GET', '/api/auth/config').then(cfg => {
+    if (!cfg) return
+    const oidc = cfg.oidc || {}
+    const joinTok = new URLSearchParams(location.search).get('join') || ''
+    const oidcHref = '/api/oidc/login' + (joinTok ? '?join=' + encodeURIComponent(joinTok) : '')
+    if (oidc.enabled) {
+      const btn = $('oidcBtn')
+      if (btn) {
+        btn.textContent = t('login.signInWith', { provider: oidc.provider_name || t('login.ssoDefault') })
+        btn.href = oidcHref
+      }
+      $('oidcBox').style.display = ''
+      $('oidcBox').classList.toggle('only', cfg.password_login === false)
+      if (oidc.auto_redirect && !hadOidcErr && !hadInvite && !hadLogout) {
+        location.assign(oidcHref)
+        return
+      }
+    }
+    if (cfg.password_login === false) {
+      $('pwLoginFields').style.display = 'none'
+      $('oidcSep').style.display = 'none'
+    } else if (cfg.registration === 'closed') {
+      if (regMode) {
+        $('mode').click()
+        $('inv').value = ''
+      }
+      $('mode').style.display = 'none'
+    }
+  }).catch(e => console.warn('auth-config', e))
+}
+const hadOidcErr = checkOidcError()
+const hadInvite = new URLSearchParams(location.search).has('invite')
 checkInvite() // ?invite=CODE: registration view + prefilled code (join handled separately by checkJoin)
 api('GET', '/api/me').then(async d => { // session via cookie only (HttpOnly)
-  user = d.user; avatarV = d.hasAvatar ? 1 : 0; loadSpell(d.spell_language) // persist avatar across reloads
+  user = d.user; avatarV = d.hasAvatar ? 1 : 0; hasPassword = d.has_password !== false; loadSpell(d.spell_language) // persist avatar across reloads
   $('login').style.display = 'none'; $('app').classList.add('on')
   cm.measure() // see above: built hidden -> remeasure sync
   paintMe()
@@ -285,7 +343,7 @@ api('GET', '/api/me').then(async d => { // session via cookie only (HttpOnly)
     const pick = (lastOwn.find(x => x.title === 'Tutorial') || lastOwn[0] || lastShared[0])
     if (pick) openDoc(pick.id)
   }
-}).catch(e => console.warn('session restore failed', e))
+}).catch(e => { console.warn('session restore failed', e); loadAuthConfig(hadOidcErr, hadInvite) })
 try { (window.requestIdleCallback || (fn => setTimeout(fn, 1500)))(() => ensureTypst().catch(() => {})) } catch (e) {} // warm compiler when idle: UI paints first
 window.__booted = true // module alive: login guard in classic script stands down
 document.getElementById('booterr')?.remove() // module running: remove boot error box
