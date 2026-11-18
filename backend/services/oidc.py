@@ -307,7 +307,9 @@ async def start_login(req: Request, cfg: config.Config, join: str = "") -> tuple
     existing = _decode_signed_state(req.cookies.get(STATE_COOKIE, ""))
     if existing is not None:
         prev_entries: list[dict[str, Any]] = []
-        for item in [existing, *(existing.get("prev") if isinstance(existing.get("prev"), list) else [])]:
+        raw_prev = existing.get("prev")
+        prev_items: list[Any] = [existing, *raw_prev] if isinstance(raw_prev, list) else [existing]
+        for item in prev_items:
             if not isinstance(item, dict):
                 continue
             try:
