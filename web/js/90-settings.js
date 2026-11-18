@@ -2067,9 +2067,28 @@ function pvClickChar(word, frac) { // proportional fallback when no canvas pixel
   }
   return pvCharUnits(word, k)
 }
-function pvClickCol(it, x, cssW, baseW, cv) { // click x -> the clicked letter, not the word start
+function pvClickEstimate(raw, at) { // proportional column for an offset inside a run
+  const lead = raw.length - raw.trimStart().length
+  let cum = 0, best = 0, bd = Infinity, inside = 0
+  for (let i = 0; i < raw.length;) {
+    if (/\s/.test(raw[i])) { cum += pvCharW(raw[i]); i++; continue }
+    const from = i, begin = cum
+    while (i < raw.length && !/\s/.test(raw[i])) { cum += pvCharW(raw[i]); i++ }
+    const d = at < begin ? begin - at : at > cum ? at - cum : 0
+    if (d < bd) { bd = d; best = from - lead; inside = pvClickChar(raw.slice(from, i), (at - begin) / Math.max(0.01, cum - begin)) }
+  }
+  return best + inside
+}
+function pvClickCol(it, x, y, cssW, cssH, baseW, cv) { // click x -> the clicked letter, not the word start
   const raw = it.s || '', body = raw.trim()
   if (!body) return 0
+  if (it.rot) { // rotated run: project the click onto its own baseline, then estimate the letter
+    const sx = cssW / (it.vw || baseW || 1), sy = cssH / (it.vh || 1)
+    const c = Math.cos(it.ang || 0), s = Math.sin(it.ang || 0)
+    const u = (x / sx - (it.x0 || 0)) * c + (y / sy - (it.y0 || it.y || 0)) * s
+    if ((it.w || 0) <= 0) return 0
+    return pvClickEstimate(raw, Math.max(0, Math.min(1, u / it.w)) * pvTextW(raw))
+  }
   const words = [...body.matchAll(/\S+/g)]
   const boxes = cv && !/[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/.test(body) ? pvPxWords(cv, it, words) : null
   if (boxes) { // rendered pixels: real word edges and real letter boundaries, even across justified spaces
@@ -2090,19 +2109,17 @@ function pvClickCol(it, x, cssW, baseW, cv) { // click x -> the clicked letter, 
   }
   const scale = cssW / (it.vw || baseW || 1), w = (it.w || 0) * scale
   if (w <= 0) return 0
-  const lead = raw.length - raw.trimStart().length
-  const at = (x - (it.x0 || 0) * scale) / w * pvTextW(raw) // estimate when the canvas was evicted
-  let cum = 0, best = 0, bd = Infinity, inside = 0
-  for (let i = 0; i < raw.length;) {
-    if (/\s/.test(raw[i])) { cum += pvCharW(raw[i]); i++; continue }
-    const from = i, begin = cum
-    while (i < raw.length && !/\s/.test(raw[i])) { cum += pvCharW(raw[i]); i++ }
-    const d = at < begin ? begin - at : at > cum ? at - cum : 0
-    if (d < bd) { bd = d; best = from - lead; inside = pvClickChar(raw.slice(from, i), (at - begin) / Math.max(0.01, cum - begin)) }
-  }
-  return best + inside
+  return pvClickEstimate(raw, (x - (it.x0 || 0) * scale) / w * pvTextW(raw)) // estimate when the canvas was evicted
 }
 function pvItemDist(it, x, y, sx, sy) { // CSS distance to the text box, never to its center: long lines stay clickable everywhere
+  if (it.rot) { // rotated run: distance in its own baseline frame, not to the axis-aligned shadow
+    const c = Math.cos(it.ang || 0), s = Math.sin(it.ang || 0)
+    const u = (x / sx - (it.x0 || 0)) * c + (y / sy - (it.y0 || it.y || 0)) * s
+    const v = (x / sx - (it.x0 || 0)) * s - (y / sy - (it.y0 || it.y || 0)) * c
+    const du = u < 0 ? -u : u > (it.w || 0) ? u - it.w : 0
+    const dv = v < 0 ? -v : v > (it.h || 10) ? v - it.h : 0
+    return (du * sx) * (du * sx) + (dv * sy) * (dv * sy)
+  }
   const x0 = (it.x0 || 0) * sx, x1 = x0 + (it.w || 0) * sx
   const yc = (it.y || 0) * sy, hh = Math.max(4, (it.h || 10) * sy / 2)
   const dx = x < x0 ? x0 - x : x > x1 ? x - x1 : 0
@@ -2111,7 +2128,7 @@ function pvItemDist(it, x, y, sx, sy) { // CSS distance to the text box, never t
 }
 function pvNearItems(items, x, y, sx, sy, skip, max) { // nearest readable text: a drawing without text still lands on its caption
   return items
-    .filter(it => it !== skip && !it.rot && /\p{L}/u.test(it.s || '')) // single-letter words are text too; numbers and rotated runs stay out
+    .filter(it => it !== skip && /\p{L}/u.test(it.s || '')) // single-letter words are text too; numbers stay out
     .map(it => ({ it, d: pvItemDist(it, x, y, sx, sy) }))
     .filter(o => !max || o.d <= max * max) // max (CSS px): text that far away is another spot, not this click
     .sort((a, b) => a.d - b.d)
@@ -2190,7 +2207,7 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
     const rr = CLICK_PX / 2 // CSS pixels, independent of zoom and render scale
     let best = null, bd = rr * rr
     for (const it of items) {
-      if (!it.s.trim() || it.rot) continue // rotated runs have no honest horizontal box for a direct hit
+      if (!it.s.trim()) continue // rotated runs carry their own baseline angle
       const dd = pvItemDist(it, x, y, sx, sy)
       if (dd < bd) { bd = dd; best = it }
     }
@@ -2206,14 +2223,14 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
     if (ih && !onText) { if (await pvJumpSrc(ih.src, 0)) return } // inside the image: the image call owns the click
     if (best) {
       const hint = hintAt(yv)
-      const col = pvClickCol(best, x, r.width, cv.width, cv)
+      const col = pvClickCol(best, x, y, r.width, r.height, cv.width, cv)
       if (await pvJumpBest(pvClickNeedles(items, best, col), hint, pi, best)) return
     }
     if (ih && await pvJumpSrc(ih.src, 0)) return
     if (!best || activeFile === file0) { // no text under the click: nearby readable text still owns the spot
       const cap = pvImgHit(pi, x, y, sx, sy) ? CLICK_PX * 1.5 : 0 // inside a picture: no far paragraph as stand-in for its missing source
       for (const { it: near } of pvNearItems(items, x, y, sx, sy, best, cap)) {
-        const col = pvClickCol(near, x, r.width, cv.width, cv) // blank space above/below a line still has a word column
+        const col = pvClickCol(near, x, y, r.width, r.height, cv.width, cv) // blank space above/below a line still has a word column
         if (pvJumpHere(pvClickNeedles(items, near, col), hintAt(near.y), pi, near)) return
       }
     }

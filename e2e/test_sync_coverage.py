@@ -25,6 +25,15 @@ HEADER = """#set page(header: [Header marker text], footer: [Footer marker text]
 Header body line here.
 """
 
+ROTATED = """= Rotated
+
+Before the turn.
+
+#place(top + left, dx: 6cm, dy: 8cm)[#rotate(20deg, reflow: true)[rotated marker words here]]
+
+After the turn.
+"""
+
 
 def _fill(page, source):
     page.click("#cm .cm-content")
@@ -121,3 +130,21 @@ def test_header_and_footer_map_to_the_page_setup_line(page):
     _click(page, 0.1897, 0.9431)
     line, col = _pos(page)
     assert line == 1 and 50 <= col <= 70, f"footer: Ln {line}:{col}"
+
+
+def test_rotated_text_is_a_click_target_with_letter_precision(page):
+    _open(page, "e2e_cover_rotated", "Cover rotated", ROTATED)
+    base = ROTATED.splitlines()[4].index("rotated marker words here")
+
+    # the run's own baseline frame: 20deg, width 240.2pt, height 22pt at (481.9, 608.9)
+    _click(page, 0.5027, 0.3799)  # centre of the rotated run
+    line, col = _pos(page)
+    assert line == 5 and base + 10 <= col <= base + 16, f"rotated centre: Ln {line}:{col}, base {base}"
+
+    _click(page, 0.4269, 0.3604)  # near the run start
+    line, col = _pos(page)
+    assert line == 5 and base + 1 <= col <= base + 6, f"rotated start: Ln {line}:{col}, base {base}"
+
+    _click(page, 0.5691, 0.3969)  # near the run end
+    line, col = _pos(page)
+    assert line == 5 and base + 19 <= col <= base + 24, f"rotated end: Ln {line}:{col}, base {base}"

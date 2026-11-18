@@ -483,10 +483,11 @@ function pvBoxes(tc, v, page) { // textContent -> click anchors in viewport px (
   const tr = v.transform, a = tr[0], b = tr[1], cc = tr[2], d = tr[3], ee = tr[4], ff = tr[5]
   const ax = Math.abs(a) || 1, ay = Math.abs(d) || 1
   return tc.items.map(it => {
-    const m = it.transform || [], rot = Math.abs(m[1] || 0) >= 0.01 || Math.abs(m[2] || 0) >= 0.01 // rotated: keep the text for anchors, never for clicks
+    const m = it.transform || [], rot = Math.abs(m[1] || 0) >= 0.01 || Math.abs(m[2] || 0) >= 0.01 // rotated: its own baseline angle keeps it clickable
     const w = (it.width || 0) * ax, h = (it.height || 0) * ay
     const x = a * it.transform[4] + cc * it.transform[5] + ee, y = b * it.transform[4] + d * it.transform[5] + ff
-    return { s: it.str, x: x + w / 2, x0: x, w, h: h || 10, y: y - (h || 10) / 2, vw: v.width, vh: v.height, rot, fam: page ? pvFontName(page, it.fontName) : '' }
+    const ang = rot ? Math.atan2(b * (m[0] || 0) + d * (m[1] || 0), a * (m[0] || 0) + cc * (m[1] || 0)) : 0
+    return { s: it.str, x: x + w / 2, x0: x, w, h: h || 10, y: y - (h || 10) / 2, y0: y, ang, vw: v.width, vh: v.height, rot, fam: page ? pvFontName(page, it.fontName) : '' }
   })
 }
 function pvFontName(page, fn) { // embedded base font name: the only honest way to tell math from body text (NewCMMath, STIXTwoMath, …)
