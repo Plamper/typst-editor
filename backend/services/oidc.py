@@ -28,6 +28,7 @@ STATE_COOKIE = "typst_oidc_state"
 STATE_COOKIE_PATH = "/api/oidc"
 STATE_TTL = 600
 CACHE_TTL_S = 3600.0
+_MAX_RESPONSE_BYTES = 1_048_576
 _MAX_STATE_FLOWS = 4
 _MAX_CONSUMED_STATES = 2048
 _HOST_RE = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9a-fA-F:]+\])(?::(\d{1,5}))?$")
@@ -102,9 +103,20 @@ def _valid_host(host: str) -> bool:
     return True
 
 
+def _validate_endpoint_url(url: str, *, allow_http: bool, name: str) -> str:
+    if not isinstance(url, str) or not url.strip():
+        raise OidcError("failed", f"Missing OIDC {name}")
+    u = url.strip()
+    parts = urlsplit(u)
+    allowed_schemes = ("https", "http") if allow_http else ("https",)
+    if parts.scheme not in allowed_schemes or not _valid_host(parts.netloc):
+        raise OidcError("failed", f"Invalid OIDC {name} URL")
+    return u
+
+
 def redirect_uri(req: Request, cfg: config.Config) -> str:
     if cfg.OIDC_REDIRECT_URI:
-        return cfg.OIDC_REDIRECT_URI
+        return _validate_endpoint_url(cfg.OIDC_REDIRECT_URI, allow_http=True, name="redirect_uri")
     proto = (req.url.scheme or "http").lower()
     if proto not in ("http", "https"):
         raise OidcError("failed", "Invalid request scheme")
@@ -195,7 +207,11 @@ async def _fetch_json(url: str, *, headers: dict[str, str] | None = None) -> dic
         async with _http_client() as client:
             resp = await client.get(url, headers=headers or {})
         resp.raise_for_status()
+        if len(resp.content) > _MAX_RESPONSE_BYTES:
+            raise OidcError("failed", "OIDC response too large")
         data = resp.json()
+    except OidcError:
+        raise
     except Exception as exc:
         raise OidcError("failed", f"OIDC HTTP request failed: {exc}") from exc
     if not isinstance(data, dict):
@@ -205,8 +221,8 @@ async def _fetch_json(url: str, *, headers: dict[str, str] | None = None) -> dic
 
 async def _get_discovery(issuer_url: str) -> dict[str, Any]:
     base = issuer_url.rstrip("/")
-    if not base.startswith(("https://", "http://")):
-        raise OidcError("failed", "Invalid OIDC issuer URL")
+    _validate_endpoint_url(base, allow_http=True, name="issuer")
+    allow_http = base.startswith("http://")
     now = time.monotonic()
     cached = _DISCOVERY_CACHE.get(base)
     if cached and now - cached[0] < CACHE_TTL_S:
@@ -217,6 +233,10 @@ async def _get_discovery(issuer_url: str) -> dict[str, Any]:
             raise OidcError("failed", f"OIDC discovery missing {req_key}")
     if str(doc["issuer"]).rstrip("/") != base:
         raise OidcError("failed", "OIDC discovery issuer mismatch")
+    for ep_key in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+        _validate_endpoint_url(str(doc[ep_key]), allow_http=allow_http, name=ep_key)
+    if doc.get("userinfo_endpoint"):
+        _validate_endpoint_url(str(doc["userinfo_endpoint"]), allow_http=allow_http, name="userinfo_endpoint")
     _DISCOVERY_CACHE[base] = (now, doc)
     return doc
 
@@ -330,7 +350,11 @@ async def _exchange_code(
         async with _http_client() as client:
             resp = await client.post(str(disc["token_endpoint"]), data=data, headers=headers)
         resp.raise_for_status()
+        if len(resp.content) > _MAX_RESPONSE_BYTES:
+            raise OidcError("failed", "Token response too large")
         tok = resp.json()
+    except OidcError:
+        raise
     except Exception as exc:
         raise OidcError("failed", f"Token exchange failed: {exc}") from exc
     if not isinstance(tok, dict) or not isinstance(tok.get("id_token"), str) or not tok["id_token"]:
