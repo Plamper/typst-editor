@@ -46,7 +46,7 @@ function lsSet(k, v) { // quota: drop oldest pending stash, retry once, else sma
 }
 
 let lastC = '' // last comment state, poll renders only on change
-let user = '', docId = '', docRole = '', docTitle = '', ydoc = null, prov = null, ytext = null, shadow = '', saveT = 0, tplT = 0 // separate timers: doc vs template save (no race)
+let user = '', hasPassword = true, docId = '', docRole = '', docTitle = '', ydoc = null, prov = null, ytext = null, shadow = '', saveT = 0, tplT = 0 // separate timers: doc vs template save (no race)
 let filesDirty = true, filesAt = 0, shadowSig = '' // file list cache (no GET per keystroke) + mapped shadow signature (no remap per keystroke)
 const FILES_TTL = 15000 // collaborators' uploads show up within this window
 const SAVE_MS = 2500, RENDER_MS = 300, POLL_MS = 5000, SYNC_MS = 40, CLICK_PX = 130, SYNC_PX = 8 // debounce/intervals + click radius (canvas px) + scroll quiet (px)

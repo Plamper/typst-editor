@@ -124,11 +124,12 @@ class PwChange(BaseModel):
 
 class NameChange(BaseModel):
     name: str = Field(max_length=20)
-    password: str = Field(max_length=200)
+    password: str = Field(default="", max_length=200)
 
 
 class PwOnly(BaseModel):
-    password: str = Field(max_length=200)
+    password: str = Field(default="", max_length=200)
+    confirm: str = Field(default="", max_length=20)
 
 
 class AvatarSet(BaseModel):

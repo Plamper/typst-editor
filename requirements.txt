@@ -5,3 +5,6 @@ pycrdt==0.14.10
 python-multipart==0.0.32
 fastmcp==4.1.4
 pillow==13.0.0
+httpx==0.28.1
+PyJWT==2.14.0
+cryptography==48.0.0

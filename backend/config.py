@@ -26,6 +26,17 @@ class Config:
     COOKIE_SECURE: str = "auto"
     REGISTRATION: str = "invite-only"
     REGISTRATION_INVITE_TOKEN: str = ""
+    OIDC_ISSUER_URL: str = ""
+    OIDC_CLIENT_ID: str = ""
+    OIDC_CLIENT_SECRET: str = ""
+    OIDC_REDIRECT_URI: str = ""
+    OIDC_PROVIDER_NAME: str = "SSO"
+    OIDC_SCOPES: str = "openid profile email"
+    OIDC_USERNAME_CLAIM: str = "preferred_username"
+    OIDC_ALLOWED_GROUPS: str = ""
+    OIDC_AUTO_REGISTER: bool = True
+    OIDC_AUTO_REDIRECT: bool = False
+    DISABLE_PASSWORD_LOGIN: bool = False
     SESSION_SECONDS: int = 1209600
     MAX_DOCS_PER_USER: int = 100
     MAX_BYTES_PER_USER: int = 524288000
@@ -115,8 +126,22 @@ def _raw() -> dict:
 # FORWARDED_ALLOW_IPS stays a plain string (comma/space separated, parsed at
 # use site); it is intentionally NOT lowercased below (IPv6 has no case issue
 # but normalization would still be wrong for future tokens like '*').
-_STR_KEYS = ("HOST", "FORWARDED_ALLOW_IPS", "COOKIE_SECURE", "REGISTRATION", "REGISTRATION_INVITE_TOKEN")
-_BOOL_KEYS = ("TRUST_PROXY",)
+_STR_KEYS = (
+    "HOST",
+    "FORWARDED_ALLOW_IPS",
+    "COOKIE_SECURE",
+    "REGISTRATION",
+    "REGISTRATION_INVITE_TOKEN",
+    "OIDC_ISSUER_URL",
+    "OIDC_CLIENT_ID",
+    "OIDC_CLIENT_SECRET",
+    "OIDC_REDIRECT_URI",
+    "OIDC_PROVIDER_NAME",
+    "OIDC_SCOPES",
+    "OIDC_USERNAME_CLAIM",
+    "OIDC_ALLOWED_GROUPS",
+)
+_BOOL_KEYS = ("TRUST_PROXY", "OIDC_AUTO_REGISTER", "OIDC_AUTO_REDIRECT", "DISABLE_PASSWORD_LOGIN")
 _PATH_KEYS = ("DATA_DIR",)
 _INT_KEYS = ("PORT", "SESSION_SECONDS", "MAX_DOCS_PER_USER", "MAX_BYTES_PER_USER",
              "MAX_FILES_PER_DOC", "RATE_REGISTER_PER_HOUR")
@@ -197,6 +222,15 @@ def load() -> Config:
     if vals["COOKIE_SECURE"] not in ("auto", "true", "false"):
         log.warning("COOKIE_SECURE=%r invalid, using default %r", vals["COOKIE_SECURE"], d.COOKIE_SECURE)
         vals["COOKIE_SECURE"] = d.COOKIE_SECURE
+    for k in ("OIDC_ISSUER_URL", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_REDIRECT_URI",
+              "OIDC_PROVIDER_NAME", "OIDC_SCOPES", "OIDC_USERNAME_CLAIM", "OIDC_ALLOWED_GROUPS"):
+        vals[k] = str(vals[k] or "").strip()
+    if not vals["OIDC_PROVIDER_NAME"]:
+        vals["OIDC_PROVIDER_NAME"] = d.OIDC_PROVIDER_NAME
+    if not vals["OIDC_SCOPES"]:
+        vals["OIDC_SCOPES"] = d.OIDC_SCOPES
+    if not vals["OIDC_USERNAME_CLAIM"]:
+        vals["OIDC_USERNAME_CLAIM"] = d.OIDC_USERNAME_CLAIM
     tok = str(vals["REGISTRATION_INVITE_TOKEN"] or "")
     if tok and len(tok) < 16:
         # Warning only here: the fail-closed gate is the startup check in
@@ -206,3 +240,8 @@ def load() -> Config:
     cfg = Config(**vals)
     _CACHE = (key, cfg)
     return cfg
+
+
+def oidc_enabled(cfg: Config | None = None) -> bool:
+    c = cfg if cfg is not None else load()
+    return bool(c.OIDC_ISSUER_URL and c.OIDC_CLIENT_ID)

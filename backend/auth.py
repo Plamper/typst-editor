@@ -21,6 +21,35 @@ CURRENT_ROUNDS = max(int(PBKDF2_ROUNDS), HASH_ROUNDS)
 _FALLBACK_SESSION_SECONDS = 14 * 24 * 3600
 COOKIE = "typst_session"
 DUMMY_HASH = f"pbkdf2${CURRENT_ROUNDS}$" + "00" * 16 + "$" + "00" * 32
+OIDC_HASH_SENTINEL = "!oidc"
+
+
+def has_password(stored_hash: str) -> bool:
+    """True when a stored hash represents a usable local password."""
+    return bool(stored_hash) and not stored_hash.startswith("!")
+
+
+def provision_user(
+    con: _sqlite3.Connection,
+    name: str,
+    password_hash: str,
+    oidc_issuer: str = "",
+    oidc_sub: str = "",
+) -> None:
+    """Insert a new user row along with the starter Tutorial document."""
+    from backend.services import projects
+    from backend.services.tutorial import TUTORIAL
+
+    con.execute(
+        "INSERT INTO users (name, hash, oidc_issuer, oidc_sub) VALUES (?,?,?,?)",
+        (name, password_hash, oidc_issuer, oidc_sub),
+    )
+    did, now = db.new_id("d_"), db.now_iso()
+    con.execute(
+        "INSERT INTO docs (id, owner, title, content, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+        (did, name, "Tutorial", TUTORIAL, now, now),
+    )
+    projects.attach_doc(con, did, check_quota=False)
 
 # Session cleanup runs in a background daemon thread (1C): verify_session is
 # read-only, never DELETEs. Interval is short enough to bound the sessions

@@ -5,7 +5,9 @@ CREATE TABLE IF NOT EXISTS users (
     hash TEXT NOT NULL,
     avatar TEXT NOT NULL DEFAULT '', -- base64 PNG (64px, scaled by frontend)
     migration_bytes INTEGER NOT NULL DEFAULT 0,
-    spell_language TEXT NOT NULL DEFAULT 'auto'
+    spell_language TEXT NOT NULL DEFAULT 'auto',
+    oidc_issuer TEXT NOT NULL DEFAULT '',
+    oidc_sub TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS sessions (

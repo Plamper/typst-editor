@@ -300,21 +300,24 @@ function renderSettings() {
   const nameField = el('label', 'accountField'); nameField.append(el('span', null, t('settings.newName')), nn)
   const namePasswordField = el('label', 'accountField'); namePasswordField.append(el('span', null, t('settings.confirmWithPassword')), npw)
   const nok = el('button', null, t('settings.changeName'))
-  nok.onclick = () => { if (nok.disabled) return; if (!nn.value.trim() || !npw.value) { settingsError(t('settings.needNamePw')); return } nok.disabled = true; api('POST', '/api/me/name',
-    { name: nn.value.trim(), password: npw.value })
+  nok.onclick = () => { if (nok.disabled) return; if (!nn.value.trim() || (hasPassword && !npw.value)) { settingsError(t(hasPassword ? 'settings.needNamePw' : 'settings.needName')); return } nok.disabled = true; api('POST', '/api/me/name',
+    { name: nn.value.trim(), password: hasPassword ? npw.value : '' })
     .then(d => { const spelling = spellStored(); nn.value = ''; npw.value = ''; user = d.user; loadSpell(spelling); paintMe(); sidebar(); renderSettings() })
     .catch(e => settingsError(e.message)).finally(() => nok.disabled = false) }
-  nr.append(nameField, namePasswordField, nok); put('account', grp(t('settings.nameGroup'), sec(nr)))
-  const pr = el('div', 'accountForm')
-  const po = keepField(el('input'), 'passwordCurrentPassword'); po.type = 'password'; po.name = 'current-password-change'; po.autocomplete = 'current-password'; po.placeholder = t('settings.currentPasswordPlaceholder'); po.setAttribute('aria-label', t('settings.confirmCurrentPassword'))
-  const pn = keepField(el('input'), 'newPassword'); pn.type = 'password'; pn.name = 'account-next-secret'; pn.autocomplete = 'off'; pn.readOnly = true; pn.onfocus = () => { pn.readOnly = false }; pn.placeholder = t('settings.newPw'); pn.setAttribute('aria-label', t('settings.newPw'))
-  const oldPasswordField = el('label', 'accountField'); oldPasswordField.append(el('span', null, t('settings.confirmCurrentPassword')), po)
-  const newPasswordField = el('label', 'accountField'); newPasswordField.append(el('span', null, t('settings.newPw')), pn)
-  const pok = el('button', null, t('settings.changePassword'))
-  pok.onclick = () => { if (pok.disabled) return; if (!po.value || !pn.value) { settingsError(t('settings.needOldNew')); return } pok.disabled = true; api('POST', '/api/me/password', { old: po.value, new: pn.value })
-    .then(() => { po.value = pn.value = ''; toast(t('settings.pwChanged')) })
-    .catch(e => settingsError(e.message)).finally(() => pok.disabled = false) }
-  pr.append(newPasswordField, oldPasswordField, pok); put('account', grp(t('settings.pwGroup'), sec(pr)))
+  if (hasPassword) nr.append(nameField, namePasswordField, nok); else nr.append(nameField, nok)
+  put('account', grp(t('settings.nameGroup'), sec(nr)))
+  if (hasPassword) {
+    const pr = el('div', 'accountForm')
+    const po = keepField(el('input'), 'passwordCurrentPassword'); po.type = 'password'; po.name = 'current-password-change'; po.autocomplete = 'current-password'; po.placeholder = t('settings.currentPasswordPlaceholder'); po.setAttribute('aria-label', t('settings.confirmCurrentPassword'))
+    const pn = keepField(el('input'), 'newPassword'); pn.type = 'password'; pn.name = 'account-next-secret'; pn.autocomplete = 'off'; pn.readOnly = true; pn.onfocus = () => { pn.readOnly = false }; pn.placeholder = t('settings.newPw'); pn.setAttribute('aria-label', t('settings.newPw'))
+    const oldPasswordField = el('label', 'accountField'); oldPasswordField.append(el('span', null, t('settings.confirmCurrentPassword')), po)
+    const newPasswordField = el('label', 'accountField'); newPasswordField.append(el('span', null, t('settings.newPw')), pn)
+    const pok = el('button', null, t('settings.changePassword'))
+    pok.onclick = () => { if (pok.disabled) return; if (!po.value || !pn.value) { settingsError(t('settings.needOldNew')); return } pok.disabled = true; api('POST', '/api/me/password', { old: po.value, new: pn.value })
+      .then(() => { po.value = pn.value = ''; toast(t('settings.pwChanged')) })
+      .catch(e => settingsError(e.message)).finally(() => pok.disabled = false) }
+    pr.append(newPasswordField, oldPasswordField, pok); put('account', grp(t('settings.pwGroup'), sec(pr)))
+  }
   const bk = el('div', 'row')
   const bb = el('button', 'btnSecondary', t('settings.backupBtn'))
   bb.title = t('settings.backupTitle')
@@ -435,15 +438,16 @@ function renderSettings() {
   const db = el('button', 'btnDanger', t('settings.deleteAccount'))
   db.onclick = async () => {
     if (db.disabled) return
-    if (!dpw.value) { settingsError(t('settings.needPwDel')); return }
+    if (hasPassword && !dpw.value) { settingsError(t('settings.needPwDel')); return }
     if (!await ask(t('settings.delAccount'), { noInput: true, ok: t('common.delete'), danger: true })) return
     if (!await ask(t('settings.delSure'), { ph: 'DELETE' }).then(v => v === 'DELETE')) return
     db.disabled = true
-    api('POST', '/api/me/delete', { password: dpw.value })
+    api('POST', '/api/me/delete', { password: hasPassword ? dpw.value : '', confirm: 'DELETE' })
       .then(() => { location.reload() })
       .catch(e => settingsError(e.message)).finally(() => db.disabled = false)
   }
-  dr.append(deletePasswordField, db); put('account', grp(t('settings.deleteAccount'), sec(dr)))
+  if (hasPassword) dr.append(deletePasswordField, db); else dr.append(db)
+  put('account', grp(t('settings.deleteAccount'), sec(dr)))
   content.scrollTop = keepScroll
 }
 window.openSettingsCategory = id => {
