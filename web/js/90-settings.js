@@ -2215,6 +2215,14 @@ async function pvSyncDest(dest) { // internal PDF link: the editor cursor follow
     const box = pvImgMatch().filter(b => b.page === dest.page && b.y1 >= y - 4 && (b.y0 <= y + 12 || (b.y0 <= y + 60 * pvScale && gap(b))) && (lx == null || (lx >= b.x0 - vw * 0.45 && lx <= b.x1 + 8))) // a figure's location sits at its block top and left edge, the picture is centered one block gap lower
       .sort((a, b) => Math.abs(a.y0 - y) - Math.abs(b.y0 - y) || (lx == null ? 0 : Math.abs(a.x0 - lx) - Math.abs(b.x0 - lx)))[0]
     if (box && !anchor || box && anchor && anchor.y < box.y0) { const ok = await pvJumpSrc(box.src, 0); if (ok) { syncEdOff = -$('preview').clientHeight * 0.38; syncEdX = -1 } return }
+    const eq = pvMathMatch().filter(m => m.page === dest.page && m.line.y1 >= y - 4 && m.line.y0 <= y + 60 * pvScale && gap(m.line)) // an equation destination: the formula right below it, not the paragraph after it
+      .sort((a, b) => a.line.y0 - b.line.y0)[0]
+    if (eq && (!anchor || anchor.y >= eq.line.y0 - 2)) {
+      const at = eq.src.own && eq.src.own[0]
+      const ok = await pvJumpSrc({ ...eq.src, line: at ? at.line : eq.src.line }, at ? at.at : 0)
+      if (ok) { syncEdOff = -$('preview').clientHeight * 0.38; syncEdX = -1 }
+      return
+    }
   } catch (e) {}
   const needles = anchor ? pvClickNeedles(items, anchor, 0) : []
   const doc = docId, epoch = openN
@@ -2418,6 +2426,31 @@ function pvNearItems(items, x, y, sx, sy, skip, max) { // nearest readable text:
     .sort((a, b) => a.d - b.d)
     .slice(0, 8)
 }
+function pvGenLine(items, it, pi, hint) { // clicked text with no source words: the call that generated it sits between the owned text above and below
+  const txt = getT(), lines = txt.split('\n'), mask = srcMask(txt).split('\n')
+  const block = new Set(pvBlockLines(items, it)) // the generated paragraph itself owns nothing
+  const order = items.filter(o => o === it || (o.s.trim() && !o.rot && /\p{L}{2}/u.test(o.s) && !block.has(o))).sort((a, b) => a.y - b.y || a.x0 - b.x0)
+  const k = order.indexOf(it)
+  if (k < 0) return -1
+  const lineAt = p => txt.slice(0, p).split('\n').length
+  const own = o => { const p = pvHerePos(pvClickNeedles(items, o, 0), hint, pi, null, true); return p >= 0 ? { line: lineAt(p), y: o.y } : null }
+  let a = null, b = null
+  for (let i = k - 1, n = 0; i >= 0 && n < 16 && !a; i--, n++) a = own(order[i])
+  for (let i = k + 1, n = 0; i < order.length && n < 16 && !b; i++, n++) b = own(order[i])
+  if (!a && !b) return -1
+  const from = a ? a.line + 1 : 1, to = b ? b.line - 1 : lines.length
+  if (to < from) return -1 // the neighbours are adjacent source lines: the text came from inside one of them
+  const calls = []
+  for (let ln = from; ln <= to; ln++) {
+    const s = (mask[ln - 1] || '').trim()
+    if (/^#(?!set\b|show\b|let\b|import\b|include\b)[\p{L}_]/u.test(s) || /^#[({[]/.test(s)) calls.push(ln)
+  }
+  if (!calls.length || (!a && calls.length > 1 && !b)) return -1
+  const y0 = a ? a.y : 0, y1 = b ? b.y : (it.vh || 1)
+  const f = Math.max(0, Math.min(0.999, (it.y - y0) / Math.max(1, y1 - y0))) // several generators in the gap: the click height picks one
+  const ln = calls[a && b ? Math.floor(f * calls.length) : a ? 0 : calls.length - 1]
+  return posOfLine(txt, ln) + ((lines[ln - 1] || '').length - (lines[ln - 1] || '').trimStart().length)
+}
 function pvOlEq(pdfText, srcTitle) { // same heading; a numbering prefix on the PDF side is fine
   const x = syncPlain(pdfText), y = syncPlain(srcTitle)
   if (!x || !y) return false
@@ -2525,6 +2558,10 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
     if (!activeFile && !ih && best && bd <= 4 && !/\p{L}/u.test(best.s) && (yv < vh * 0.07 || yv > vh * 0.93)) { // a click on a generated page number in the margin: the page setup owns it, not the last paragraph (text near the margin keeps its own line)
       const set = srcMask(getT()).split('\n').findIndex(l => /#set\s+page\s*\(/.test(l))
       if (set >= 0) { syncPage = pi; jumpPos(posOfLine(getT(), set + 1)); return }
+    }
+    if (onText && activeFile === file0 && yv > vh * 0.07 && yv < vh * 0.93) { // generated text (#lorem, a counter, a package): the code line between the text above and below that the source owns
+      const gen = pvGenLine(items, best, pi, hintAt(yv))
+      if (gen >= 0) { syncPage = pi; jumpPos(gen); return }
     }
     if (!best || activeFile === file0) { // no text under the click: nearby readable text still owns the spot
       const cap = pvImgHit(pi, x, y, sx, sy) ? CLICK_PX * 1.5 : 0 // inside a picture: no far paragraph as stand-in for its missing source
