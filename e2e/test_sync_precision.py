@@ -3,7 +3,7 @@ import re
 import struct
 import zlib
 
-from helpers import create_doc, register, type_source
+from helpers import create_doc, put_source, register
 from playwright.sync_api import expect
 
 PREVIEW_TIMEOUT = 60_000
@@ -134,7 +134,7 @@ def _setup(page, slug, title, source, pages=PAGES, headings=2, resources=True, e
     page.reload()
     page.wait_for_function('window.__booted === true')
     page.locator('aside .doc.sub', has_text=title).first.click()
-    type_source(page, source)
+    put_source(page, source)
     _ready(page, pages, headings)
     return doc
 
@@ -226,7 +226,7 @@ def test_a_textless_page_scrolls_the_editor_to_its_line(page):
     page.reload()
     page.wait_for_function('window.__booted === true')
     page.locator('aside .doc.sub', has_text='Textless page doc').first.click()
-    type_source(page, source)
+    put_source(page, source)
     expect(page.locator('#preview .pvPage[data-done] canvas').first).to_be_visible(timeout=PREVIEW_TIMEOUT)
     page.wait_for_timeout(1500)
 
