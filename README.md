@@ -65,6 +65,19 @@ docker compose logs app | grep "invite code"         # docker compose
 
 The code is generated on first start and saved to `DATA_DIR/.invite_token`. For a public server, set `REGISTRATION_INVITE_TOKEN` before the first start.
 
+### Single Sign-On (OIDC)
+
+To enable OpenID Connect login (Authentik, Authelia, Kanidm, etc.) using Authorization Code Flow with PKCE, set `OIDC_ISSUER_URL` and `OIDC_CLIENT_ID` (plus `OIDC_CLIENT_SECRET` for confidential clients, or leave it empty for public PKCE clients):
+
+```dotenv
+OIDC_ISSUER_URL=https://auth.example.com/application/o/typst/
+OIDC_CLIENT_ID=typst-editor
+OIDC_CLIENT_SECRET=
+OIDC_REDIRECT_URI=https://typst.example.com/api/oidc/callback
+```
+
+Set `OIDC_REDIRECT_URI` explicitly in production. Optional settings (`OIDC_PROVIDER_NAME`, `OIDC_ALLOWED_GROUPS`, `OIDC_AUTO_REGISTER`, `OIDC_AUTO_REDIRECT`, `DISABLE_PASSWORD_LOGIN`) are documented in [`.env.example`](.env.example) and [`config.example.toml`](config.example.toml).
+
 ## Contributing
 
 Small, focused changes are easiest to review; open an issue first for anything larger and run `make check` before a PR. Details are in [CONTRIBUTING.md](CONTRIBUTING.md), and security reports go through [SECURITY.md](SECURITY.md).
