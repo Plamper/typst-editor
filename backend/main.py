@@ -29,6 +29,7 @@ from backend.routers import (
     frontend,
     library_copy,
     notifications,
+    oidc,
     project_folders,
     projects,
     readmode,
@@ -51,6 +52,7 @@ from backend.services.locks import (  # noqa: F401
     _release_single_lock,
 )
 from backend.services.maintenance import reap_trash_dirs
+from backend.services.oidc import oidc_startup_check
 from backend.services.proxy import _proxy_peer_allowed, _proxy_startup_check, _proxy_trusted, client_ip  # noqa: F401
 from backend.services.sidebar import _SIDEBAR_Q  # noqa: F401
 
@@ -109,6 +111,7 @@ async def _app_lifespan(app: FastAPI):
         # C10: refuse TRUST_PROXY=true with an open FORWARDED_ALLOW_IPS.
         # SystemExit (BaseException) propagates through the except below.
         _proxy_startup_check(_cfg)
+        oidc_startup_check(_cfg)
     except Exception:
         pass
     # Paths resolve lazily (db.get_db_path/get_files_dir follow DATA_DIR).
@@ -223,6 +226,7 @@ async def sqlite_busy_handler(req: Request, exc: sqlite3.OperationalError) -> JS
 # (in `system`) must come after every /api route and the static frontend last.
 app.include_router(ws.router)
 app.include_router(auth.router)
+app.include_router(oidc.router)
 app.include_router(docs.router)
 app.include_router(templates.router)
 app.include_router(projects.router)
