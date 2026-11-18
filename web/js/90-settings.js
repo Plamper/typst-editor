@@ -2175,7 +2175,8 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
           }
         }
       } else for (const it of items) if (!it.rot && it.s.trim()) topY = Math.min(topY, (it.y - (it.h || 10) / 2) * sy) // no heading: only the margin above all text
-      if (isFinite(topY) && y < topY) {
+      const onText = items.some(it => it.s.trim() && pvItemDist(it, x, y, sx, sy) <= 4) // a page header is text, not the margin above the heading
+      if (!onText && isFinite(topY) && y < topY) {
         const lines = getT().split('\n')
         let ln = 1
         while (ln < lines.length && !lines[ln - 1].trim()) ln++

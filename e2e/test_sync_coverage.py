@@ -18,6 +18,13 @@ Body line with a note.#footnote[Footnote text lives here.]
 Body line after the note.
 """
 
+HEADER = """#set page(header: [Header marker text], footer: [Footer marker text])
+
+= Header page
+
+Header body line here.
+"""
+
 
 def _fill(page, source):
     page.click("#cm .cm-content")
@@ -94,3 +101,23 @@ def test_footnote_reference_text_and_marker_all_point_at_the_note(page):
     _click(page, 0.1372, 0.9103)  # the generated marker before the note body
     line, col = _pos(page)
     assert line == 3, f"footnote marker: Ln {line}:{col}"
+
+
+def test_header_and_footer_map_to_the_page_setup_line(page):
+    _open(page, "e2e_cover_header", "Cover header", HEADER)
+
+    _click(page, 0.1927, 0.0524)
+    line, col = _pos(page)
+    assert line == 1 and 20 <= col <= 45, f"header: Ln {line}:{col}"
+
+    _click(page, 0.1920, 0.0868)
+    line, col = _pos(page)
+    assert line == 3, f"heading: Ln {line}:{col}"
+
+    _click(page, 0.2047, 0.1078)
+    line, col = _pos(page)
+    assert line == 5, f"body: Ln {line}:{col}"
+
+    _click(page, 0.1897, 0.9431)
+    line, col = _pos(page)
+    assert line == 1 and 50 <= col <= 70, f"footer: Ln {line}:{col}"
