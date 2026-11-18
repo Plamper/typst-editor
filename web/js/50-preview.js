@@ -307,7 +307,7 @@ function pvSrcList() { // live source texts for honest cross-file anchors: [{key
   return out
 }
 async function render() {
-  const id = ++renderN, preview = $('preview'), myDoc = docId, myTplName = tplName
+  const id = ++renderN, preview = $('preview'), myDoc = docId, myTplName = tplName, myEpoch = openN
   if (!myDoc || myTplName) return
   pvBar() // zoom pill extras once (needs consts from later files)
   if (pvWorkerFail || !pvEnsureWorker()) { await renderDirect(id, preview); return } // no worker: main-thread compile
@@ -318,7 +318,8 @@ async function render() {
   try {
     const main = window.changeSession ? sessionMainText() : activeFile ? shadow : getT() // file tab: preview still compiles main.typ
     const pf = await pvFiles()
-    if (!pf || pvStale(id, myDoc, myTplName)) return // stale: skip wasted compile
+    if (!pf) { if (myEpoch === openN && myDoc === docId) queueRender(); return } // a resource poll superseded the list load: retry, no other render would
+    if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted compile
     const job = { cmd: 'work', id: ++pvJobN, main, sig: pf.sig,
       files: [...fileCache].map(([n, c]) => ({ name: n, bytes: c.bytes })),
       tpl: (pf.tpl || []).map(x => ({ name: x.name, content: x.content })) }
@@ -540,6 +541,7 @@ function smoothScroll(el, y) { // jump: quintic in-out, one fixed duration so ed
   pvSelfWrite(el) // mark the start: a scroll event still in flight from before must not stop this animation
   const dur = 320, t0 = performance.now(), a = { jump: true, target, raf: 0 }
   const step = now => {
+    if (!smoothWrote(el)) { scrollAnims.delete(el); return } // someone else moved it (reader, scrollbar, CM): their position wins
     const k = Math.min(1, (now - t0) / dur)
     el.scrollTop = from + dy * k * k * k * (k * (6 * k - 15) + 10) // smootherstep: no overshoot, no hard start
     pvSelfWrite(el)
@@ -562,6 +564,7 @@ function smoothFollow(el, y) { // cursor/scroll follow: new targets keep positio
   pvSelfWrite(el) // mark the start: a scroll event still in flight from before must not stop this follow
   a = { follow: true, target, v: 0, t: performance.now(), omega: 28, raf: 0 }
   const step = now => {
+    if (!smoothWrote(el)) { scrollAnims.delete(el); return } // someone else moved it (reader, scrollbar, CM): their position wins
     const dt = Math.max(0.001, Math.min(0.05, (now - a.t) / 1000))
     a.t = now
     const x = el.scrollTop, c = x - a.target, e = Math.exp(-a.omega * dt)
@@ -1073,8 +1076,6 @@ function pvBar() { // page-fit button next to fit-width (shell untouched: button
   $('zPlus').addEventListener('click', () => pvModeSet('pct'))
   pvModePaint()
 }
-const pvStepPv = stepPv // hoisting: single module script, so function stepPv (90-settings) exists before this line runs
-stepPv = d => { if (pvZoomMode !== 'pct') pvModeSet('pct'); pvStepPv(d); pvRelayout() } // explicit % leaves fit modes, slots follow at once (not via the zoomV observer only)
 const zoomV0 = $('zoomV') // guarded: a missing node must never kill the rest of the module (boot)
 if (zoomV0) new MutationObserver(() => pvRelayout()).observe(zoomV0, { childList: true, characterData: true, subtree: true }) // any zoom change relayouts slots
 addEventListener('resize', () => { if (!window.Present?.isOn() && pvZoomMode !== 'pct' && pvPageSize) { pvModeApply(); pvRelayout() } })
