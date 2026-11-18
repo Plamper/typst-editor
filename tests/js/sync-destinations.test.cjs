@@ -111,3 +111,29 @@ test('a cursor on a caption line anchors to the caption, the image line to the p
   assert.equal(c.pvImgLineHit(1), box) // "#figure(" has no words: the picture
   assert.equal(c.pvImgLineHit(3), null) // the caption has its own words on paper
 })
+
+test('a computed value inside owned prose lands on the expression that printed it', () => {
+  const text = 'Text after code block.\n#let x = 5\nThe value is #x and #(x + 1) computed.\n#for i in range(3) [Item #i ]'
+  const it = item('Text after code block. The value is 5 and 6 computed. Item 0 Item 1 Item 2', 141, 200, 800)
+  const c = genCtx(text, [it], {})
+  vm.runInContext(slice(settings, 'const SRC_MATH', 'function srcObjs'), c)
+  vm.runInContext(slice(settings, 'function srcLineWords', 'function syncWords'), c)
+  assert.equal(c.pvGenLine([it], it, 0, 3, it.s.indexOf('5')), text.indexOf('#x'))
+  assert.equal(c.pvGenLine([it], it, 0, 3, it.s.indexOf('6')), text.indexOf('#(x'))
+  assert.equal(c.pvGenLine([it], it, 0, 3, it.s.indexOf('0')), text.indexOf('#i '))
+})
+
+test('a click in a word gap of a hyphen-split paragraph keeps the caret behind the word before it', () => {
+  const c = viewCtxLite()
+  const src = 'Außerdem gibt es Anführungszeichen und Umlaute. Die Versicherungen verhandeln Arbeitsunfähigkeitsbescheinigungen täglich.'
+  const needle = 'Außerdem gibt es Anführungszeichen und Umlaute. Die Versicherungen verhandeln Arbeitsunfä higkeitsbescheinigungen täglich.'
+  assert.equal(c.pvViewPos(src, needle, needle.indexOf('gibt es') + 7, 1), src.indexOf('gibt es') + 7) // right behind "es", not on the "A" of the next word
+  assert.equal(c.pvViewPos(src, needle, needle.indexOf('Anführ') + 2, 1), src.indexOf('Anführ') + 2)
+})
+
+function viewCtxLite() {
+  const c = vm.createContext({ posOfLine })
+  vm.runInContext(slice(settings, 'const SRC_MATH', 'function srcObjs'), c)
+  vm.runInContext(slice(settings, 'function srcLineWords', 'function syncWords'), c)
+  return c
+}

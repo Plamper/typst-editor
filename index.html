@@ -8458,7 +8458,7 @@ function pvViewPos(txt, s, off, hint) { // clicked visible text -> source letter
   }
   if (best < 0) return -1
   const k = pvCaretIndex(nw, off), c = nw.s.slice(0, k).replace(/ /g, '').length
-  if (c >= cn.length) return srcAfter(txt, doc.map[cd.at[best + cn.length - 1]])
+  if (c >= cn.length || (c > 0 && nw.s[k] === ' ')) return srcAfter(txt, doc.map[cd.at[best + c - 1]]) // a click in a word gap: the caret stays behind the word before it
   return doc.map[cd.at[best + c]]
 }
 function srcViewCompact(doc) { // normalized document without word gaps, with the index of every letter in doc.s
@@ -9085,8 +9085,16 @@ function pvNearItems(items, x, y, sx, sy, skip, max) { // nearest readable text:
     .sort((a, b) => a.d - b.d)
     .slice(0, 8)
 }
-function pvGenLine(items, it, pi, hint) { // clicked text with no source words: the call that generated it sits between the owned text above and below
+function pvGenLine(items, it, pi, hint, col) { // clicked text with no source words: the call that generated it sits between the owned text above and below
   const txt = getT(), lines = txt.split('\n'), mask = srcMask(txt).split('\n')
+  if (col > 0) { // "The value is 5": the words before the click are in the source, the computed token is the expression right behind them
+    const left = pvNormCaret(String(it.s || '').slice(0, col)).s.split(' ').filter(w => /\p{L}/u.test(w)).join(' ')
+    const p = /\p{L}{3}/u.test(left) ? pvViewPos(txt, left, left.length, hint) : -1
+    if (p >= 0) {
+      const at = txt.lastIndexOf('\n', p - 1) + 1, li = txt.slice(0, at).split('\n').length - 1, m = mask[li] || ''
+      for (let j = p - at; j < m.length; j++) if (m[j] === '#') return at + j
+    }
+  }
   const block = new Set(pvBlockLines(items, it)) // the generated paragraph itself owns nothing
   const order = items.filter(o => o === it || (o.s.trim() && !o.rot && /\p{L}{2}/u.test(o.s) && !block.has(o))).sort((a, b) => a.y - b.y || a.x0 - b.x0)
   const k = order.indexOf(it)
@@ -9231,8 +9239,8 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
       const set = srcMask(getT()).split('\n').findIndex(l => /#set\s+page\s*\(/.test(l))
       if (set >= 0) { syncPage = pi; jumpPos(posOfLine(getT(), set + 1)); return }
     }
-    if (onText && activeFile === file0 && yv > vh * 0.07 && yv < vh * 0.93) { // generated text (#lorem, a counter, a package): the code line between the text above and below that the source owns
-      const gen = pvGenLine(items, best, pi, hintAt(yv))
+    if (onText && activeFile === file0 && yv > vh * 0.07 && yv < vh * 0.93 && /\p{L}{3}/u.test(best.s)) { // generated prose (#lorem, a function, a package): the code line between the text above and below that the source owns; a chart label ("A", "40") keeps its caption
+      const gen = pvGenLine(items, best, pi, hintAt(yv), pvClickCol(best, x, y, r.width, r.height, cv.width, cv))
       if (gen >= 0) { syncPage = pi; jumpPos(gen); return }
     }
     if (!best || activeFile === file0) { // no text under the click: nearby readable text still owns the spot
