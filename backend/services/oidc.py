@@ -15,9 +15,9 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 import jwt
-from fastapi import Request
+from fastapi import HTTPException, Request
 
-from backend import auth, config, db
+from backend import auth, config, db, deps
 from backend.constants import NAME_RE
 from backend.services.locks import _named_lock
 from backend.services.proxy import _proxy_trusted
@@ -32,6 +32,7 @@ _MAX_RESPONSE_BYTES = 1_048_576
 _MAX_STATE_FLOWS = 4
 _MAX_CONSUMED_STATES = 2048
 _HOST_RE = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9a-fA-F:]+\])(?::(\d{1,5}))?$")
+_JOIN_RE = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 ALLOWED_ALGS = (
     "RS256",
     "RS384",
@@ -261,6 +262,11 @@ async def _get_jwks(jwks_uri: str, *, force: bool = False) -> list[dict[str, Any
     return clean
 
 
+def _sanitize_join(join: str) -> str:
+    s = (join or "").strip()
+    return s if _JOIN_RE.fullmatch(s) else ""
+
+
 async def start_login(req: Request, cfg: config.Config, join: str = "") -> tuple[str, str]:
     disc = await _get_discovery(cfg.OIDC_ISSUER_URL)
     cb = redirect_uri(req, cfg)
@@ -294,7 +300,7 @@ async def start_login(req: Request, cfg: config.Config, join: str = "") -> tuple
         "state": state,
         "nonce": nonce,
         "cv": verifier,
-        "join": join[:200],
+        "join": _sanitize_join(join),
         "cb": cb,
         "exp": now + STATE_TTL,
     }
@@ -313,7 +319,7 @@ async def start_login(req: Request, cfg: config.Config, join: str = "") -> tuple
                     "state": item["state"],
                     "nonce": item["nonce"],
                     "cv": item["cv"],
-                    "join": str(item.get("join") or "")[:200],
+                    "join": _sanitize_join(str(item.get("join") or "")),
                     "cb": str(item.get("cb") or ""),
                     "exp": item_exp,
                 })
@@ -420,7 +426,7 @@ async def _verify_id_token(
                 audience=cfg.OIDC_CLIENT_ID,
                 issuer=str(disc["issuer"]),
                 leeway=30,
-                options={"require": ["exp", "sub"]},
+                options={"require": ["iss", "aud", "exp", "sub"]},
             )
             break
         except Exception as exc:
@@ -428,18 +434,32 @@ async def _verify_id_token(
     if claims is None:
         raise OidcError("failed", f"Invalid id_token signature/claims: {last_err}")
 
+    sub = claims.get("sub")
+    if not isinstance(sub, str) or not sub.strip() or len(sub) > 255:
+        raise OidcError("failed", "id_token sub invalid")
     aud = claims.get("aud")
     if (isinstance(aud, list) and len(aud) > 1) or "azp" in claims:
         if claims.get("azp") != cfg.OIDC_CLIENT_ID:
             raise OidcError("failed", "id_token azp mismatch")
     if "iat" in claims:
         iat = claims["iat"]
-        if not isinstance(iat, (int, float)) or iat > time.time() + 60:
+        if not isinstance(iat, (int, float)) or isinstance(iat, bool) or iat > time.time() + 60:
             raise OidcError("failed", "id_token iat invalid")
     nonce = claims.get("nonce")
     if not isinstance(nonce, str) or not hmac.compare_digest(nonce, expected_nonce):
         raise OidcError("failed", "id_token nonce mismatch")
     return claims
+
+
+def _has_claim(claims: dict[str, Any], key: str) -> bool:
+    val = claims.get(key)
+    if val is None:
+        return False
+    if isinstance(val, str):
+        return bool(val.strip())
+    if isinstance(val, (list, dict, set, tuple)):
+        return bool(val)
+    return True
 
 
 async def _maybe_merge_userinfo(
@@ -448,18 +468,19 @@ async def _maybe_merge_userinfo(
     disc: dict[str, Any],
     cfg: config.Config,
 ) -> dict[str, Any]:
-    need_user = cfg.OIDC_USERNAME_CLAIM not in claims
-    need_groups = bool(cfg.OIDC_ALLOWED_GROUPS) and "groups" not in claims
+    need_user = not _has_claim(claims, cfg.OIDC_USERNAME_CLAIM)
+    need_groups = bool(cfg.OIDC_ALLOWED_GROUPS) and not _has_claim(claims, "groups")
     endpoint = disc.get("userinfo_endpoint")
     access_token = tok.get("access_token")
     if not (need_user or need_groups) or not isinstance(endpoint, str) or not endpoint or not isinstance(access_token, str) or not access_token:
         return claims
     ui = await _fetch_json(endpoint, headers={"Authorization": f"Bearer {access_token}"})
-    if ui.get("sub") != claims.get("sub"):
+    ui_sub = ui.get("sub")
+    if not isinstance(ui_sub, str) or not hmac.compare_digest(ui_sub, str(claims.get("sub", ""))):
         raise OidcError("failed", "Userinfo sub mismatch")
     merged = dict(claims)
     for k, v in ui.items():
-        if k not in merged:
+        if not _has_claim(merged, k) and v is not None:
             merged[k] = v
     return merged
 
@@ -472,7 +493,7 @@ def _check_groups(claims: dict[str, Any], cfg: config.Config) -> None:
         return
     raw = claims.get("groups")
     if isinstance(raw, list):
-        have = {str(g).strip() for g in raw}
+        have = {str(g).strip() for g in raw if isinstance(g, str) and g.strip()}
     elif isinstance(raw, str):
         have = {g.strip() for g in raw.split(",") if g.strip()}
     else:
@@ -497,10 +518,24 @@ def sanitize_username(raw: str) -> str:
 
 def _pick_username_claim(claims: dict[str, Any], cfg: config.Config) -> str:
     for key in (cfg.OIDC_USERNAME_CLAIM, "preferred_username", "nickname", "email", "name"):
+        if key == "email" and cfg.OIDC_USERNAME_CLAIM != "email" and claims.get("email_verified") is False:
+            continue
         val = claims.get(key)
         if isinstance(val, str) and val.strip():
             return val
     return "user"
+
+
+def _find_existing_oidc_user(issuer: str, sub: str) -> str | None:
+    con = db.connect()
+    try:
+        row = con.execute(
+            "SELECT name FROM users WHERE oidc_issuer=? AND oidc_sub=?",
+            (issuer, sub),
+        ).fetchone()
+        return str(row["name"]) if row else None
+    finally:
+        con.close()
 
 
 def _resolve_or_create_user(
@@ -509,16 +544,9 @@ def _resolve_or_create_user(
     claims: dict[str, Any],
     cfg: config.Config,
 ) -> str:
-    con = db.connect()
-    try:
-        row = con.execute(
-            "SELECT name FROM users WHERE oidc_issuer=? AND oidc_sub=?",
-            (issuer, sub),
-        ).fetchone()
-        if row:
-            return str(row["name"])
-    finally:
-        con.close()
+    existing = _find_existing_oidc_user(issuer, sub)
+    if existing:
+        return existing
 
     if not cfg.OIDC_AUTO_REGISTER:
         raise OidcError("registration_disabled", "OIDC auto-registration disabled")
@@ -535,8 +563,12 @@ def _resolve_or_create_user(
             candidate = base
             n = 2
             while con.execute("SELECT 1 FROM users WHERE name=? COLLATE NOCASE", (candidate,)).fetchone():
+                if n > 100:
+                    suffix = f"-{secrets.token_hex(3)}"
+                    candidate = f"{base[:20 - len(suffix)].rstrip('_-') or 'user'}{suffix}"
+                    continue
                 suffix = f"-{n}"
-                candidate = f"{base[:20 - len(suffix)]}{suffix}"
+                candidate = f"{base[:20 - len(suffix)].rstrip('_-') or 'user'}{suffix}"
                 n += 1
             auth.provision_user(
                 con,
@@ -572,6 +604,18 @@ async def complete_login(req: Request, cfg: config.Config) -> tuple[str, str]:
 
     issuer = str(disc["issuer"])
     sub = str(claims["sub"])
-    username = await asyncio.to_thread(_resolve_or_create_user, issuer, sub, claims, cfg)
-    join_tok = st_data.get("join")
-    return username, join_tok if isinstance(join_tok, str) else ""
+    existing = await asyncio.to_thread(_find_existing_oidc_user, issuer, sub)
+    if existing is None:
+        if not cfg.OIDC_AUTO_REGISTER:
+            raise OidcError("registration_disabled", "OIDC auto-registration disabled")
+        try:
+            deps.limited(req, "register")
+        except HTTPException as exc:
+            if exc.status_code == 429:
+                raise OidcError("rate_limited", "OIDC registration rate limit exceeded") from exc
+            raise
+        username = await asyncio.to_thread(_resolve_or_create_user, issuer, sub, claims, cfg)
+    else:
+        username = existing
+    join_tok = _sanitize_join(str(st_data.get("join") or ""))
+    return username, join_tok
