@@ -9064,7 +9064,7 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
       if (await pvJumpBest(pvClickNeedles(items, best, col), hint, pi, best)) return
     }
     if (ih && await pvJumpSrc(ih.src, 0)) return
-    if (!activeFile && !ih && (yv < vh * 0.07 || yv > vh * 0.93)) { // page margin with a generated page number (or nothing): the page setup owns it, not the last paragraph
+    if (!activeFile && !ih && best && bd <= 4 && !/\p{L}/u.test(best.s) && (yv < vh * 0.07 || yv > vh * 0.93)) { // a click on a generated page number in the margin: the page setup owns it, not the last paragraph (text near the margin keeps its own line)
       const set = srcMask(getT()).split('\n').findIndex(l => /#set\s+page\s*\(/.test(l))
       if (set >= 0) { syncPage = pi; jumpPos(posOfLine(getT(), set + 1)); return }
     }
