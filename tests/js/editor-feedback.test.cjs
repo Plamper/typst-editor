@@ -9,12 +9,15 @@ const syncSlice = code.slice(code.indexOf('function syncText'), code.indexOf('fu
 const pvSlice = pvCode.slice(pvCode.indexOf('function srcMask'), pvCode.indexOf('function pvSecAt'))
 const outlineSlice = code.slice(code.indexOf('function pvOlEq'), code.indexOf("$('preview').addEventListener('click'"))
 const ctx = vm.createContext({ posOfLine: (t, ln) => { let p = 0; for (let i = 1; i < ln; i++) p = t.indexOf('\n', p) + 1; return p } })
+const viewSlice = code.slice(code.indexOf('const SRC_MATH'), code.indexOf('function srcObjs')) // syncAnchor reads the same visible text as the click side
 vm.runInContext(pvCode.slice(pvCode.indexOf('function srcMask'), pvCode.indexOf('function pvSecAt')), ctx)
+vm.runInContext(viewSlice, ctx)
 vm.runInContext(syncSlice, ctx)
 const page = texts => texts.map((s, y) => ({ s, y: y * 20, vh: 800 }))
 function outlineCtx(extra) { // real source parser + heading matcher, not stubs
   const c = vm.createContext({ posOfLine: (t, ln) => { let p = 0; for (let i = 1; i < ln; i++) p = t.indexOf('\n', p) + 1; return p },
     renderN: 1, shownN: 1, pvOutline: [], pvOutlineGen: 1, ...extra })
+  vm.runInContext(viewSlice, c)
   vm.runInContext(syncSlice, c)
   vm.runInContext(pvSlice, c)
   vm.runInContext(outlineSlice, c)

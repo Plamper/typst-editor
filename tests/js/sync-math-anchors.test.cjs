@@ -27,6 +27,7 @@ function formulaCtx(source, hint) {
   const c = vm.createContext({
     console,
     cm: { state: { doc: { lines: source.split('\n').length } } },
+    activeFile: '',
     pvOutlineGen: 0,
     shownN: 0,
     getT: () => source,

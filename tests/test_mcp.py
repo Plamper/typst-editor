@@ -590,11 +590,12 @@ def test_page_count_counts_rendered_pages_not_pdf_markers(monkeypatch):
     def fake_run(cmd, cwd, **_):
         assert "svg" in cmd  # every page rendered, no PDF object stream to parse
         for page in (1, 2, 3):
-            (Path(cwd) / f"out-{page}.svg").write_text("<svg/>")
+            (Path(cwd) / "__pages__" / f"p-{page}.svg").write_text("<svg/>")
+            (Path(cwd) / f"out-{page}.svg").write_text("<svg/>")  # a user file with that name is no page
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(t.subprocess, "run", fake_run)
-    assert t._compile_pdf_pages("= Hi", []) == 3
+    assert t._compile_pdf_pages("= Hi", [("out-9.svg", b"<svg/>")]) == 3
 
 
 def test_typst_version_matches_audited_sync_fixtures():
@@ -646,5 +647,22 @@ def test_view_totals_cache_no_poison(c, monkeypatch):
     t._VIEW_CACHE.clear()
     v2 = asyncio.run(t.op_view("u1", "owner", "/docs/TP", pages="6-10"))
     assert v2.structured_content["total_pages"] == 12
+    t._VIEW_CACHE.clear()
+    t._VIEW_TOTALS.clear()
+
+
+def test_view_cache_hit_recounts_after_failed_count(c, monkeypatch):
+    register_user(c, "u1")
+    t.op_create("u1", "owner", "/docs/TQ", "= Hi")
+    monkeypatch.setattr(t, "_compile_pngs", lambda *a, **k: [b"x"])
+    monkeypatch.setattr(t, "_compile_pdf_pages", lambda *a, **k: None)
+    t._VIEW_CACHE.clear()
+    t._VIEW_TOTALS.clear()
+    v1 = asyncio.run(t.op_view("u1", "owner", "/docs/TQ", pages="1-5"))
+    assert v1.structured_content["total_pages"] == 5  # guess, never stored as the real total
+    monkeypatch.setattr(t, "_compile_pdf_pages", lambda *a, **k: 12)
+    v2 = asyncio.run(t.op_view("u1", "owner", "/docs/TQ", pages="1-5"))
+    assert v2.structured_content["cache_hit"] is True
+    assert v2.structured_content["total_pages"] == 12  # the cached render is reused, the page count is retried
     t._VIEW_CACHE.clear()
     t._VIEW_TOTALS.clear()

@@ -696,7 +696,7 @@ function syncToEd() {
     const pos = pvHerePos(pvClickNeedles(items, it, 0), line, pi, it)
     if (pos < 0) continue
     const ln = cm.state.doc.lineAt(pos).number, sec = pvSecAtLine(ln)
-    if (!sec ? pi === 0 : sec.page <= pi && pi <= sec.endPage) { smoothFollow(cm.scrollDOM, cmTop(pos)); return } // another page's text (header, repeated title): not this spot
+    if (!sec ? (pi === 0 || !pvSections().length) : sec.page <= pi && pi <= sec.endPage) { smoothFollow(cm.scrollDOM, cmTop(pos)); return } // no heading with a page at all: any page's text may name its line // another page's text (header, repeated title): not this spot
   }
   smoothFollow(cm.scrollDOM, cmTop(posOfLine(getT(), line)))
 }
@@ -717,7 +717,7 @@ function pvPageHint(pi, total, n, at, frac) { // click page -> source line: sect
   if (at && at.sec) {
     const a = at.sec.line, b = at.next ? at.next.line - 1 : total
     const span = at.next ? Math.max(1, at.next.page - at.sec.page) : Math.max(1, n - at.sec.page)
-    const f = ((pi - at.sec.page) + f0) / Math.max(1, span)
+    const f = Math.max(0, Math.min(1, ((pi - at.sec.page) + f0) / Math.max(1, span))) // the page of the next heading, above it: still this section, never past its last line
     return Math.max(1, Math.min(total, Math.round(a + f * Math.max(0, b - a))))
   }
   if (at && at.next) return Math.max(1, Math.min(total, at.next.line)) // above the first heading: that heading is the honest anchor
@@ -729,12 +729,12 @@ function pvCanvasList() { // virtual slots first, fallback bare canvases
   if (sl.length) return [...sl]
   return [...pv.querySelectorAll('canvas')]
 }
-function pvPosIn(txt, s, off, hint) { // exact needle first, then its words across source line breaks and markup
+function pvPosIn(txt, s, off, hint, strict) { // exact needle first, then its words across source line breaks and markup; strict: a lone shared word is no match
   const seen = pvViewPos(txt, s, off, hint) // visible text only: URLs, markup and raw pipes never capture the click
   if (seen >= 0) return seen
   const at = locateNear(txt, s, hint)
   if (at >= 0) return at + off
-  const heard = pvViewWords(txt, s, off, hint) // the clicked word with its neighbours: exact letter, even when the run differs
+  const heard = pvViewWords(txt, s, off, hint, strict ? 2 : 0) // the clicked word with its neighbours: exact letter, even when the run differs
   if (heard >= 0) return heard
   const words = pvNormWords(s)
   if (!words.length) return -1
@@ -758,20 +758,21 @@ function pvNormWords(s) { // syncText words with their raw span: "don’t" -> do
   }
   return out
 }
-function pvHerePos(needles, hint, pi, anchor) { // source position of the best needle in the current file; -1: none
+function pvHerePos(needles, hint, pi, anchor, strict) { // source position of the best needle in the current file; -1: none; strict: no lone-word guess
   const list = (needles || []).filter(n => n && n.s && n.s.trim().length >= 2)
   const cur = activeFile || ''
   if (!cur && anchor) { // heading clicks: the PDF line's own height decides between repeated titles
     const lines = getT().split('\n'), matches = []
     let pos = 0
+    const bare = nd => { const s = nd.s.trim(), k = pvNumCut(s); return { s: s.slice(k), off: Math.max(0, (nd.off || 0) - k) } } // "1.2 Results" on paper, "= Results" in the source
     lines.forEach((text, i) => {
-      if (/^\s*=+\s/.test(text) && list.some(nd => syncPlain(text).includes(syncPlain(nd.s.trim())))) {
-        const nd = list.find(n => syncPlain(text).includes(syncPlain(n.s.trim())))
-        const s = nd.s.trim(), off = Math.max(0, Math.min(nd.off || 0, s.length))
+      const nd = /^\s*=+\s/.test(text) ? list.map(bare).find(n => syncPlain(n.s) && syncPlain(text).includes(syncPlain(n.s))) : null
+      if (nd) {
+        const s = nd.s, off = Math.max(0, Math.min(nd.off, s.length))
         const hit = syncAnchor(lines, i + 1, pvTexts, pvSecAtLine(i + 1))
         if (hit && hit.pi === pi && hit.items.includes(anchor)) {
           const at = text.indexOf(s)
-          matches.push({ pos: at >= 0 ? pos + at + off : pos, distance: Math.abs(hit.it.y - anchor.y) })
+          matches.push({ pos: at >= 0 ? pos + at + off : pos + (text.match(/^\s*=+\s*/) || [''])[0].length, distance: Math.abs(hit.it.y - anchor.y) })
         }
       }
       pos += text.length + 1
@@ -784,14 +785,14 @@ function pvHerePos(needles, hint, pi, anchor) { // source position of the best n
     const s = nd.s.trim(), off = Math.max(0, Math.min(nd.off || 0, s.length))
     let at = pvViewPos(total, s, off, hint) // visible words: markup and URLs never capture the click
     if (at < 0) { const p = locateNear(total, s, hint); if (p >= 0) at = p + off }
-    if (at < 0) at = pvViewWords(total, s, off, hint)
-    if (at < 0) at = pvPosIn(total, s, off, hint) // last resort: the old word matcher
+    if (at < 0) at = pvViewWords(total, s, off, hint, strict ? 2 : 0)
+    if (at < 0) at = pvPosIn(total, s, off, hint, strict) // last resort: the old word matcher
     if (at >= 0) return at
   }
   return -1
 }
-function pvJumpHere(needles, hint, pi, anchor) { // current file: exact word first, then the clicked word of a reflowed run
-  const pos = pvHerePos(needles, hint, pi, anchor)
+function pvJumpHere(needles, hint, pi, anchor, strict) { // current file: exact word first, then the clicked word of a reflowed run
+  const pos = pvHerePos(needles, hint, pi, anchor, strict)
   if (pos < 0) return false
   syncPage = pi
   jumpPos(pos)
@@ -800,7 +801,7 @@ function pvJumpHere(needles, hint, pi, anchor) { // current file: exact word fir
 async function pvJumpBest(needles, hint, pi, anchor) { // current file, else the unique owner, else stay
   const list = (needles || []).filter(n => n && n.s && n.s.trim().length >= 2)
   if (!list.length) return false
-  if (pvJumpHere(list, hint, pi, anchor)) return true
+  if (pvJumpHere(list, hint, pi, anchor, true)) return true // strong evidence in this file first, then in the others, a lone shared word last
   const cur = activeFile || ''
   const total = cm.state.doc.lines || 1
   for (const nd of list) {
@@ -813,7 +814,7 @@ async function pvJumpBest(needles, hint, pi, anchor) { // current file, else the
       const txt = src.text || ''
       const lines = txt ? txt.split('\n').length : 1
       const h2 = Math.max(1, Math.min(lines, Math.round(hint / Math.max(1, total) * lines)))
-      const at = pvPosIn(txt, s, off, h2)
+      const at = pvPosIn(txt, s, off, h2, true)
       if (at >= 0) {
         if (found) { dup = true; break }
         found = { key: src.key }
@@ -826,35 +827,35 @@ async function pvJumpBest(needles, hint, pi, anchor) { // current file, else the
       if (doc !== docId || epoch !== openN || activeFile !== found.key) return false
       const t = getT(), lines = cm.state.doc.lines || 1
       const h2 = Math.max(1, Math.min(lines, Math.round(hint / Math.max(1, total) * lines)))
-      const at = pvPosIn(t, s, off, h2)
+      const at = pvPosIn(t, s, off, h2, true)
       if (at >= 0) { jumpPos(at); return true }
     }
   }
-  return false
+  return pvJumpHere(list, hint, pi, anchor) // nothing strong anywhere: the clicked word in this file is still the honest guess
 }
 function pvMainText() { return activeFile ? shadow : getT() } // main.typ, also while a text tab is open
 function pvFileAnchor(key, main) { // main line where a text file enters the page (include first, import as weak hint)
   if (!key) return 0
   const want = tabName(key).replace(/^\.?\//, '').replace(/\.typ$/i, '')
   const mask = srcMask(main).split('\n')
-  let weak = 0
+  const base = want.split('/').pop()
+  let weak = 0, loose = 0 // loose: same file name in another folder, only used when no full path matches anywhere
   for (let i = 0; i < mask.length; i++) {
-    const m = mask[i].match(/^\s*#?\s*(include|import)\s*(?:<([^>]+)>|"([^"]+)"|([^\s:,]+))/)
+    const m = mask[i].match(/(?:^|[#=({,;]|\blet\s+\w+\s*=)\s*(include|import)\s*\(?\s*(?:<([^>]+)>|"([^"]+)"|([^\s:,)]+))/) // #include "a.typ", #include("a.typ"), #let x = include "a.typ", #{ include "a.typ" }
     if (!m) continue
     const path = String(m[2] || m[3] || m[4] || '').replace(/^\.?\//, '').replace(/\.typ$/i, '')
-    if (path !== want && path.split('/').pop() !== want.split('/').pop()) continue
-    if (m[1] === 'include') return i + 1
-    if (!weak) weak = i + 1
+    if (path === want) { if (m[1] === 'include') return i + 1; if (!weak) weak = i + 1 }
+    else if (path.split('/').pop() === base && !loose) loose = m[1] === 'include' ? i + 1 : 0
   }
-  return weak
+  return weak || loose
 }
 function pvSrcImages() { // image() calls that can reach the page, in render order
   const main = pvMainText(), mainN = main.split('\n').length, out = []
   let loose = 0
   for (const src of pvSrcList()) {
     if (!src || !src.text) continue
-    const base = src.key ? (pvFileAnchor(src.key, main) || mainN + (++loose) * 1e5) : 0
-    for (const o of srcObjs(src.text).images) out.push({ key: src.key || '', line: o.line, order: base + o.line })
+    const base = src.key ? (pvFileAnchor(src.key, main) || mainN + (++loose) * 1e5) : 0, n = src.text.split('\n').length + 1
+    for (const o of srcObjs(src.text).images) out.push({ key: src.key || '', line: o.line, order: src.key ? base + o.line / n : o.line }) // a file line is a fraction of its include line: units stay main-file lines
   }
   return out.sort((a, b) => a.order - b.order)
 }
@@ -879,7 +880,7 @@ function pvTextSrcLine(items, it, pi) { // PDF text -> the line and file that ow
     const h = Math.max(1, Math.min(n, Math.round(hint / Math.max(1, total) * n)))
     for (const nd of needles) {
       const at = pvPosIn(txt, nd.s.trim(), nd.off || 0, h)
-      if (at >= 0) return { key: src.key || '', line: txt.slice(0, at).split('\n').length, order: (src.key ? pvFileAnchor(src.key, pvMainText()) : 0) + txt.slice(0, at).split('\n').length }
+      if (at >= 0) { const ln = txt.slice(0, at).split('\n').length; return { key: src.key || '', line: ln, order: src.key ? pvFileAnchor(src.key, pvMainText()) + ln / (n + 1) : ln } }
     }
   }
   return null
@@ -974,7 +975,8 @@ function pvMathNorm(s) { return String(s || '').normalize('NFKC').replace(/\s+/g
 function pvMathLines(items) { // display math: math-font runs alone on their visual line, glyphs in reading order
   const isMath = it => !it.rot && it.fam && /math/i.test(it.fam) && String(it.s || '').trim()
   if (!items.some(isMath)) return []
-  const rest = items.filter(o => !o.rot && String(o.s || '').trim() && !isMath(o)), rows = []
+  const eqNum = o => /^[(\[]?\s*(?:\d+|[A-Za-z]|[ivxlcdm]+)(?:[.\-–]\d+)*[a-z]?\s*[)\]]?$/.test(String(o.s || '').trim()) // "(1)", "(2.3a)": equation numbering in the body font
+  const rest = items.filter(o => !o.rot && String(o.s || '').trim() && !isMath(o) && !eqNum(o)), rows = []
   for (const it of items.filter(isMath).sort((a, b) => a.y - b.y || a.x0 - b.x0)) {
     const L = rows[rows.length - 1], h = it.h || 10
     if (!L || Math.abs(it.y - L.y) > Math.max(2, h * 0.7)) rows.push({ y: it.y, h, items: [it] })
@@ -986,7 +988,10 @@ function pvMathLines(items) { // display math: math-font runs alone on their vis
     const iv = L.items.slice().sort((a, b) => a.x0 - b.x0)
     L.s = ''
     L.own = []
-    for (const it of iv) for (const ch of pvMathNorm(it.s)) { L.s += ch; L.own.push(it) }
+    for (const it of iv) { // one item can hold several glyphs ("123"): each gets its own slice of the box
+      const cs = [...pvMathNorm(it.s)], n = cs.length
+      cs.forEach((ch, k) => { L.s += ch; L.own.push(n > 1 ? { ...it, x0: it.x0 + (it.w || 0) * k / n, w: (it.w || 0) / n } : it) })
+    }
     if (!L.s) continue
     L.x0 = Math.min(...iv.map(o => o.x0))
     L.x1 = Math.max(...iv.map(o => o.x0 + (o.w || 0)))
@@ -1006,18 +1011,19 @@ function pvSrcMath() { // block formulas with their visible glyphs and a source 
   for (const src of pvSrcList()) {
     if (!src || !src.text) continue
     const view = srcViewOf(src.text), base = src.key ? (pvFileAnchor(src.key, main) || mainN + (++loose) * 1e5) : 0
+    const ord = line => src.key ? base + line / (view.lines.length + 1) : line // a file line is a fraction of its include line: units stay main-file lines
     const blocks = srcObjs(src.text).formulas
     for (const f of blocks) {
       let s = ''
       const own = []
       for (let li = f.line - 1; li < f.end && li < view.lines.length; li++) { // source lines are dense: never scan the whole file per formula
         const L = view.lines[li]
-        for (let i = 0; i < L.s.length; i++) {
-          const ch = pvMathNorm(L.s[i])
-          for (const c of ch) { s += c; own.push({ line: L.line, at: L.map[i] }) }
+        for (const seg of L.note ? [L, L.note] : [L]) for (let i = 0; i < seg.s.length; i++) { // a formula inside a footnote lives in the note segment
+          const ch = pvMathNorm(seg.s[i])
+          for (const c of ch) { s += c; own.push({ line: L.line, at: seg.map[i] }) }
         }
       }
-      if (s) out.push({ key: src.key || '', line: f.line, end: f.end, s, own, order: base + f.line })
+      if (s) out.push({ key: src.key || '', line: f.line, end: f.end, s, own, order: ord(f.line) })
     }
     for (const sp of view.math || []) { // inline formulas (grid/table cells, #math.equation): their own glyphs only
       if (blocks.some(f => sp.line >= f.line && sp.line <= f.end)) continue // a block formula already owns the line
@@ -1025,13 +1031,13 @@ function pvSrcMath() { // block formulas with their visible glyphs and a source 
       if (!L) continue
       let s = ''
       const own = []
-      for (let i = 0; i < L.s.length; i++) {
-        const at = L.map[i]
+      for (const seg of L.note ? [L, L.note] : [L]) for (let i = 0; i < seg.s.length; i++) {
+        const at = seg.map[i]
         if (at == null || at < sp.from || at >= sp.to) continue
-        const ch = pvMathNorm(L.s[i])
+        const ch = pvMathNorm(seg.s[i])
         for (const c of ch) { s += c; own.push({ line: sp.line, at }) }
       }
-      if (s) out.push({ key: src.key || '', line: sp.line, end: sp.line, s, own, order: base + sp.line })
+      if (s) out.push({ key: src.key || '', line: sp.line, end: sp.line, s, own, order: ord(sp.line) })
     }
   }
   pvSrcMathMemo = { sig, out: out.sort((a, b) => a.order - b.order) }
@@ -1099,15 +1105,15 @@ function pvMathMatch() { // PDF math lines -> formulas: glyph similarity first, 
   if (!srcs.length) return out
   const total = cm.state.doc.lines || 1, sig = pvSrcSig() // any source edit may move a section or a formula
   const memo = pvMathMemo
-  if (memo && memo.sig === sig && memo.outline === pvOutlineGen && memo.shown === shownN && memo.total === total
-    && memo.texts.length === pvTexts.length && memo.texts.every((t, i) => t === pvTexts[i])) return memo.out
+  if (memo && memo.sig === sig && memo.outline === pvOutlineGen && memo.shown === shownN && memo.total === total && memo.active === (activeFile || '')
+    && memo.texts.length === pvTexts.length && memo.texts.every((t, i) => t === pvTexts[i])) return memo.out // the section map reads the open tab's headings
   for (let pi = 0; pi < pvTexts.length; pi++) for (const L of pvMathLines(pvTexts[pi] || [])) {
     const y = (L.y0 + L.y1) / 2
     const hint = pvPageHint(pi, total, pvTexts.length, pvSecAtY(pi, y), y / (L.vh || 1))
     const cands = pvMathCands(L, hint, srcs)
     if (cands.length) out.push({ page: pi, line: L, src: cands[0].src, map: cands[0].map, cands })
   }
-  pvMathMemo = { sig, outline: pvOutlineGen, shown: shownN, total, texts: pvTexts.slice(), out }
+  pvMathMemo = { sig, outline: pvOutlineGen, shown: shownN, total, active: activeFile || '', texts: pvTexts.slice(), out }
   return out
 }
 let pvMathMemo = null // { sig, outline, shown, total, texts, out }
@@ -1171,7 +1177,7 @@ async function pvJumpSrc(src, col) { // preview object -> its file and line/colu
   const doc = docId, epoch = openN, key = (src && src.key) || ''
   if (key !== activeFile) {
     try { if (!await switchTab(key)) return false } catch (e) { return false }
-    if (doc !== docId || epoch !== openN) return false
+    if (doc !== docId || epoch !== openN || (activeFile || '') !== key) return false // a tab clicked meanwhile owns the editor now
   }
   const line = Math.max(1, Math.min(cm.state.doc.lines || 1, src.line))
   jumpPos(posOfLine(getT(), line) + Math.max(0, col || 0))
@@ -1198,12 +1204,20 @@ function pvScrollBox(b) { // cursor on an image/formula line -> center its rende
   return true
 }
 function pvCaptionCut(s) { // Typst adds "Figure 1: " / "Table 1: " in front of a caption that the source does not have
-  const m = String(s || '').match(/^(?:figure|table|listing|algorithm|equation|diagram|chart|abbildung|tabelle|diagramm|gleichung|liste)\s+\d+(?:\.\d+)*\s*[:.]\s*/i)
+  const m = String(s || '').match(/^(?:figure|table|listing|algorithm|equation|diagram|chart|abbildung|tabelle|diagramm|gleichung|liste|figura|tabla|tabela|tabella|tableau|ecuación|équation|equazione|equação|figuur|tabel|vergelijking|figur|tabell|ekvation|ligning|rysunek|równanie|obrázek|tabulka|rovnice|kuva|taulukko|şekil|tablo|рисунок|таблица|уравнение|σχήμα|πίνακας|図|表|图|式|그림|표)\s*(?:\d+|[A-Z]|[IVXLC]+)(?:[.\-–]\d+)*\s*[:.：—–-]\s*/iu)
+  return m ? m[0].length : 0
+}
+function pvSuppCut(s) { // a custom supplement ("Fig. 2: ", "Exhibit 3 – ", "Abb. 1. "): a short word, a number and a separator in front of the caption
+  const m = String(s || '').match(/^\p{L}{2,14}\.?\s+\d+(?:[.\-–]\d+)*\s*[:.—–-]\s+(?=\p{L})/u)
+  return m ? m[0].length : 0
+}
+function pvNumCut(s) { // "1.2 Results", "A. Anhang", "iv) item": length of a generated numbering prefix before a title (0: none)
+  const m = String(s || '').match(/^(?:\d+(?:\.\d+)*\.?|[A-Z]\.|[ivxlcdm]+[.)]|[a-z]\)|\d+\))\s+(?=\p{L})/u)
   return m ? m[0].length : 0
 }
 function pvBlockLines(items, it) { // paragraph around the click: full visual lines, columns split, normal line step
   const h = Math.max(1, it.h || 10), tol = Math.max(1.5, h * 0.55)
-  const ok = items.filter(o => o.s && o.s.trim() && !o.rot && Math.abs((o.h || 0) - h) < 3)
+  const ok = items.filter(o => o.s && o.s.trim() && !o.rot && Math.abs((o.h || 0) - h) < Math.max(1, h * 0.14)) // relative: the render scale changes with the page count
   const lines = []
   for (const o of ok.sort((a, b) => a.y - b.y || a.x0 - b.x0)) {
     const L = lines[lines.length - 1]
@@ -1214,7 +1228,7 @@ function pvBlockLines(items, it) { // paragraph around the click: full visual li
     const runs = []
     for (const o of L.runs[0].slice().sort((a, b) => a.x0 - b.x0)) {
       const r = runs[runs.length - 1], p = r && r[r.length - 1]
-      if (!r || (o.x0 || 0) - ((p.x0 || 0) + (p.w || 0)) > Math.max(h * 3, 24)) runs.push([o])
+      if (!r || (o.x0 || 0) - ((p.x0 || 0) + (p.w || 0)) > Math.max(h * 1.5, 6)) runs.push([o]) // Typst's column gutter (4% ≈ 2.2em) is wider than any justified space
       else r.push(o)
     }
     L.runs = runs
@@ -1266,20 +1280,29 @@ function pvBlockNeedle(items, it, col) { // whole paragraph: a wrapped, repeated
 }
 function pvClickNeedles(items, it, col) { // clicked item first; short cells and math glyphs add their PDF line
   const out = [], seen = new Set()
-  const add = (s, off) => {
+  const add = (s, off, min) => {
     s = String(s || '').trim()
     const norm = syncText(s)
-    if (norm.length < 4 || seen.has(norm)) return false
+    if (norm.length < (min || 4) || seen.has(norm)) return false
     seen.add(norm)
     out.push({ s, off: Math.max(0, Math.min(s.length, off || 0)) })
     return true
   }
   const raw = String(it.s || '').trim(), cut = pvCaptionCut(raw), body = raw.slice(cut)
-  for (const blk of pvBlockNeedle(items, it, col)) add(blk.s, blk.off) // paragraph context first: prose wraps one source line over several PDF lines
-  if (/\p{L}/u.test(body)) add(body, (col || 0) - cut)
-  if (/\p{L}{3}/u.test(body)) return out // a real word needs no line guessing
-  const bare = !/\p{L}/u.test(body) // generated marker: footnote/citation/equation numbers have no source letters
-  for (const tol of [10, 20]) { // short cells, numbers and math glyphs: the row is the context
+  for (const blk of pvBlockNeedle(items, it, col)) { // paragraph context first: prose wraps one source line over several PDF lines
+    add(blk.s, blk.off)
+    const g = pvSuppCut(blk.s)
+    if (g && blk.off >= g) add(blk.s.slice(g), blk.off - g) // the same paragraph without a custom supplement prefix
+  }
+  const num = pvNumCut(body) // "1.2 Results": the heading/list number is generated, the title is in the source
+  if (num && (col || 0) - cut >= 0) add(body.slice(num), Math.max(0, (col || 0) - cut - num), 2)
+  if (/\p{L}/u.test(body)) add(body, (col || 0) - cut, /\p{L}{3}/u.test(body) ? 2 : 4) // "Yes", "Bob", "FAQ": a three-letter cell is still its own word; "mg" needs its row
+  const sup = cut ? 0 : pvSuppCut(body)
+  if (sup && (col || 0) >= sup) add(body.slice(sup), (col || 0) - sup)
+  if (/\p{L}{3}/u.test(body) && out.length) return out // a real word needs no line guessing
+  const bare = !/\p{L}/u.test(body) // no letters: a generated marker (footnote/citation/equation number) or a number in a table cell
+  const ih = Math.max(1, it.h || 10)
+  for (const tol of [ih * 0.45, ih * 0.9]) { // short cells, numbers and math glyphs: the row is the context (relative to the type size, not to the render scale)
     const line = items.filter(o => !o.rot && Math.abs(o.y - it.y) <= tol).sort((a, b) => a.x0 - b.x0)
     let s = '', off = 0, rest = ''
     for (const o of line) {
@@ -1289,65 +1312,105 @@ function pvClickNeedles(items, it, col) { // clicked item first; short cells and
       else rest += (rest ? ' ' : '') + t
       s += (s ? ' ' : '') + t
     }
-    if (bare) { // the marker is not in the source: its line still is
-      const cut2 = pvCaptionCut(rest), text = rest.slice(cut2)
-      if (/\p{L}{3}/u.test(text) && add(text, 0)) break
-    }
+    const hs = line.filter(o => o !== it && String(o.s || '').trim()).map(o => o.h || 10).sort((a, b) => a - b)
+    const cell = bare && hs.length && Math.abs((it.h || 10) - hs[hs.length >> 1]) < ih * 0.15 && !/^[(\[]/.test(body) // full-size digits beside full-size text: a table number, really in the source
     const cut2 = pvCaptionCut(s), text = s.slice(cut2)
+    if (cell && /\p{L}{3}/u.test(text)) add(text, off - cut2) // "42" in "Alice 42 Berlin": the row finds the number itself
+    if (bare) { // a superscript marker is not in the source: its line still is
+      const cut3 = pvCaptionCut(rest), text3 = rest.slice(cut3)
+      if (/\p{L}{3}/u.test(text3) && add(text3, 0)) break
+    }
     if (/\p{L}{3}/u.test(text) && add(text, off - cut2)) break
   }
+  if (!out.length && /\p{L}{2}/u.test(body)) add(body, (col || 0) - cut, 2) // alone on its row: the cell itself is all there is
   return out
 }
 const SRC_MATH = { // visible glyphs for common Typst math commands: tokens still map to the command start
-  sum: '∑', prod: '∏', int: '∫', oint: '∮', infty: '∞', partial: '∂', nabla: '∇',
+  sum: '∑', prod: '∏', int: '∫', oint: '∮', infty: '∞', infinity: '∞', oo: '∞', partial: '∂', nabla: '∇',
   alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', zeta: 'ζ', eta: 'η', theta: 'θ',
   iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ', nu: 'ν', xi: 'ξ', pi: 'π', rho: 'ρ', sigma: 'σ',
   tau: 'τ', upsilon: 'υ', phi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω',
   Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ', Xi: 'Ξ', Pi: 'Π', Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
-  arrow: '→', times: '×', div: '÷', plusminus: '±', minus: '−', equiv: '≡', approx: '≈', neq: '≠', in: '∈', subset: '⊂', supset: '⊃'
+  arrow: '→', times: '×', div: '÷', plusminus: '±', minus: '−', equiv: '≡', approx: '≈', neq: '≠', in: '∈', subset: '⊂', supset: '⊃',
+  'plus.minus': '±', 'minus.plus': '∓', 'arrow.r': '→', 'arrow.l': '←', 'arrow.l.r': '↔', 'arrow.r.double': '⇒', 'arrow.l.r.double': '⇔',
+  'arrow.t': '↑', 'arrow.b': '↓', 'arrow.r.bar': '↦', 'in.not': '∉', 'subset.eq': '⊆', 'supset.eq': '⊇', 'eq.not': '≠', 'eq.triple': '≡',
+  'epsilon.alt': 'ϵ', 'phi.alt': 'ϕ', 'theta.alt': 'ϑ', 'dot.c': '⋅', 'dot.op': '⋅', 'times.circle': '⊗', 'plus.circle': '⊕',
+  dot: '⋅', dots: '…', 'dots.h': '…', 'dots.c': '⋯', 'dots.v': '⋮', ast: '∗', star: '⋆', circle: '∘', compose: '∘', prop: '∝', degree: '°',
+  le: '≤', ge: '≥', lt: '<', gt: '>', ne: '≠', eq: '=', forall: '∀', exists: '∃', emptyset: '∅', nothing: '∅', not: '¬',
+  and: '∧', or: '∨', union: '∪', sect: '∩', without: '∖', ell: 'ℓ', aleph: 'ℵ', hbar: 'ℏ', prime: '′',
+  RR: 'ℝ', NN: 'ℕ', ZZ: 'ℤ', QQ: 'ℚ', CC: 'ℂ'
 }
+const SRC_MATH_FN = new Set([ // math functions: the call is layout, only its arguments are glyphs (sqrt/root draw a radical)
+  'frac', 'root', 'sqrt', 'vec', 'mat', 'cases', 'binom', 'abs', 'norm', 'floor', 'ceil', 'round', 'lr', 'mid', 'attach', 'scripts', 'limits', 'op',
+  'upright', 'italic', 'bold', 'cal', 'bb', 'sans', 'mono', 'frak', 'serif', 'display', 'inline', 'script', 'sscript', 'overline', 'underline',
+  'overbrace', 'underbrace', 'overbracket', 'underbracket', 'hat', 'tilde', 'macron', 'breve', 'acute', 'grave', 'caron', 'diaer', 'cancel',
+  'accent', 'class', 'stretch', 'primes', 'dot', 'dot.double', 'dot.triple', 'arrow', 'arrow.l', 'arrow.l.r', 'bar', 'circle'
+])
+const SRC_MATH_OPS = [ // math shorthands, longest first: the PDF shows the symbol, never the ASCII
+  ['<==>', '⟺'], ['==>', '⟹'], ['|->', '↦'], ['<->', '↔'], ['->', '→'], ['<-', '←'], ['=>', '⇒'], ['<=', '≤'], ['>=', '≥'],
+  ['!=', '≠'], ['...', '…'], [':=', '≔'], ['<<', '≪'], ['>>', '≫'], ['-', '−'], ['*', '∗']
+]
+const SRC_KW = new Set(['let', 'set', 'show', 'import', 'include', 'if', 'for', 'while', 'context', 'return', 'break', 'continue']) // statements run to their line end
+const SRC_STR_KEYS = new Set(['caption', 'title', 'attribution', 'header', 'footer', 'body', 'subtitle']) // named string arguments that print their text (alt/description/title of #set document do not)
+const SRC_BLOCKS = new Set(['if', 'for', 'while', 'context']) // statements that end with their last block, markup continues right behind it
+const SRC_INLINE = new Set(['emph', 'strong', 'text', 'underline', 'overline', 'strike', 'highlight', 'sub', 'super', 'smallcaps', 'upper', 'lower', 'link']) // styling calls: their brackets sit inside a word
+const SRC_HIDE = new Set(['let', 'import', 'include']) // declarations never render where they stand, not even their [content]
+const SRC_STR_SHOW = new Set(['text', 'strong', 'emph', 'underline', 'overline', 'strike', 'highlight', 'smallcaps', 'upper', 'lower', 'super', 'sub', 'raw', 'heading', 'quote', 'footnote', 'block', 'box', 'align', 'pad', 'par']) // a positional string argument is the shown body
 const srcViewCache = new Map() // bounded: pvSrcList alternates between open files, never rescan every call
+function srcPlainView(raw) { // a data file (.bib): every line is text as written, Typst markup rules (// comments, #, $) do not apply
+  const out = raw.split('\n').map((line, li) => {
+    const s = line.replace(/\r$/, ''), lead = s.length - s.trimStart().length, t = s.trim()
+    return { line: li + 1, s: t, map: t.split('').map((_, k) => lead + k), raw: line }
+  })
+  return { lines: out, math: [] }
+}
 function srcViewOf(text) { // visible source text with a raw offset per character (links, raw, math: no URL or markup noise)
   const raw = String(text), hit = srcViewCache.get(raw)
   if (hit) return hit
-  const view = srcViewScan(raw)
+  const view = /^\s*@[A-Za-z]+\s*[{(]/.test(raw) && !/^\s*[#=]/m.test(raw) ? srcPlainView(raw) : srcViewScan(raw) // BibTeX entries start with @type{
   srcViewCache.set(raw, view)
   if (srcViewCache.size > 8) srcViewCache.delete(srcViewCache.keys().next().value)
   return view
 }
-function srcViewScan(raw) { // one pass: markup/code/comments are skipped, content blocks and raw stay visible
+function srcViewScan(raw) { // one pass over the whole text: a mode stack carries calls, code blocks, [content] and math across lines
   const lines = raw.split('\n'), out = [], mathSpans = []
+  const st = [{ k: 'm' }] // m: markup (c: inside [..]), e: code after # (cl: open brackets, kw: statement), x: display math
   let block = 0, fence = 0
+  const top = () => st[st.length - 1]
+  const hidden = () => { for (const f of st) if (f.hide) return true; return false }
+  const inNote = () => { for (const f of st) if (f.fn) return true; return false } // footnote body: printed at the page bottom, not inside the paragraph
+  const wordChar = c => !!c && /[\p{L}\p{N}]/u.test(c) // emphasis between two word chars is literal text
+  const mathAhead = from => { // an unclosed $: only a closing $ before the next blank line makes it a formula (a line starting with "=" is math too)
+    for (let k = from; k < lines.length; k++) {
+      const s = lines[k]
+      if (!s.trim()) return false
+      for (let j = 0; j < s.length; j++) { if (s[j] === '\\') { j++; continue } if (s[j] === '$') return true }
+    }
+    return false
+  }
   for (let li = 0; li < lines.length; li++) {
-    const line = lines[li], n = line.length, o = { s: '', map: [] }
+    const line = lines[li], n = line.length, body = { s: '', map: [] }, note = { s: '', map: [] }
     const emit = (ch, at) => {
-      if (!ch || ch === '\n') return
+      if (!ch || ch === '\n' || hidden()) return
+      const o = inNote() ? note : body
       if (/\s/.test(ch)) { if (o.s && !o.s.endsWith(' ')) { o.s += ' '; o.map.push(at) } return }
-      o.s += ch; o.map.push(at)
+      o.s += ch
+      for (let k = 0; k < ch.length; k++) o.map.push(at) // a symbol outside the BMP keeps one raw spot per code unit
     }
-    const word = (w, at) => { for (let k = 0; k < w.length; k++) { o.s += w[k]; o.map.push(at + k) } }
-    const wordChar = c => !!c && /[\p{L}\p{N}]/u.test(c) // emphasis between two word chars is literal text
-    const literalMark = (str, k) => wordChar(str[k - 1]) && wordChar(str[k + 1])
-    const mathSpan = (from, to) => mathSpans.push({ line: li + 1, from, to }) // formula body in raw line offsets
-    if (fence) { // raw block content: every character is visible, indentation included
-      if (new RegExp('^\\s*`{' + fence + ',}\\s*$').test(line)) { fence = 0; out.push({ line: li + 1, s: '', map: [], raw: line }); continue }
-      out.push({ line: li + 1, s: line, map: line.split('').map((_, k) => k), raw: line }); continue
-    }
-    const open = line.match(/^\s*(`{3,})/)
-    if (open) { fence = open[1].length; out.push({ line: li + 1, s: '', map: [], raw: line }); continue }
-    // block comment: skip it, keep the rest of the line
-    let i = 0
-    if (block) {
-      const end = line.indexOf('*/')
-      if (end < 0) { out.push({ line: li + 1, s: '', map: [], raw: line }); continue }
-      block = 0; i = end + 2
-    }
+    const word = (w, at) => { if (hidden()) return; const o = inNote() ? note : body; for (let k = 0; k < w.length; k++) { o.s += w[k]; o.map.push(at + k) } }
+    const literalMark = k => wordChar(line[k - 1]) && wordChar(line[k + 1])
+    const mathSpan = (from, to) => { if (to > from && !hidden()) mathSpans.push({ line: li + 1, from, to }) } // formula body in raw line offsets
     const mathEnd = from => {
       for (let j = from; j < n; j++) {
         if (line[j] === '\\') { j++; continue }
         if (line[j] === '$') return j
       }
       return -1
+    }
+    const strEnd = from => { // from the opening quote: index of the closing quote (n: unclosed)
+      let j = from + 1
+      while (j < n && line[j] !== '"') { if (line[j] === '\\') j++; j++ }
+      return Math.min(j, n)
     }
     const urlEnd = (from, content) => { // lowercase http(s) links are one literal token, Typst parses no markup inside
       if (line.slice(from, from + 8) !== 'https://' && line.slice(from, from + 7) !== 'http://') return 0
@@ -1364,118 +1427,192 @@ function srcViewScan(raw) { // one pass: markup/code/comments are skipped, conte
       }
       return j
     }
-    const math = (from, to) => { // math source -> the glyphs the PDF shows; commands map to their Unicode symbol
+    const escape = at => { // \# \$ \u{1F600}; a backslash at the line end is a line break
+      const u = line.slice(at).match(/^\\u\{([0-9a-fA-F]{1,6})\}/)
+      if (u) { try { emit(String.fromCodePoint(parseInt(u[1], 16)), at) } catch (e) {} return at + u[0].length }
+      if (at + 1 < n) { emit(line[at + 1], at + 1); return at + 2 }
+      emit(' ', at); return n
+    }
+    const rawInline = at => { // `raw`, ``(empty), ```lang code```: the text is visible, the language tag is not
+      let r = 1; while (line[at + r] === '`') r++
+      if (r === 2) return at + 2
+      const close = line.indexOf('`'.repeat(r), at + r), end = close < 0 ? n : close
+      if (r >= 3 && close < 0) { // a fence that continues on the next lines, also as a call argument (#figure(```py … ```, caption: [..]))
+        fence = r
+        const rest = line.slice(at + r), tag = rest.match(/^[A-Za-z][\w+#.-]*(?=\s|$)/)
+        const from = at + r + (tag ? tag[0].length + (rest.length > tag[0].length ? 1 : 0) : 0)
+        word(line.slice(from), from)
+        return n
+      }
+      let from = at + r
+      if (r >= 3) { const tag = line.slice(from, end).match(/^[A-Za-z][\w+#.-]*(?=\s)/); if (tag) from += tag[0].length + 1 }
+      word(line.slice(from, end), from)
+      return close < 0 ? n : close + r
+    }
+    const math = (from, to) => { // math source -> the glyphs the PDF shows; commands and shorthands map to their Unicode symbol
       for (let j = from; j < to;) {
         const c = line[j]
-        if (c === '\\' && j + 1 < to) { emit(line[j + 1], j + 1); j += 2; continue }
+        if (c === '\\') { if (j + 1 < to) emit(line[j + 1], j + 1); j += 2; continue } // \$ escape, "\ " line break
+        if (c === '"') { const e = Math.min(strEnd(j), to); word(line.slice(j + 1, e), j + 1); j = e + 1; continue } // "text" in math: upright letters
         if (/\p{L}/u.test(c)) {
           let k = j + 1
           while (k < to && /[\p{L}\p{N}.]/u.test(line[k])) k++
-          word(SRC_MATH[line.slice(j, k)] || line.slice(j, k), j); j = k; continue
+          while (k > j + 1 && line[k - 1] === '.') k-- // "b." at the end of a sentence: the dot is punctuation
+          const tok = line.slice(j, k)
+          if (line[k] === '(' && SRC_MATH_FN.has(tok)) { if (tok === 'sqrt' || tok === 'root') emit('√', j); j = k; continue } // frac(a, b): only a and b are glyphs
+          const g = SRC_MATH[tok] || (tok.includes('.') ? SRC_MATH[tok.slice(0, tok.indexOf('.'))] : '')
+          if (g) emit(g, j)
+          else word(tok, j)
+          j = k; continue
         }
-        if (c === '_' || c === '^' || c === '{' || c === '}') { emit(' ', j); j++; continue } // scripts keep their own tokens
-        emit(c, j); j++
-      }
-    }
-    const content = from => { // from behind '[': visible content, nested code and markup skipped
-      let j = from, depth = 1
-      while (j < n && depth) {
-        const c = line[j]
-        if (c === '\\' && j + 1 < n) { emit(line[j + 1], j + 1); j += 2; continue }
-        if (c === 'h') { // inside [...], a balanced bracket pair stays part of the link
-          const u = urlEnd(j, true)
-          if (u) { word(line.slice(j, u), j); j = u; continue }
-        }
-        if (c === '/' && line[j + 1] === '/') break // a URL was consumed above, so this is always a comment
-        if (c === '/' && line[j + 1] === '*') {
-          const end = line.indexOf('*/', j + 2)
-          if (end < 0) { block = 1; return n }
-          j = end + 2; continue
-        }
-        if (c === '`') {
-          let r = 1; while (line[j + r] === '`') r++
-          const close = line.indexOf('`'.repeat(r), j + r)
-          if (close < 0) { word(line.slice(j + r), j + r); return n }
-          word(line.slice(j + r, close), j + r); j = close + r; continue
-        }
-        if (c === '$') { const close = mathEnd(j + 1); if (close < 0) { j++; continue } mathSpan(j + 1, close); emit(' ', j); math(j + 1, close); emit(' ', close); j = close + 1; continue }
-        if (c === '#') { j = code(j + 1); continue }
-        if (c === '[') { emit(' ', j); depth++; j++; continue }
-        if (c === ']') { depth--; emit(' ', j); j++; continue }
-        if (c === '*' || c === '_') { if (literalMark(line, j)) emit(c, j); j++; continue }
-        emit(c, j); j++
-      }
-      return j
-    }
-    const code = from => { // from behind '#': the call itself is invisible, its [content] is not
-      let j = from
-      const nameAt = j
-      while (j < n && /[\w.:-]/.test(line[j])) j++
-      const name = line.slice(nameAt, j)
-      if (name === 'import' || name === 'include' || name === 'let') return n // declarations never render on this line
-      if (line[j] === '(') {
-        let depth = 1; j++
-        while (j < n && depth) {
-          const c = line[j]
-          if (c === '"') { j++; while (j < n && line[j] !== '"') { if (line[j] === '\\') j++; j++ } j++; continue }
-          if (c === '`') {
-            let r = 1; while (line[j + r] === '`') r++
-            const close = line.indexOf('`'.repeat(r), j + r)
-            j = close < 0 ? n : close + r; continue
-          }
-          if (c === '/' && line[j + 1] === '/') return n
-          if (c === '[') { emit(' ', j); j = content(j + 1); emit(' ', j); continue }
-          if (c === '(') { depth++; j++; continue }
-          if (c === '$') { const close = mathEnd(j + 1); if (close >= 0) { mathSpan(j + 1, close); emit(' ', j); math(j + 1, close); emit(' ', close); j = close + 1; continue } }
-          if (c === ')') { depth--; j++; continue }
+        if (c === '#') { // code inside a formula (#h(1em), #f(x)): layout or computed, never the glyphs of its own source
           j++
+          while (j < to && /[\p{L}\p{N}_.-]/u.test(line[j])) j++
+          if (line[j] === '(' || line[j] === '[') { const open = line[j], close = open === '(' ? ')' : ']'; let d = 0; while (j < to) { if (line[j] === open) d++; else if (line[j] === close && !--d) { j++; break } j++ } }
+          continue
+        }
+        if (c === '_' || c === '^' || c === '&') { emit(' ', j); j++; continue } // scripts keep their own tokens, & only aligns
+        const op = SRC_MATH_OPS.find(([s]) => j + s.length <= to && line.startsWith(s, j))
+        if (op) { emit(op[1], j); j += op[0].length; continue }
+        emit(c, j); j++
+      }
+    }
+    const openMath = at => { // at the opening $: inline on this line, or a display formula that runs over several lines
+      const close = mathEnd(at + 1)
+      if (close >= 0) { mathSpan(at + 1, close); emit(' ', at); math(at + 1, close); emit(' ', close); return close + 1 }
+      if (!mathAhead(li + 1)) return at + 1 // a $ typed alone: the text below stays text
+      mathSpan(at + 1, n); emit(' ', at); math(at + 1, n)
+      st.push({ k: 'x' })
+      return n
+    }
+    const hash = at => { // # in markup: an expression or statement starts here
+      const j = at + 1, m = line.slice(j).match(/^[\p{L}_][\p{L}\p{N}_-]*/u), name = m ? m[0] : ''
+      if (!name && !'([{'.includes(line[j] || '-')) return j // stray #: nothing visible
+      if (name === 'sym') { // #sym.arrow.r: one visible glyph
+        const t = line.slice(j).match(/^sym((?:\.[\p{L}\p{N}]+)+)/u)
+        if (t) {
+          const path = t[1].slice(1), g = SRC_MATH[path] || SRC_MATH[path.split('.')[0]]
+          if (g) emit(g, at)
+          return j + t[0].length
         }
       }
-      if (name === 'show' || name === 'set') { // show/set rules: the content block is the visible part
-        const at = line.indexOf('[', j)
-        if (at >= 0) { emit(' ', at); j = content(at + 1); emit(' ', j) } else return n
-      } else if (line[j] === '[') { emit(' ', j); j = content(j + 1); emit(' ', j) }
-      return j
+      const f = { k: 'e', cl: [], kw: SRC_KW.has(name), hide: SRC_HIDE.has(name), fn: name === 'footnote', name, url: null }
+      st.push(f)
+      if (name) return j + name.length
+      if (line[j] === '(') { f.cl.push(')'); return j + 1 } // #(expr)
+      if (line[j] === '{') { f.cl.push('}'); return j + 1 } // #{ code block }
+      return j // #[content]: the expression loop opens it
     }
-    const head = line.match(/^(\s*)(=+)\s+/)
-    if (head) i = head[0].length
+    let i = 0
+    if (fence) { // raw block content: every character is visible, indentation included
+      const close = line.indexOf('`'.repeat(fence))
+      if (close < 0) {
+        const h = hidden(), vis = line.replace(/\r$/, '') // CRLF: the carriage return is not text
+        out.push({ line: li + 1, s: h ? '' : vis, map: h ? [] : vis.split('').map((_, k) => k), raw: line }); continue
+      }
+      word(line.slice(0, close), 0) // closing fence: code before it is still raw text
+      fence = 0; i = close
+      while (line[i] === '`') i++
+    } else if (!block) {
+      if (top().k === 'e' && /^\s*=+\s/.test(line)) st.length = 1 // an unclosed call never swallows the next section (an open display formula keeps its "= …" lines)
+      if (top().k === 'm') {
+        const open = line.match(/^\s*(`{3,})/)
+        if (open && line.indexOf(open[1], open[0].length) < 0) { fence = open[1].length; out.push({ line: li + 1, s: '', map: [], raw: line }); continue }
+        const head = line.match(/^(\s*)(=+)\s+/)
+        if (head) i = head[0].length
+      }
+    }
     while (i < n) {
-      const c = line[i], c2 = line[i + 1]
-      if (block) {
-        if (c === '*' && c2 === '/') { block = 0; i += 2 }
-        else if (c === '/' && c2 === '*') { block++; i += 2 }
-        else i++
+      const c = line[i], c2 = line[i + 1], f = top()
+      if (block) { // /* nested */ comments: everything inside is invisible
+        if (c === '*' && c2 === '/') { block--; i += 2 } else if (c === '/' && c2 === '*') { block++; i += 2 } else i++
         continue
       }
+      if (f.k === 'x') { // display math continued from a line above
+        const close = mathEnd(i), to = close < 0 ? n : close
+        mathSpan(i, to); math(i, to)
+        if (close < 0) { i = n; continue }
+        emit(' ', close); st.pop(); i = close + 1; continue
+      }
+      if (f.k === 'e') {
+        if (f.kw && f.after && !f.cl.length) { // #if/#for ended with a block: only "else" continues it, anything else is markup again
+          const m = line.slice(i).match(/^\s*else\b/)
+          if (m) { f.after = false; i += m[0].length; continue }
+          st.pop(); continue
+        }
+        if ((c === ']' || c === ')' || c === '}') && !f.cl.length && st.length > 1) { st.pop(); continue } // a closer for the enclosing content block or call, not for this statement
+        if (!f.cl.length && !f.kw) { // between the parts of one expression: name, .field, (args), [content]
+          if (c === '(') { f.cl.push(')'); i++; continue }
+          if (c === '[') { st.push({ k: 'm', c: true, d: 0, inl: SRC_INLINE.has(f.name) }); if (!SRC_INLINE.has(f.name)) emit(' ', i); i++; continue }
+          if (c === '.' && /[\p{L}_]/u.test(c2 || '')) { const m = line.slice(i + 1).match(/^[\p{L}_][\p{L}\p{N}_-]*/u); f.name = m[0]; i += 1 + m[0].length; continue }
+          st.pop(); continue // the expression ended: the same character is markup again
+        }
+        if (c === '"') {
+          const e = strEnd(i)
+          const key = (line.slice(Math.max(0, i - 40), i).match(/([\p{L}\p{N}_-]+)\s*:\s*$/u) || [])[1] // "caption: " in front of the string
+          const pos = f.cl.length === 1 && f.cl[0] === ')' && !key // positional, not "fill: …"
+          if (f.name === 'link' && pos && !f.url) f.url = { from: i + 1, to: e, li } // #link("https://…") without body shows the address
+          else if ((pos && SRC_STR_SHOW.has(f.name)) || (key && f.cl.length && SRC_STR_KEYS.has(key) && (!f.kw || key === 'header' || key === 'footer'))) { emit(' ', i); word(line.slice(i + 1, e).replace(/\\(.)/g, ' $1'), i + 1); emit(' ', e) } // #text(red, "body"), #strong("x"), caption: "Plot", header: "Draft"
+          i = e + 1; continue
+        }
+        if (c === '/' && c2 === '/') break
+        if (c === '/' && c2 === '*') { block = 1; i += 2; continue }
+        if (c === '`') { i = rawInline(i); continue }
+        if (c === '[') { st.push({ k: 'm', c: true, d: 0, inl: SRC_INLINE.has(f.name) }); if (!SRC_INLINE.has(f.name)) emit(' ', i); i++; continue }
+        if (c === '$') { i = openMath(i); continue }
+        if (c === '(' || c === '{') { f.cl.push(c === '(' ? ')' : '}'); i++; continue }
+        if (c === ')' || c === '}') {
+          if (f.cl.length) f.cl.pop()
+          i++
+          if (!f.cl.length && f.url) {
+            if (line[i] !== '[' && f.url.li === li) { const u = line.slice(f.url.from, f.url.to), cut = (u.match(/^(?:mailto|tel):/) || [''])[0].length; emit(' ', f.url.from); word(u.slice(cut), f.url.from + cut); emit(' ', i) } // a link whose address sits on another line has no honest offset here
+            f.url = null
+          }
+          if (!f.cl.length && f.kw && SRC_BLOCKS.has(f.name) && c === '}') f.after = true // #if x { … }: an else may follow
+          continue
+        }
+        if (c === ';' && !f.cl.length) { st.pop(); i++; continue }
+        i++; continue // code tokens never reach the page
+      }
+      // markup, at the top or inside [content]
       if (c === 'h') { // lowercase http(s) is a link: slashes, stars and brackets inside stay literal text
-        const u = urlEnd(i)
+        const u = urlEnd(i, !!f.c)
         if (u) { word(line.slice(i, u), i); i = u; continue }
       }
       if (c === '/' && c2 === '/') break // a URL was consumed above, so this is always a comment
       if (c === '/' && c2 === '*') { block = 1; i += 2; continue }
-      if (c === '\\' && i + 1 < n) { emit(line[i + 1], i + 1); i += 2; continue }
+      if (c === '\\') { i = escape(i); continue }
+      if (c === '-' && c2 === '?') { i += 2; continue } // soft hyphen shorthand: invisible unless the word breaks there
       if (c === '<') {
         const m = line.slice(i).match(/^<[A-Za-z_][\w:.-]*>/)
         if (m) { i += m[0].length; continue }
         emit(c, i); i++; continue
       }
-      if (c === '`') {
-        let r = 1; while (line[i + r] === '`') r++
-        const close = line.indexOf('`'.repeat(r), i + r)
-        if (close < 0) { word(line.slice(i + r), i + r); i = n; continue }
-        word(line.slice(i + r, close), i + r); i = close + r; continue
+      if (c === '@' && !wordChar(line[i - 1])) { // @label / @citekey: the PDF shows "Figure 1" or "[1]", never the key
+        const m = line.slice(i).match(/^@[\p{L}\p{N}_][\p{L}\p{N}_:.-]*/u)
+        if (m) { i += m[0].replace(/[.:-]+$/, '').length; continue }
       }
-      if (c === '$') {
-        const close = mathEnd(i + 1)
-        if (close < 0) { i++; continue }
-        mathSpan(i + 1, close); emit(' ', i); math(i + 1, close); emit(' ', close); i = close + 1; continue
+      if (c === '`') { i = rawInline(i); continue }
+      if (c === '$') { i = openMath(i); continue }
+      if (c === '#') { i = hash(i); continue }
+      if (c === '[') { if (f.c) f.d++; emit(' ', i); i++; continue }
+      if (c === ']') {
+        if (!(f.c && f.inl && !f.d)) emit(' ', i) // #underline[H]ello: the bracket of a styling call is no word gap
+        i++
+        if (f.c) {
+          if (f.d) f.d--
+          else { st.pop(); const up = top(); if (up.k === 'e' && up.kw && !up.cl.length && SRC_BLOCKS.has(up.name)) up.after = true } // the content block ends: back to its call
+        }
+        continue
       }
-      if (c === '#') { i = code(i + 1); continue }
-      if (c === '[' || c === ']') { emit(' ', i); i++; continue }
-      if (c === '*' || c === '_') { if (literalMark(line, i)) emit(c, i); i++; continue }
+      if (c === '*' || c === '_') { if (literalMark(i)) emit(c, i); i++; continue }
       emit(c, i); i++
     }
-    out.push({ line: li + 1, s: o.s.trim(), map: o.map.slice(o.s.length - o.s.trimStart().length, o.s.length - (o.s.length - o.s.trimEnd().length)), raw: line })
+    while (st.length > 1 && top().k === 'e' && !top().cl.length) st.pop() // an expression or statement ends with its line
+    const trim = o => ({ s: o.s.trim(), map: o.map.slice(o.s.length - o.s.trimStart().length, o.s.length - (o.s.length - o.s.trimEnd().length)) })
+    const L = { line: li + 1, ...trim(body), raw: line }
+    if (note.s.trim()) L.note = trim(note) // srcViewNorm places it after the paragraph, where the PDF has it too
+    out.push(L)
   }
   return { lines: out, math: mathSpans }
 }
@@ -1486,9 +1623,16 @@ function srcObjs(text) { // source constructs in document order: images, block f
   const images = [], formulas = [], tables = []
   for (let i = 0; i < lines.length; i++) {
     const m = mask[i] || ''
-    if (/(?:^|[^\w])image\s*\(/.test(m)) images.push({ line: i + 1 })
+    if (!/^\s*#let\s+[\w-]+\s*\(/.test(m)) for (const im of m.matchAll(/(?:^|[^\w.])image(?:\.decode)?\s*\(/g)) { // every call on the line, not just the first; a "#let fig(p) = image(p)" definition draws nothing where it stands
+      const at = im.index + im[0].indexOf('image'), before = m.slice(0, at).trimEnd()
+      if (/(?:^|[\s#])(?:set|show)$/.test(before) || /\bimage\s*:\s*$/.test(before)) continue // #set image(…) configures, it draws nothing
+      if (before && !'#(,:=[{;'.includes(before.slice(-1))) continue // "the image(s) below": a word in prose, not a call
+      const path = lines[i].slice(im.index + im[0].length).match(/^\s*"([^"]*)"/) // the string right behind the opening bracket
+      if (path && /\.svg$/i.test(path[1])) continue // vector art has no raster box on paper: it must not take a picture's slot
+      images.push({ line: i + 1, col: at })
+    }
     if (/(?:^|[^\w])table\s*\(/.test(m)) tables.push({ line: i + 1 })
-    if (!/^\s*\$/.test(m)) continue
+    if (!/^\s*(?:[-+]\s+)?\$(?:\s|$)/.test(m)) continue // a display formula: "$ x $", also as a list item; "$x$ is …" is inline math in a paragraph
     let end = i, closed = (m.match(/(?<!\\)\$/g) || []).length % 2 === 0
     while (!closed && ++end < lines.length) closed = ((mask[end] || '').match(/(?<!\\)\$/g) || []).length % 2 === 1
     formulas.push({ line: i + 1, end: end + 1 })
@@ -1505,6 +1649,7 @@ function srcLineWords(v) { // visible line -> normalized words with their raw of
   for (const m of v.s.matchAll(/[\p{L}\p{N}]+/gu)) out.push({ w: syncText(m[0]), raw: m[0], at: v.map[m.index] })
   return out
 }
+const SRC_CJK = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}]/u // scripts without spaces: matching needs one word per character
 function pvNormCaret(text) { // syncText words with the raw offset of every character (click -> exact letter)
   const { s, map } = syncNormMap(String(text))
   let out = '', om = [], gap = true
@@ -1514,6 +1659,7 @@ function pvNormCaret(text) { // syncText words with the raw offset of every char
       out += ch
       for (let k = 0; k < step; k++) om.push(map[i + k])
       gap = false
+      if (SRC_CJK.test(ch)) { out += ' '; om.push(map[i]); gap = true } // Han/kana: one word per character, like the source view
     } else if (!gap) { out += ' '; om.push(map[i]); gap = true }
     i += step
   }
@@ -1522,23 +1668,32 @@ function pvNormCaret(text) { // syncText words with the raw offset of every char
 }
 function srcViewNorm(view) { // visible document -> normalized words, single spaced, absolute raw offset per character
   if (view.norm) return view.norm
-  const parts = [], map = []
+  const parts = [], map = [], notes = []
   let base = 0, gap = true
-  for (const L of view.lines) {
-    const nm = syncNormMap(L.s)
+  const put = (seg, at) => { // one visible segment, normalized, every character with its absolute raw offset
+    const nm = syncNormMap(seg.s)
     for (let i = 0; i < nm.s.length;) {
       const cp = nm.s.codePointAt(i), ch = String.fromCodePoint(cp), step = ch.length
       if (/[\p{L}\p{N}]/u.test(ch)) {
         parts.push(ch)
-        for (let k = 0; k < step; k++) map.push(base + (L.map[nm.map[i + k]] ?? 0))
+        for (let k = 0; k < step; k++) map.push(at + (seg.map[nm.map[i + k]] ?? 0))
         gap = false
-      } else if (!gap) { parts.push(' '); map.push(base + (L.map[nm.map[i]] ?? 0)); gap = true }
+        if (SRC_CJK.test(ch)) { parts.push(' '); map.push(at + (seg.map[nm.map[i]] ?? 0)); gap = true } // Han/kana: one word per character, like the PDF needle
+      } else if (!gap) { parts.push(' '); map.push(at + (seg.map[nm.map[i]] ?? 0)); gap = true }
       i += step
     }
-    base += (L.raw || '').length + 1
-    if (parts.length && parts[parts.length - 1] !== ' ') { parts.push(' '); map.push(base - 1) } // line break keeps words apart
-    gap = true
   }
+  const sep = at => { if (parts.length && parts[parts.length - 1] !== ' ') { parts.push(' '); map.push(at) } gap = true } // line break keeps words apart
+  const flush = () => { for (const n of notes) { put(n.seg, n.at); sep(n.at + n.len) } notes.length = 0 } // footnotes follow their paragraph, as on paper
+  for (const L of view.lines) {
+    const raw = L.raw || ''
+    if (!raw.trim() || /^\s*=+\s/.test(raw)) flush()
+    put(L, base)
+    if (L.note) notes.push({ seg: L.note, at: base, len: raw.length })
+    base += raw.length + 1
+    sep(base - 1)
+  }
+  flush()
   while (parts.length && parts[parts.length - 1] === ' ') { parts.pop(); map.pop() }
   view.norm = { s: parts.join(''), map }
   return view.norm
@@ -1563,10 +1718,9 @@ function pvViewPos(txt, s, off, hint) { // clicked visible text -> source letter
   if (nw.s.length < 2 || !doc.s) return -1
   const hp = posOfLine(txt, hint)
   const land = at => { // matched run -> the character under the click
-    let k = pvCaretIndex(nw, off)
-    if (k >= nw.s.length) k = nw.s.length - 1
-    let j = at + k
-    return doc.map[Math.max(0, Math.min(doc.s.length - 1, j))] // a space/boundary click keeps its own source spot
+    const k = pvCaretIndex(nw, off)
+    if (k >= nw.s.length) return srcAfter(txt, doc.map[Math.min(doc.s.length - 1, at + nw.s.length - 1)]) // right half of the last letter: caret behind it
+    return doc.map[Math.max(0, Math.min(doc.s.length - 1, at + k))] // a space/boundary click keeps its own source spot
   }
   let best = -1, bd = Infinity, p = -1
   while ((p = doc.s.indexOf(nw.s, p + 1)) >= 0) {
@@ -1576,7 +1730,13 @@ function pvViewPos(txt, s, off, hint) { // clicked visible text -> source letter
   }
   return best >= 0 ? land(best) : -1
 }
-function pvViewWords(txt, s, off, hint) { // fallback: the clicked word, context first, then the nearest hint line
+function srcAfter(txt, p) { // raw offset just behind the character at p (surrogate pairs and combining marks included)
+  if (p == null || p < 0) return p
+  let q = p + (txt.codePointAt(p) > 0xffff ? 2 : 1)
+  while (q < txt.length && /\p{M}/u.test(String.fromCodePoint(txt.codePointAt(q)))) q += txt.codePointAt(q) > 0xffff ? 2 : 1
+  return Math.min(q, txt.length)
+}
+function pvViewWords(txt, s, off, hint, minCtx) { // fallback: the clicked word, context first, then the nearest hint line; minCtx: neighbours that must agree
   const view = srcViewOf(txt), words = srcViewWords(view), nw = pvNormCaret(s)
   if (!words.length || !nw.s) return -1
   const want = []
@@ -1587,7 +1747,7 @@ function pvViewWords(txt, s, off, hint) { // fallback: the clicked word, context
   if (wi < 0) wi = want.length - 1
   const cw = Math.max(0, Math.min(want[wi].w.length - 1, k - want[wi].at))
   const hp = posOfLine(txt, hint)
-  let best = -1, bd = Infinity
+  let best = -1, bd = Infinity, bc = 0
   for (let i = 0; i < words.length; i++) {
     if (words[i].w !== want[wi].w) continue
     let ctx = 0
@@ -1597,14 +1757,15 @@ function pvViewWords(txt, s, off, hint) { // fallback: the clicked word, context
       if (b && i + d < words.length && words[i + d].w === b.w) ctx++
     }
     const d = Math.abs(words[i].raw - hp) - ctx * 1e6 // context beats a far-away coincidence
-    if (d < bd) { bd = d; best = i }
+    if (d < bd) { bd = d; best = i; bc = ctx }
   }
-  if (best < 0) return -1
+  if (best < 0 || bc < Math.min(minCtx || 0, want.length - 1)) return -1 // a lone common word ("the") in this file proves nothing about the clicked text
   const w = words[best]
+  if (k >= want[wi].at + want[wi].w.length && wi === want.length - 1 && !(minCtx > 0)) return srcAfter(txt, w.map[w.map.length - 1]) // caret behind the last letter of the clicked run
   return w.map[Math.min(cw, w.map.length - 1)]
 }
 function syncText(text) {
-  return text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim() // NFKC first: 𝐸 -> E -> e
+  return text.normalize('NFKC').toLowerCase().replace(/[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}]/gu, ' $& ').replace(/[^\p{L}\p{N}]+/gu, ' ').trim() // NFKC first: 𝐸 -> E -> e; Han/kana have no spaces: every character is its own word
 }
 function syncPlain(text) { // source markup -> the words the PDF actually shows (best effort, no parser)
   return syncText(String(text)
@@ -1625,7 +1786,7 @@ function syncNormMap(line) { // normalized text + raw offset of every normalized
   for (let i = 0; i < line.length;) {
     let j = i + (line.codePointAt(i) > 0xffff ? 2 : 1) // one code point …
     while (j < line.length && /\p{M}/u.test(String.fromCodePoint(line.codePointAt(j)))) j += line.codePointAt(j) > 0xffff ? 2 : 1 // … plus its marks: a+¨ -> ä
-    const n = line.slice(i, j).normalize('NFKC').toLowerCase()
+    const n = line.slice(i, j).normalize('NFKC').toLowerCase().replace(/[­​⁠﻿]/g, '') // soft hyphen / zero-width: no word gap, no letter
     for (let k = 0; k < n.length; k++) map.push(i)
     s += n
     i = j
@@ -1678,11 +1839,16 @@ function pvCmdLine(s) { // bare command (also "table(", "#set page("): no render
 }
 function syncAnchor(lines, line, pages, sec) { // source line -> word box on paper, section window first
   let raw = (lines[line - 1] || '').trim()
-  if (!raw || pvCmdLine(raw)) return null // "#figure(" must never match a generated "Figure 1:" caption prefix
+  if (!raw) return null
   const head = raw.match(/^(=+)\s+(.+)$/)
-  if (head) raw = head[2] // heading: the title, not the "=" markers
-  const cap = !head && /^(?:caption\s*:|#(?:figure|table|image|listing|algorithm)\b)/.test(raw) && raw.match(/caption\s*:\s*\[([^\]]*)\]/) // a real caption option, not the word in prose
-  raw = cap ? cap[1] : raw.replace(/^caption\s*:\s*/, '')
+  const seen = srcViewLine(lines, line) // the same visible text the click side uses: call arguments, code and labels are not words
+  if (seen != null ? !seen.trim() : pvCmdLine(raw)) return null // "#figure(" must never match a generated "Figure 1:" caption prefix; #strong("Hello") still has words
+  if (seen != null) raw = head ? seen : seen.replace(/^caption\s*:\s*/, '') // an orphan "caption: [..]" line (opener out of reach) is still its caption
+  else {
+    if (head) raw = head[2] // heading: the title, not the "=" markers
+    const cap = !head && /^(?:caption\s*:|#(?:figure|table|image|listing|algorithm)\b)/.test(raw) && raw.match(/caption\s*:\s*\[([^\]]*)\]/) // a real caption option, not the word in prose
+    raw = cap ? cap[1] : raw.replace(/^caption\s*:\s*/, '')
+  }
   const exact = syncPlain(raw)
   if (exact.length < 4) return null
   const p0 = sec ? Math.max(0, sec.page) : 0
@@ -1693,6 +1859,14 @@ function syncAnchor(lines, line, pages, sec) { // source line -> word box on pap
   if (p0 === 0 && p1 === pages.length - 1) return pvHeadingPick(win, lines, line, exact) // no window: heading context decides
   const all = pvPageIndex(pages, 0, pages.length - 1) // stale outline: global last resort
   return pvFind(all.text, all.spans, exact) || pvHeadingPick(all, lines, line, exact) || pvRunPick(all, exact)
+}
+const srcViewLines = new WeakMap() // one scan per lines array: syncNearPair and pvSecAtY ask line after line
+function srcViewLine(lines, line) { // visible text of one source line in its document context (null: no scanner loaded)
+  if (typeof srcViewOf !== 'function' || !Array.isArray(lines)) return null
+  let view = srcViewLines.get(lines)
+  if (!view) { view = srcViewOf(lines.join('\n')); srcViewLines.set(lines, view) }
+  const L = view.lines[line - 1]
+  return L ? (L.s || (L.note ? L.note.s : '')) : null // a line inside a footnote body has only its note text
 }
 function pvFindIn(win, exact) { // exact whole words, else a unique 3-6 word run
   return pvFind(win.text, win.spans, exact) || pvRunPick(win, exact)
@@ -1723,7 +1897,7 @@ function pvPageIndex(pages, p0, p1) { // flat word text of one page window + ite
   const parts = [], spans = []
   let offset = 0
   for (let pi = p0; pi <= p1; pi++) (pages[pi] || []).forEach(it => {
-    const text = syncText(it.s || '')
+    const text = it.nt != null ? it.nt : (it.nt = syncText(it.s || '')) // normalized once per item: every cursor move scans whole windows
     if (!text) return
     parts.push(text); spans.push({ from: offset, to: offset + text.length, pi, it })
     offset += text.length + 1
@@ -1735,8 +1909,14 @@ function pvHits(text, spans, needle) { // every whole-word occurrence inside the
   let at = -1
   while ((at = text.indexOf(needle, at + 1)) >= 0) {
     if ((at && text[at - 1] !== ' ') || (at + needle.length < text.length && text[at + needle.length] !== ' ')) continue
-    const span = spans.find(s => s.to > at)
-    if (span) out.push({ ...span, at, items: spans.filter(s => s.from < at + needle.length && s.to > at).map(s => s.it) })
+    let lo = 0, hi = spans.length // spans are sorted: the first one ending behind the hit, by bisection
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (spans[mid].to > at) hi = mid; else lo = mid + 1 }
+    const span = spans[lo]
+    if (span) {
+      const items = []
+      for (let k = lo; k < spans.length && spans[k].from < at + needle.length; k++) items.push(spans[k].it)
+      out.push({ ...span, at, items })
+    }
   }
   return out
 }
@@ -1893,7 +2073,8 @@ function pvGuessLine(line, sec) { // no text anchor at all: proportional inside 
   return { page, x0: 0, x1: 0, y0: within * h, y1: within * h, h: 1, vw: slot ? +slot.dataset.w || h : h, vh: h }
 }
 function syncToPv(force) { // force: explicit navigation (outline/find), works even with follow off
-  if ((!followAll && !force) || !docId || tplName || (activeFile && !window.changeSession)) return
+  const fileTab = !!activeFile && !window.changeSession && /\.typ$/i.test(activeFile) && !isTplKey(activeFile) // an included chapter is on the page too: its text and its own headings (also in the PDF outline) anchor it
+  if ((!followAll && !force) || !docId || tplName || (activeFile && !window.changeSession && !fileTab)) return
   if (scrollRestore && !scrollRestore.pv) return // reopened doc: saved preview spot wins over the first follow
   const pv = $('preview')
   if (!pv.scrollHeight || document.body.classList.contains('editonly')) return
@@ -1907,8 +2088,13 @@ function syncToPv(force) { // force: explicit navigation (outline/find), works e
   if (!hit) {
     hit = pvFigureHint(lines, line, pvTexts, sec)
     if (!hit) { // blank/command line: the spot between its neighbours, else a proportional estimate
-      const guess = pvGuessBetween(syncNearPair(lines, line, pvTexts, sec)) || pvGuessLine(line, sec)
+      const win0 = sec ? Math.max(0, sec.page) : 0, win1 = sec ? Math.min(pvTexts.length - 1, sec.endPage) : pvTexts.length - 1
+      let pending = false // a render is still indexing its pages: no proportional jump now, the retry in pvTextAll follows with real text
+      for (let k = win0; k <= win1; k++) if (!pvTextDone[k]) { pending = true; break }
+      const near = pvGuessBetween(syncNearPair(lines, line, pvTexts, sec))
+      const guess = near || (pending ? null : (fileTab && !sec ? null : pvGuessLine(line, sec))) // a file line has no ratio on the main document
       if (guess) { syncMiss = false; pvScrollBox(guess); return }
+      if (pending) { syncMiss = true; return }
     }
   }
   if (!hit) { // no matching words: still show the section page, but never yank the preview out of it
@@ -1937,7 +2123,13 @@ function pvSyncDest(dest) { // internal PDF link: the editor cursor follows the 
   const vh = items[0].vh || hPt
   const y = dest.top != null ? Math.max(0, Math.min(vh, vh - dest.top * pvScale)) : 0 // dest.top is PDF points, vh viewport units
   const hint = pvPageHint(dest.page, cm.state.doc.lines || 1, pvTexts.length, pvSecAtY(dest.page, Math.min(vh, y + vh * 0.02)), y / (vh || 1))
-  const anchor = items.filter(it => it.s.trim()).sort((a, b) => Math.abs(a.y - y) - Math.abs(b.y - y))[0]
+  const lx = dest.left != null ? dest.left * pvScale : null // XYZ left: on a two-column page the column decides, not only the height
+  const rank = it => Math.abs(it.y - y) + (lx != null ? Math.abs((it.x0 || 0) - lx) * 0.5 : 0) + (it.y + (it.h || 10) / 2 < y ? (it.h || 10) * 2 : 0) // text at or below the destination first
+  const anchor = items.filter(it => it.s.trim()).sort((a, b) => rank(a) - rank(b))[0]
+  try { // a figure or equation destination: the picture/formula box at that height owns the jump, not the paragraph above it
+    const box = pvImgMatch().find(b => b.page === dest.page && b.y0 <= y + 12 && b.y1 >= y - 4 && (lx == null || (lx >= b.x0 - 8 && lx <= b.x1 + 8)))
+    if (box && !anchor || box && anchor && anchor.y < box.y0) { pvJumpSrc(box.src, 0).then(ok => { if (ok) { syncEdOff = -$('preview').clientHeight * 0.38; syncEdX = -1 } }); return }
+  } catch (e) {}
   const pos = anchor ? pvHerePos(pvClickNeedles(items, anchor, 0), hint, dest.page, anchor) : -1 // the text at the destination beats a page ratio (footnote notes, figures)
   jumpPos(pos >= 0 ? pos : posOfLine(getT(), hint))
   syncEdOff = -$('preview').clientHeight * 0.38 // destination sits 12% below the preview top: scroll-follow starts there
@@ -2109,7 +2301,9 @@ function pvClickCol(it, x, y, cssW, cssH, baseW, cv) { // click x -> the clicked
   }
   const scale = cssW / (it.vw || baseW || 1), w = (it.w || 0) * scale
   if (w <= 0) return 0
-  return pvClickEstimate(raw, (x - (it.x0 || 0) * scale) / w * pvTextW(raw)) // estimate when the canvas was evicted
+  let frac = (x - (it.x0 || 0) * scale) / w
+  if (/[֐-ࣿיִ-﷿ﹰ-﻿]/.test(body)) frac = 1 - frac // right-to-left run: the logical start sits on the right edge
+  return pvClickEstimate(raw, frac * pvTextW(raw)) // estimate when the canvas was evicted
 }
 function pvItemDist(it, x, y, sx, sy) { // CSS distance to the text box, never to its center: long lines stay clickable everywhere
   if (it.rot) { // rotated run: distance in its own baseline frame, not to the axis-aligned shadow
@@ -2142,7 +2336,10 @@ function pvOlEq(pdfText, srcTitle) { // same heading; a numbering prefix on the 
 function pvOutlineClick(pi, items, x, y, sx, sy) { // blank spot in the rendered #outline(): keep the cursor at the outline, not on a heading below
   const oi = srcOutlineLine(getT()) // real #outline( only: a fenced code sample is not the outline
   if (!oi) return 0
-  const heads = srcHeadings(getT()).map(h => h.title).filter(Boolean)
+  const heads = []
+  let srcs = [{ key: '', text: getT() }]
+  try { srcs = pvSrcList() } catch (e) {}
+  for (const src of srcs) if (src && src.text && (!src.key || /\.typ$/i.test(src.key))) for (const h of srcHeadings(src.text)) if (h.title) heads.push(h.title) // included chapters have outline entries too
   const pad = 12 // one blank line around an entry still belongs to the outline
   for (const L of pvLinks[pi] || []) {
     if (!L.dest) continue // external links are not outline entries
@@ -2175,7 +2372,7 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
     const sx = r.width / vw, sy = r.height / vh
     syncEdOff = Math.max(1 - pv.clientHeight / 2, Math.min(pv.clientHeight / 2 - 1, e.clientY - (pv.getBoundingClientRect().top + pv.clientHeight / 2)))
     syncEdX = x / (r.width || 1) // the clicked column keeps owning follow on two-column pages
-    if (pi === 0 && items.length) { // above the first heading: the document top (#outline/title), not the first heading
+    if (pi === 0 && items.length && !activeFile) { // above the first heading: the document top (#outline/title), not the first heading (page 1 belongs to main.typ)
       const first = srcHeadings(getT())[0]
       let topY = Infinity
       if (first) {
@@ -2227,6 +2424,10 @@ $('preview').addEventListener('click', async e => { // preview -> editor: text a
       if (await pvJumpBest(pvClickNeedles(items, best, col), hint, pi, best)) return
     }
     if (ih && await pvJumpSrc(ih.src, 0)) return
+    if (!activeFile && !ih && (yv < vh * 0.07 || yv > vh * 0.93)) { // page margin with a generated page number (or nothing): the page setup owns it, not the last paragraph
+      const set = srcMask(getT()).split('\n').findIndex(l => /#set\s+page\s*\(/.test(l))
+      if (set >= 0) { syncPage = pi; jumpPos(posOfLine(getT(), set + 1)); return }
+    }
     if (!best || activeFile === file0) { // no text under the click: nearby readable text still owns the spot
       const cap = pvImgHit(pi, x, y, sx, sy) ? CLICK_PX * 1.5 : 0 // inside a picture: no far paragraph as stand-in for its missing source
       for (const { it: near } of pvNearItems(items, x, y, sx, sy, best, cap)) {

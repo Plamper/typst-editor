@@ -34,6 +34,7 @@ test('a repeated cursor move reuses the math match, a new render or formula rebu
   const c = vm.createContext({
     cm: { state: { doc: { lines: 20 } } },
     pvTexts: [[{}]],
+    activeFile: '',
     pvOutlineGen: 1,
     shownN: 1,
     pvSrcMath: () => state.src,
