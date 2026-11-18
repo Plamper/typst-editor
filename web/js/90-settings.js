@@ -2219,7 +2219,7 @@ async function pvSyncDest(dest) { // internal PDF link: the editor cursor follow
     const vw = (items[0] && items[0].vw) || hPt * 0.7
     const box = pvImgMatch().filter(b => b.page === dest.page && b.y1 >= y - 4 && (b.y0 <= y + 12 || (b.y0 <= y + 60 * pvScale && gap(b))) && (lx == null || (lx >= b.x0 - vw * 0.45 && lx <= b.x1 + 8))) // a figure's location sits at its block top and left edge, the picture is centered one block gap lower
       .sort((a, b) => Math.abs(a.y0 - y) - Math.abs(b.y0 - y) || (lx == null ? 0 : Math.abs(a.x0 - lx) - Math.abs(b.x0 - lx)))[0]
-    if (box && !anchor || box && anchor && anchor.y < box.y0) { const ok = await pvJumpSrc(box.src, 0); if (ok) { syncEdOff = -$('preview').clientHeight * 0.38; syncEdX = -1 } return }
+    if (box) { const ok = await pvJumpSrc(box.src, 0); if (ok) { syncEdOff = -$('preview').clientHeight * 0.38; syncEdX = -1 } return }
     const eq = pvMathMatch().filter(m => m.page === dest.page && m.line.y1 >= y - 4 && m.line.y0 <= y + 60 * pvScale && gap(m.line)) // an equation destination: the formula right below it, not the paragraph after it
       .sort((a, b) => a.line.y0 - b.line.y0)[0]
     if (eq && (!anchor || anchor.y >= eq.line.y0 - 2)) {
@@ -2234,7 +2234,7 @@ async function pvSyncDest(dest) { // internal PDF link: the editor cursor follow
   let ok = false // the text at the destination beats a page ratio (footnote notes, figures); a bibliography entry lives in its .bib file
   try { ok = needles.length ? await pvJumpBest(needles, hint, dest.page, anchor, true) : false } catch (e) { ok = false }
   if (doc !== docId || epoch !== openN) return
-  if (!ok && !activeFile) jumpPos(posOfLine(getT(), hint))
+  if (!ok && !activeFile) { const gen = anchor ? pvGenLine(items, anchor, dest.page, hint) : -1; jumpPos(gen >= 0 ? gen : posOfLine(getT(), hint)) } // a generated title (bibliography, outline) belongs to its call
   syncEdOff = -$('preview').clientHeight * 0.38 // destination sits 12% below the preview top: scroll-follow starts there
   syncEdX = -1
 }
@@ -2439,9 +2439,12 @@ function pvGenLine(items, it, pi, hint) { // clicked text with no source words: 
   if (k < 0) return -1
   const lineAt = p => txt.slice(0, p).split('\n').length
   const own = o => { const p = pvHerePos(pvClickNeedles(items, o, 0), hint, pi, null, true); return p >= 0 ? { line: lineAt(p), y: o.y } : null }
-  let a = null, b = null
-  for (let i = k - 1, n = 0; i >= 0 && n < 16 && !a; i--, n++) a = own(order[i])
-  for (let i = k + 1, n = 0; i < order.length && n < 16 && !b; i++, n++) b = own(order[i])
+  let a = null, b = null, ia = -1, ib = order.length
+  for (let i = k - 1, n = 0; i >= 0 && n < 16 && !a; i--, n++) { a = own(order[i]); if (a) ia = i }
+  for (let i = k + 1, n = 0; i < order.length && n < 16 && !b; i++, n++) {
+    const o = own(order[i])
+    if (o && (!a || o.line > a.line)) { b = o; ib = i } // a footnote at the page bottom comes from a line above: not the text below
+  }
   if (!a && !b) return -1
   const from = a ? a.line + 1 : 1, to = b ? b.line - 1 : lines.length
   if (to < from) return -1 // the neighbours are adjacent source lines: the text came from inside one of them
@@ -2450,10 +2453,20 @@ function pvGenLine(items, it, pi, hint) { // clicked text with no source words: 
     const s = (mask[ln - 1] || '').trim()
     if (/^#(?!set\b|show\b|let\b|import\b|include\b)[\p{L}_]/u.test(s) || /^#[({[]/.test(s)) calls.push(ln)
   }
-  if (!calls.length || (!a && calls.length > 1 && !b)) return -1
-  const y0 = a ? a.y : 0, y1 = b ? b.y : (it.vh || 1)
-  const f = Math.max(0, Math.min(0.999, (it.y - y0) / Math.max(1, y1 - y0))) // several generators in the gap: the click height picks one
-  const ln = calls[a && b ? Math.floor(f * calls.length) : a ? 0 : calls.length - 1]
+  if (!calls.length) return -1
+  const groups = [] // generated blocks between the owned neighbours, in reading order: the n-th block is the n-th call
+  let mine = -1
+  for (let i = ia + 1; i < ib; i++) {
+    const o = order[i], last = groups[groups.length - 1]
+    if (!last || !last.has(o)) groups.push(new Set(o === it ? block : pvBlockLines(items, o)))
+    if (o === it) mine = groups.length - 1
+  }
+  let ln
+  if (groups.length === calls.length && mine >= 0) ln = calls[mine]
+  else if (a && b) { // several generators in the gap and no clean count: the click height picks one
+    const f = Math.max(0, Math.min(0.999, (it.y - a.y) / Math.max(1, b.y - a.y)))
+    ln = calls[Math.floor(f * calls.length)]
+  } else ln = a ? calls[0] : calls[calls.length - 1]
   return posOfLine(txt, ln) + ((lines[ln - 1] || '').length - (lines[ln - 1] || '').trimStart().length)
 }
 function pvOlEq(pdfText, srcTitle) { // same heading; a numbering prefix on the PDF side is fine
