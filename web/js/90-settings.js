@@ -693,7 +693,7 @@ function syncToEd() {
     .filter(({ it }) => it.y >= vh * 0.05 && it.y <= vh * 0.95
       && (syncText(it.s || '').length >= 4 || pvBlockLines(items, it).length > 1)).slice(0, 3)
   for (const { it } of near) { // real text under the reading point: exact, even inside large figures
-    const pos = pvHerePos(pvClickNeedles(items, it, 0), line, pi, it)
+    const pos = pvHerePos(pvClickNeedles(items, it, 0), line, pi, it, true) // reading follow: no guess from a lone shared word, the line estimate is better than a far-away twin
     if (pos < 0) continue
     const ln = cm.state.doc.lineAt(pos).number, sec = pvSecAtLine(ln)
     if (!sec ? (pi === 0 || !pvSections().length) : sec.page <= pi && pi <= sec.endPage) { smoothFollow(cm.scrollDOM, cmTop(pos)); return } // no heading with a page at all: any page's text may name its line // another page's text (header, repeated title): not this spot
