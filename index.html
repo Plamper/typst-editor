@@ -7429,8 +7429,8 @@ function pvHerePos(needles, hint, pi, anchor, strict) { // source position of th
         const s = nd.s, off = Math.max(0, Math.min(nd.off, s.length))
         const hit = syncAnchor(lines, i + 1, pvTexts, pvSecAtLine(i + 1))
         if (hit && hit.pi === pi && hit.items.includes(anchor)) {
-          const at = text.indexOf(s)
-          matches.push({ pos: at >= 0 ? pos + at + off : pos + (text.match(/^\s*=+\s*/) || [''])[0].length, distance: Math.abs(hit.it.y - anchor.y) })
+          const at = text.indexOf(s), seen = at >= 0 ? at + off : pvViewPos(text, s, off, 1) // markup inside the title ("Results *Bold* Part"): the visible letters keep the clicked column
+          matches.push({ pos: seen >= 0 ? pos + seen : pos + (text.match(/^\s*=+\s*/) || [''])[0].length, distance: Math.abs(hit.it.y - anchor.y) })
         }
       }
       pos += text.length + 1
@@ -8020,11 +8020,11 @@ function pvClickNeedles(items, it, col) { // clicked item first; short cells and
   const ih = Math.max(1, it.h || 10)
   for (const tol of [ih * 0.45, ih * 0.9]) { // short cells, numbers and math glyphs: the row is the context (relative to the type size, not to the render scale)
     const line = items.filter(o => !o.rot && Math.abs(o.y - it.y) <= tol).sort((a, b) => a.x0 - b.x0)
-    let s = '', off = 0, rest = ''
+    let s = '', off = 0, rest = '', gap = 0
     for (const o of line) {
       const t = String(o.s || '').trim()
       if (!t) continue
-      if (o === it) off = s.length + (s ? 1 : 0) + (col || 0)
+      if (o === it) { off = s.length + (s ? 1 : 0) + (col || 0); gap = rest.length } // the marker sits in this gap of the rest
       else rest += (rest ? ' ' : '') + t
       s += (s ? ' ' : '') + t
     }
@@ -8034,7 +8034,7 @@ function pvClickNeedles(items, it, col) { // clicked item first; short cells and
     if (cell && /\p{L}{3}/u.test(text)) add(text, off - cut2) // "42" in "Alice 42 Berlin": the row finds the number itself
     if (bare) { // a superscript marker is not in the source: its line still is
       const cut3 = pvCaptionCut(rest), text3 = rest.slice(cut3)
-      if (/\p{L}{3}/u.test(text3) && add(text3, 0)) break
+      if (/\p{L}{3}/u.test(text3) && add(text3, Math.max(0, gap - cut3))) break // the caret lands where the marker stands, not at the row start
     }
     if (/\p{L}{3}/u.test(text) && add(text, off - cut2)) break
   }
