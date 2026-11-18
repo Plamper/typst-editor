@@ -1,5 +1,5 @@
-"""Klick-Sync deckt die häufigen Typst-Konstrukte ab: Fußnoten, Inline-Markup,
-Mathe, Listen, Spalten, Blöcke, Kopf/Fuß und rotierter Text.
+"""Klick-Sync deckt die häufigen Typst-Konstrukte ab: Inline-Markup, Mathe,
+Listen, Fußnoten, Spalten, Blöcke, Kopf/Fuß und rotierter Text.
 
 Die Brüche sind gegen das gepinnte Typst-0.15.x-Layout gemessen. Ein Wechsel
 der Toolchain soll hier laut scheitern, nicht still falsch klicken.
@@ -11,11 +11,51 @@ from playwright.sync_api import expect
 
 PREVIEW_TIMEOUT = 60_000
 
+INLINE = """= Inline
+
+Plain *bold words* and _emph words_ and `code words` here.
+
+Inline formula $x + y = z$ inside a line.
+
+Escaped \\# hash and "smart quotes" -- dash.
+"""
+
+LISTS = """= Lists
+
+- First bullet item here
+- Second bullet with *bold words*
+  - Nested bullet item here
++ First numbered item here
++ Second numbered item here
+"""
+
 NOTES = """= Notes
 
 Body line with a note.#footnote[Footnote text lives here.]
 
 Body line after the note.
+"""
+
+COLUMNS = """#columns(2)[
+Left column marker LEFTWORD starts the line.
+
+#colbreak()
+
+Right column marker RIGHTWORD starts the line.
+]
+"""
+
+BLOCKS = """= Blocks
+
+#quote(block: true)[Quoted block line here.]
+
+#box(stroke: 1pt, inset: 6pt)[Boxed text line here.]
+
+#place(top + right, dx: -3cm, dy: 1cm)[Placed marker text]
+
+#scale(130%, reflow: true)[Scaled words here.]
+
+After the placed boxes.
 """
 
 HEADER = """#set page(header: [Header marker text], footer: [Footer marker text])
@@ -88,6 +128,45 @@ def _pos(page):
     return int(m.group(1)), int(m.group(2))
 
 
+def test_inline_markup_and_math_land_on_the_clicked_letter(page):
+    _open(page, "e2e_cover_inline", "Cover inline", INLINE)
+
+    _click(page, 0.2081, 0.1078)
+    line, col = _pos(page)
+    assert line == 3 and 10 <= col <= 16, f"bold word: Ln {line}:{col}"
+
+    _click(page, 0.3350, 0.1078)
+    line, col = _pos(page)
+    assert line == 3 and 27 <= col <= 33, f"emph word: Ln {line}:{col}"
+
+    _click(page, 0.4339, 0.1091)
+    line, col = _pos(page)
+    assert line == 3 and 42 <= col <= 47, f"raw word: Ln {line}:{col}"
+
+    _click(page, 0.2369, 0.1324)  # the 𝑥 glyph of the inline formula
+    line, col = _pos(page)
+    assert line == 5 and 16 <= col <= 19, f"inline math: Ln {line}:{col}"
+
+    _click(page, 0.2797, 0.1567)  # escaped hash line
+    line, col = _pos(page)
+    assert line == 7 and 15 <= col <= 35, f"escaped line: Ln {line}:{col}"
+
+
+def test_lists_click_item_text_not_the_generated_marker(page):
+    _open(page, "e2e_cover_lists", "Cover lists", LISTS)
+
+    for fx, fy, want in (
+        (0.2135, 0.1078, 3),
+        (0.3258, 0.1249, 4),
+        (0.2387, 0.1420, 5),
+        (0.2365, 0.1663, 6),
+        (0.2465, 0.1834, 7),
+    ):
+        _click(page, fx, fy)
+        line, col = _pos(page)
+        assert line == want, f"click at {fx}/{fy}: Ln {line}:{col}, want line {want}"
+
+
 def test_footnote_reference_text_and_marker_all_point_at_the_note(page):
     _open(page, "e2e_cover_notes", "Cover notes", NOTES)
 
@@ -110,6 +189,37 @@ def test_footnote_reference_text_and_marker_all_point_at_the_note(page):
     _click(page, 0.1372, 0.9103)  # the generated marker before the note body
     line, col = _pos(page)
     assert line == 3, f"footnote marker: Ln {line}:{col}"
+
+
+def test_two_columns_keep_their_own_source_line(page):
+    _open(page, "e2e_cover_columns", "Cover columns", COLUMNS)
+
+    _click(page, 0.2988, 0.0862)
+    line, col = _pos(page)
+    assert line == 2, f"left column: Ln {line}:{col}"
+
+    _click(page, 0.6897, 0.0862)
+    line, col = _pos(page)
+    assert line == 6, f"right column: Ln {line}:{col}"
+
+    _click(page, 0.5313, 0.1033)  # the wrapped tail of the right column
+    line, col = _pos(page)
+    assert line == 6 and col > 30, f"wrapped column tail: Ln {line}:{col}"
+
+
+def test_quote_box_place_and_scale_map_to_their_own_lines(page):
+    _open(page, "e2e_cover_blocks", "Cover blocks", BLOCKS)
+
+    for fx, fy, want in (
+        (0.2253, 0.1294, 3),
+        (0.2065, 0.1686, 5),
+        (0.6672, 0.1199, 7),
+        (0.2104, 0.2007, 9),
+        (0.2053, 0.2269, 11),
+    ):
+        _click(page, fx, fy)
+        line, col = _pos(page)
+        assert line == want, f"click at {fx}/{fy}: Ln {line}:{col}, want line {want}"
 
 
 def test_header_and_footer_map_to_the_page_setup_line(page):
