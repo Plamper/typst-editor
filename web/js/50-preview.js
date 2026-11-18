@@ -508,6 +508,16 @@ function pvBoxes(tc, v, page) { // textContent -> click anchors in viewport px (
     return { s: it.str, x: x + w / 2, x0: x, w, h: h || 10, y: y - (h || 10) / 2, y0: y, ang, vw: v.width, vh: v.height, rot, fam: page ? pvFontName(page, it.fontName) : '' }
   })
 }
+function pvFontsMissing(tc, page) { // an undrawn page whose fonts are unknown yet (fonts are shared: usually only the first page with a new font pays)
+  const seen = new Set()
+  for (const it of tc.items || []) {
+    const fn = it.fontName
+    if (!fn || seen.has(fn) || !String(it.str || '').trim()) continue
+    seen.add(fn)
+    try { page.commonObjs.get(fn) } catch (e) { return true }
+  }
+  return false
+}
 function pvFontName(page, fn) { // embedded base font name: the only honest way to tell math from body text (NewCMMath, STIXTwoMath, …)
   if (!fn) return ''
   try { const f = page.commonObjs.get(fn); return String((f && f.name) || '') } catch (e) { return '' }
@@ -869,7 +879,9 @@ function pvPageMeta(doc, p, scale) { // one page: text anchors + link boxes + im
   return doc.getPage(p).then(async page => {
     const v = page.getViewport({ scale })
     const tc = await page.getTextContent()
-    return { items: pvBoxes(tc, v, page), links: await pvPageLinks(doc, page, v), imgs: pvImgNeed ? await pvPageImgs(page, v) : [] }
+    const imgs = pvImgNeed ? await pvPageImgs(page, v) : [] // operator list first: it also resolves the page fonts
+    if (!pvImgNeed && pvFontsMissing(tc, page)) { try { await page.getOperatorList() } catch (e) {} } // text content alone never loads a font: math detection needs its embedded name
+    return { items: pvBoxes(tc, v, page), links: await pvPageLinks(doc, page, v), imgs }
   })
 }
 if (pvBox0 && pvBox0.addEventListener) pvBox0.addEventListener('click', e => { // internal PDF destination: external links open natively

@@ -3082,6 +3082,16 @@ function pvBoxes(tc, v, page) { // textContent -> click anchors in viewport px (
     return { s: it.str, x: x + w / 2, x0: x, w, h: h || 10, y: y - (h || 10) / 2, y0: y, ang, vw: v.width, vh: v.height, rot, fam: page ? pvFontName(page, it.fontName) : '' }
   })
 }
+function pvFontsMissing(tc, page) { // an undrawn page whose fonts are unknown yet (fonts are shared: usually only the first page with a new font pays)
+  const seen = new Set()
+  for (const it of tc.items || []) {
+    const fn = it.fontName
+    if (!fn || seen.has(fn) || !String(it.str || '').trim()) continue
+    seen.add(fn)
+    try { page.commonObjs.get(fn) } catch (e) { return true }
+  }
+  return false
+}
 function pvFontName(page, fn) { // embedded base font name: the only honest way to tell math from body text (NewCMMath, STIXTwoMath, …)
   if (!fn) return ''
   try { const f = page.commonObjs.get(fn); return String((f && f.name) || '') } catch (e) { return '' }
@@ -3443,7 +3453,9 @@ function pvPageMeta(doc, p, scale) { // one page: text anchors + link boxes + im
   return doc.getPage(p).then(async page => {
     const v = page.getViewport({ scale })
     const tc = await page.getTextContent()
-    return { items: pvBoxes(tc, v, page), links: await pvPageLinks(doc, page, v), imgs: pvImgNeed ? await pvPageImgs(page, v) : [] }
+    const imgs = pvImgNeed ? await pvPageImgs(page, v) : [] // operator list first: it also resolves the page fonts
+    if (!pvImgNeed && pvFontsMissing(tc, page)) { try { await page.getOperatorList() } catch (e) {} } // text content alone never loads a font: math detection needs its embedded name
+    return { items: pvBoxes(tc, v, page), links: await pvPageLinks(doc, page, v), imgs }
   })
 }
 if (pvBox0 && pvBox0.addEventListener) pvBox0.addEventListener('click', e => { // internal PDF destination: external links open natively
@@ -7438,7 +7450,7 @@ function pvJumpHere(needles, hint, pi, anchor, strict) { // current file: exact 
   jumpPos(pos)
   return true
 }
-async function pvJumpBest(needles, hint, pi, anchor) { // current file, else the unique owner, else stay
+async function pvJumpBest(needles, hint, pi, anchor, anyWord) { // current file, else the unique owner, else stay; anyWord: no clicked letter (link destination), any unique word of the text decides
   const list = (needles || []).filter(n => n && n.s && n.s.trim().length >= 2)
   if (!list.length) return false
   if (pvJumpHere(list, hint, pi, anchor, true)) return true // strong evidence in this file first, then in the others, a lone shared word last
@@ -7471,7 +7483,63 @@ async function pvJumpBest(needles, hint, pi, anchor) { // current file, else the
       if (at >= 0) { jumpPos(at); return true }
     }
   }
-  return pvJumpHere(list, hint, pi, anchor) // nothing strong anywhere: the clicked word in this file is still the honest guess
+  const one = pvUniqueWord(list[0]) || (anyWord ? pvUniqueAny(list[0]) : null) // a word that exists once in all sources: a .bib field, a name in another chapter
+  if (one) {
+    if (one.key === cur) { syncPage = pi; jumpPos(one.at); return true }
+    const doc = docId, epoch = openN
+    try { if (!await switchTab(one.key)) return false } catch (e) { return false }
+    if (doc !== docId || epoch !== openN || (activeFile || '') !== one.key) return false
+    const again = pvUniqueWord(list[0]) || (anyWord ? pvUniqueAny(list[0]) : null)
+    if (again && again.key === one.key) { syncPage = pi; jumpPos(again.at); return true }
+    return false
+  }
+  if (pvJumpHere(list, hint, pi, anchor)) return true // nothing strong anywhere: the clicked word in this file is still the honest guess
+  const code = pvCodeWord(getT(), list[0], hint) // text a function, loop or string builds: the call site or definition that holds the word
+  if (code < 0) return false
+  syncPage = pi
+  jumpPos(code)
+  return true
+}
+function pvClickedWord(nd) { // needle -> the normalized word under its caret, with the letter index inside it
+  const nw = pvNormCaret(String(nd && nd.s || '').trim()), k = pvCaretIndex(nw, (nd && nd.off) || 0)
+  for (const m of nw.s.matchAll(/[\p{L}\p{N}]+/gu)) if (k <= m.index + m[0].length) return { w: m[0], k: Math.max(0, Math.min(m[0].length - 1, k - m.index)) }
+  return null
+}
+function pvUniqueWord(nd) { // the clicked word, when it occurs exactly once in the visible text of all sources
+  const cw = pvClickedWord(nd)
+  if (!cw || cw.w.length < 4 || SRC_CJK.test(cw.w)) return null
+  let hit = null
+  let srcs = []
+  try { srcs = pvSrcList() } catch (e) { return null }
+  for (const src of srcs) {
+    if (!src || !src.text) continue
+    for (const w of srcViewWords(srcViewOf(src.text))) {
+      if (w.w !== cw.w) continue
+      if (hit) return null
+      hit = { key: src.key || '', at: w.map[Math.min(cw.k, w.map.length - 1)] }
+    }
+  }
+  return hit
+}
+function pvUniqueAny(nd) { // the first word of the needle that is unique across all sources (a bibliography entry: title, publisher, year)
+  const s = String(nd && nd.s || '').trim()
+  for (const m of s.matchAll(/[\p{L}\p{N}]{4,}/gu)) {
+    const hit = pvUniqueWord({ s, off: m.index })
+    if (hit) return hit
+  }
+  return null
+}
+function pvCodeWord(txt, nd, hint) { // the clicked word in code or a string of this file (comments excluded), nearest to the hint line
+  const cw = pvClickedWord(nd)
+  if (!cw || cw.w.length < 3) return -1
+  const mask = srcMask(txt), { s, map } = syncNormMap(mask), hp = posOfLine(txt, hint)
+  let best = -1, bd = Infinity, p = -1
+  while ((p = s.indexOf(cw.w, p + 1)) >= 0) {
+    if (pvWordChar(s[p - 1]) || pvWordChar(s[p + cw.w.length])) continue
+    const at = map[p], d = Math.abs(at - hp)
+    if (d < bd) { bd = d; best = map[p + cw.k] }
+  }
+  return best
 }
 function pvMainText() { return activeFile ? shadow : getT() } // main.typ, also while a text tab is open
 function pvFileAnchor(key, main) { // main line where a text file enters the page (include first, import as weak hint)
@@ -7601,9 +7669,10 @@ function pvImgAt(pi, x, y, sx, sy) { // click inside an image box -> that image'
 }
 function pvImgLineHit(line) { // cursor on an image/figure line -> its rendered box
   const lines = getT().split('\n'), key = activeFile || ''
+  const seen = srcViewLine(lines, line), words = seen != null && syncText(seen).length >= 4 // a caption line has its own words on paper: they anchor it, not the picture above
   let best = null, bd = Infinity
   for (const b of pvImgMatch()) {
-    if ((b.src.key || '') !== key) continue
+    if ((b.src.key || '') !== key || (words && line !== b.src.line)) continue
     const from = pvFigureStart(lines, b.src.line) || b.src.line
     if (line < from || line > pvCallEnd(lines, from)) continue
     const d = Math.abs(line - b.src.line)
@@ -7732,6 +7801,7 @@ function pvMathCands(L, hint, srcs) { // formulas that explain enough of this vi
       for (let i = a; i <= b; i++) if (al.map[i] < 0) err++
       ratio = err / win
       if (ratio > PV_MATH_MAX_COST) continue
+      if ((win - err) / Math.max(1, f.s.length) < 1 - PV_MATH_MAX_COST) continue // the cell must be this formula, not three shared glyphs ("2+2" of a²+b²=c² inside x²+2x+1)
     }
     const score = ratio * 1000 + Math.abs(f.order - hint)
     out.push({ src: f, map: al.map, ratio, score, ix })
@@ -8368,7 +8438,29 @@ function pvViewPos(txt, s, off, hint) { // clicked visible text -> source letter
     const d = Math.abs(doc.map[p] - hp)
     if (d < bd) { bd = d; best = p }
   }
-  return best >= 0 ? land(best) : -1
+  if (best >= 0) return land(best)
+  const cn = nw.s.replace(/ /g, '')
+  if (!nw.s.includes(' ') || cn.length < 12) return -1
+  const cd = srcViewCompact(doc) // the PDF text layer drops a line-break hyphen ("Arbeitsunfä" + "higkeits…"): compare the letters without word gaps
+  let q = -1
+  while ((q = cd.s.indexOf(cn, q + 1)) >= 0) {
+    const a = cd.at[q], z = cd.at[q + cn.length - 1]
+    if ((a && doc.s[a - 1] !== ' ') || (z + 1 < doc.s.length && doc.s[z + 1] !== ' ')) continue // still whole words at both ends
+    const d = Math.abs(doc.map[a] - hp)
+    if (d < bd) { bd = d; best = q }
+  }
+  if (best < 0) return -1
+  const k = pvCaretIndex(nw, off), c = nw.s.slice(0, k).replace(/ /g, '').length
+  if (c >= cn.length) return srcAfter(txt, doc.map[cd.at[best + cn.length - 1]])
+  return doc.map[cd.at[best + c]]
+}
+function srcViewCompact(doc) { // normalized document without word gaps, with the index of every letter in doc.s
+  if (doc.compact) return doc.compact
+  let s = ''
+  const at = []
+  for (let i = 0; i < doc.s.length; i++) if (doc.s[i] !== ' ') { s += doc.s[i]; at.push(i) }
+  doc.compact = { s, at }
+  return doc.compact
 }
 function srcAfter(txt, p) { // raw offset just behind the character at p (surrogate pairs and combining marks included)
   if (p == null || p < 0) return p
@@ -8755,7 +8847,7 @@ function syncToPv(force) { // force: explicit navigation (outline/find), works e
   if (Math.abs(dy) > 300) smoothScroll(pv, want) // a page jump gets the long in-out handles
   else if (Math.abs(dy) > SYNC_PX) smoothFollow(pv, want) // small steps follow without ever restarting
 }
-function pvSyncDest(dest) { // internal PDF link: the editor cursor follows the same destination
+async function pvSyncDest(dest) { // internal PDF link: the editor cursor follows the same destination
   if (!syncOn || !docId || tplName || activeFile || !dest) return // a link click is a click: the eye does not gate it
   const items = pvTexts[dest.page] || [], slot = pvSlots[dest.page]
   if (!items.length || !slot) return
@@ -8764,14 +8856,24 @@ function pvSyncDest(dest) { // internal PDF link: the editor cursor follows the 
   const y = dest.top != null ? Math.max(0, Math.min(vh, vh - dest.top * pvScale)) : 0 // dest.top is PDF points, vh viewport units
   const hint = pvPageHint(dest.page, cm.state.doc.lines || 1, pvTexts.length, pvSecAtY(dest.page, Math.min(vh, y + vh * 0.02)), y / (vh || 1))
   const lx = dest.left != null ? dest.left * pvScale : null // XYZ left: on a two-column page the column decides, not only the height
-  const rank = it => Math.abs(it.y - y) + (lx != null ? Math.abs((it.x0 || 0) - lx) * 0.5 : 0) + (it.y + (it.h || 10) / 2 < y ? (it.h || 10) * 2 : 0) // text at or below the destination first
+  const rank = it => { // text that starts at or below the destination first: a location marks the top of its element
+    const top = it.y - (it.h || 10) / 2, d = top >= y - 2 ? top - y : (y - top) * 3
+    return d + (lx != null ? Math.abs((it.x0 || 0) - lx) * 0.5 : 0) + (it.y + (it.h || 10) / 2 < y ? (it.h || 10) * 2 : 0)
+  }
   const anchor = items.filter(it => it.s.trim()).sort((a, b) => rank(a) - rank(b))[0]
   try { // a figure or equation destination: the picture/formula box at that height owns the jump, not the paragraph above it
-    const box = pvImgMatch().find(b => b.page === dest.page && b.y0 <= y + 12 && b.y1 >= y - 4 && (lx == null || (lx >= b.x0 - 8 && lx <= b.x1 + 8)))
-    if (box && !anchor || box && anchor && anchor.y < box.y0) { pvJumpSrc(box.src, 0).then(ok => { if (ok) { syncEdOff = -$('preview').clientHeight * 0.38; syncEdX = -1 } }); return }
+    const gap = b => !items.some(it => it.s.trim() && it.y > y && it.y < b.y0 && (lx == null || it.x0 + it.w >= b.x0 - 8)) // nothing printed between the destination and the box
+    const vw = (items[0] && items[0].vw) || hPt * 0.7
+    const box = pvImgMatch().filter(b => b.page === dest.page && b.y1 >= y - 4 && (b.y0 <= y + 12 || (b.y0 <= y + 60 * pvScale && gap(b))) && (lx == null || (lx >= b.x0 - vw * 0.45 && lx <= b.x1 + 8))) // a figure's location sits at its block top and left edge, the picture is centered one block gap lower
+      .sort((a, b) => Math.abs(a.y0 - y) - Math.abs(b.y0 - y) || (lx == null ? 0 : Math.abs(a.x0 - lx) - Math.abs(b.x0 - lx)))[0]
+    if (box && !anchor || box && anchor && anchor.y < box.y0) { const ok = await pvJumpSrc(box.src, 0); if (ok) { syncEdOff = -$('preview').clientHeight * 0.38; syncEdX = -1 } return }
   } catch (e) {}
-  const pos = anchor ? pvHerePos(pvClickNeedles(items, anchor, 0), hint, dest.page, anchor) : -1 // the text at the destination beats a page ratio (footnote notes, figures)
-  jumpPos(pos >= 0 ? pos : posOfLine(getT(), hint))
+  const needles = anchor ? pvClickNeedles(items, anchor, 0) : []
+  const doc = docId, epoch = openN
+  let ok = false // the text at the destination beats a page ratio (footnote notes, figures); a bibliography entry lives in its .bib file
+  try { ok = needles.length ? await pvJumpBest(needles, hint, dest.page, anchor, true) : false } catch (e) { ok = false }
+  if (doc !== docId || epoch !== openN) return
+  if (!ok && !activeFile) jumpPos(posOfLine(getT(), hint))
   syncEdOff = -$('preview').clientHeight * 0.38 // destination sits 12% below the preview top: scroll-follow starts there
   syncEdX = -1
 }
@@ -8981,6 +9083,7 @@ function pvOutlineClick(pi, items, x, y, sx, sy) { // blank spot in the rendered
   try { srcs = pvSrcList() } catch (e) {}
   for (const src of srcs) if (src && src.text && (!src.key || /\.typ$/i.test(src.key))) for (const h of srcHeadings(src.text)) if (h.title) heads.push(h.title) // included chapters have outline entries too
   const pad = 12 // one blank line around an entry still belongs to the outline
+  let first = null
   for (const L of pvLinks[pi] || []) {
     if (!L.dest) continue // external links are not outline entries
     const mid = (L.y0 + L.y1) / 2, hh = Math.max(6, (L.y1 - L.y0) / 2 + 2)
@@ -8989,9 +9092,16 @@ function pvOutlineClick(pi, items, x, y, sx, sy) { // blank spot in the rendered
       return heads.some(h => pvOlEq(it.s, h)) // exact heading, not a loose substring
     })
     if (!entry) continue
+    if (!first || L.y0 < first.y0) first = L
     if (x >= L.x0 * sx - pad && x <= L.x1 * sx + pad && y >= L.y0 * sy - pad && y <= L.y1 * sy + pad) return oi
   }
-  return 0
+  if (!first) return 0
+  const eh = Math.max(10, first.y1 - first.y0) // the outline title ("Contents") right above the first entry is generated by #outline() too
+  const title = items.filter(it => it.s.trim() && !it.rot && it.y < first.y0 && first.y0 - (it.y + (it.h || 10) / 2) <= eh * 3)
+    .sort((a, b) => b.y - a.y)[0]
+  if (!title || heads.some(h => pvOlEq(title.s, h)) || pvItemDist(title, x, y, sx, sy) > 16) return 0
+  try { if (pvHerePos(pvClickNeedles(items, title, 0), oi, pi, null, true) >= 0) return 0 } catch (e) {} // a title the source spells out (#outline(title: [..])) maps to its own words
+  return oi
 }
 $('preview').addEventListener('click', async e => { // preview -> editor: text anchors first (tables!), then nearest text, else section
   if (e.target.closest && e.target.closest('.pvLinks a')) return // PDF link: native open or internal jump, never source sync

@@ -20,6 +20,7 @@ function refCands(L, hint, srcs) {
       for (let i = a; i <= b; i++) if (al.map[i] < 0) err++
       ratio = err / win
       if (ratio > PV_MATH_MAX_COST) continue
+      if ((win - err) / Math.max(1, f.s.length) < 1 - PV_MATH_MAX_COST) continue
     }
     out.push({ src: f, map: al.map, ratio, score: ratio * 1000 + Math.abs(f.order - hint) })
   }
