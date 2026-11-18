@@ -9,9 +9,6 @@ CREATE TABLE IF NOT EXISTS users (
     oidc_issuer TEXT NOT NULL DEFAULT '',
     oidc_sub TEXT NOT NULL DEFAULT ''
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc
-    ON users(oidc_issuer, oidc_sub)
-    WHERE oidc_issuer <> '' AND oidc_sub <> '';
 
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,

@@ -507,7 +507,7 @@ def test_oidc_security_hardening_host_replay_jwks_and_claims(c, oidc_env):
     assert c.get("/api/me").json()["user"] == "verified_name"
 
 
-def test_migrate_v31_idempotent(tmp_path):
+def test_migrate_v31_idempotent(tmp_path, monkeypatch):
     p = tmp_path / "legacy.db"
     con = sqlite3.connect(str(p))
     con.row_factory = sqlite3.Row
@@ -519,12 +519,20 @@ def test_migrate_v31_idempotent(tmp_path):
     for v in range(1, 31):
         con.execute("INSERT INTO schema_version (v, applied_at) VALUES (?, '2026-01-01')", (v,))
     con.commit()
+    con.close()
 
-    db._migrate_v31(con)
-    db._migrate_v31(con)
+    # Full init_db() runs schema.sql before migrate(); verify pre-v31 DB upgrades cleanly.
+    monkeypatch.setattr(db, "DB_PATH", p)
+    db.init_db()
+    db.init_db()
+
+    con = sqlite3.connect(str(p))
+    con.row_factory = sqlite3.Row
     cols = db._cols(con, "users")
     assert "oidc_issuer" in cols
     assert "oidc_sub" in cols
+    idx = con.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_users_oidc'").fetchone()
+    assert idx is not None
     row = con.execute("SELECT oidc_issuer, oidc_sub FROM users WHERE name='legacy'").fetchone()
     assert row["oidc_issuer"] == ""
     assert row["oidc_sub"] == ""
