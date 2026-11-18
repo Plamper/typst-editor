@@ -705,7 +705,7 @@ function pvGotoTarget(target) { // internal jump: destination page, refined by i
     const pr = pv.getBoundingClientRect(), sr = s.getBoundingClientRect()
     const hPt = +s.dataset.w * +s.dataset.r, cssH = parseFloat(s.style.height) || 0
     let y = 0
-    if (target.top != null && hPt > 0 && cssH > 0) y = Math.max(0, Math.min(cssH, cssH * (1 - target.top / hPt)))
+    if (target.top != null && hPt > 0 && cssH > 0) y = Math.max(0, Math.min(cssH, cssH * (1 - target.top * pvScale / hPt))) // dest.top is PDF points, hPt viewport units
     pvScrollTo(pv, pv.scrollTop + sr.top - pr.top + y - pv.clientHeight * 0.12)
     return
   }

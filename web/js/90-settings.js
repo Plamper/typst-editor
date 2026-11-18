@@ -1934,10 +1934,12 @@ function pvSyncDest(dest) { // internal PDF link: the editor cursor follows the 
   const items = pvTexts[dest.page] || [], slot = pvSlots[dest.page]
   if (!items.length || !slot) return
   const hPt = (+slot.dataset.w || 0) * (+slot.dataset.r || 0)
-  const frac = dest.top != null && hPt > 0 ? Math.max(0, Math.min(1, 1 - dest.top / hPt)) : 0
   const vh = items[0].vh || hPt
-  const line = pvPageHint(dest.page, cm.state.doc.lines || 1, pvTexts.length, pvSecAtY(dest.page, Math.min(vh, frac * vh + vh * 0.02)), frac)
-  jumpPos(posOfLine(getT(), line))
+  const y = dest.top != null ? Math.max(0, Math.min(vh, vh - dest.top * pvScale)) : 0 // dest.top is PDF points, vh viewport units
+  const hint = pvPageHint(dest.page, cm.state.doc.lines || 1, pvTexts.length, pvSecAtY(dest.page, Math.min(vh, y + vh * 0.02)), y / (vh || 1))
+  const anchor = items.filter(it => it.s.trim()).sort((a, b) => Math.abs(a.y - y) - Math.abs(b.y - y))[0]
+  const pos = anchor ? pvHerePos(pvClickNeedles(items, anchor, 0), hint, dest.page, anchor) : -1 // the text at the destination beats a page ratio (footnote notes, figures)
+  jumpPos(pos >= 0 ? pos : posOfLine(getT(), hint))
   syncEdOff = -$('preview').clientHeight * 0.38 // destination sits 12% below the preview top: scroll-follow starts there
   syncEdX = -1
 }
