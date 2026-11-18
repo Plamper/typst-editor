@@ -253,8 +253,11 @@ async def _get_jwks(jwks_uri: str, *, force: bool = False) -> list[dict[str, Any
     clean = [k for k in keys if isinstance(k, dict)]
     if not clean:
         raise OidcError("failed", "OIDC JWKS empty")
+    old_kids = {k.get("kid") for k in (cached[1] if cached else ()) if isinstance(k.get("kid"), str)}
+    new_kids = {k.get("kid") for k in clean if isinstance(k.get("kid"), str)}
     _JWKS_CACHE[jwks_uri] = (now, clean)
-    _JWKS_MISS_KIDS.pop(jwks_uri, None)
+    if not force or old_kids != new_kids:
+        _JWKS_MISS_KIDS.pop(jwks_uri, None)
     return clean
 
 
@@ -362,6 +365,14 @@ async def _exchange_code(
     return tok
 
 
+def _jwk_usable(k: dict[str, Any], alg: str) -> bool:
+    return (
+        k.get("use", "sig") == "sig"
+        and (not k.get("alg") or k.get("alg") == alg)
+        and k.get("kty") not in ("oct", "", None)
+    )
+
+
 async def _verify_id_token(
     id_token: str,
     disc: dict[str, Any],
@@ -383,20 +394,17 @@ async def _verify_id_token(
     kid = header.get("kid")
     keys = await _get_jwks(jwks_uri)
     if isinstance(kid, str) and kid:
-        candidates = [k for k in keys if k.get("kid") == kid]
+        candidates = [k for k in keys if k.get("kid") == kid and _jwk_usable(k, alg)]
         if not candidates and kid not in _JWKS_MISS_KIDS.get(jwks_uri, ()):
             keys = await _get_jwks(jwks_uri, force=True)
-            candidates = [k for k in keys if k.get("kid") == kid]
+            candidates = [k for k in keys if k.get("kid") == kid and _jwk_usable(k, alg)]
             if not candidates:
                 misses = _JWKS_MISS_KIDS.setdefault(jwks_uri, set())
                 if len(misses) >= 128:
                     misses.clear()
                 misses.add(kid)
     else:
-        candidates = [
-            k for k in keys
-            if k.get("use", "sig") == "sig" and (not k.get("alg") or k.get("alg") == alg)
-        ]
+        candidates = [k for k in keys if _jwk_usable(k, alg)]
     if not candidates:
         raise OidcError("failed", "No matching JWK for id_token")
 
