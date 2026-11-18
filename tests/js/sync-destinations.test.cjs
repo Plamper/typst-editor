@@ -41,7 +41,7 @@ test('a figure destination at its block top finds the centered picture one block
   const imgs = [{ page: 0, x0: 413, x1: 776, y0: 218, y1: 491, src: { key: '', line: 5 } }]
   const c = destCtx({ text, items, imgs, found: { 'Text before the image paragraph.': 9 } })
   await c.pvSyncDest({ page: 0, top: 742.4, left: 70.87 }) // XYZ: the figure's left margin, 19 px above the picture
-  assert.deepEqual(c.log, [['src', '', 5, 0]])
+  assert.deepEqual(JSON.parse(JSON.stringify(c.log)), [['src', '', 5, 0]])
 })
 
 test('a picture with text between it and the destination is not the target', async () => {
@@ -49,14 +49,14 @@ test('a picture with text between it and the destination is not the target', asy
   const imgs = [{ page: 0, x0: 413, x1: 776, y0: 300, y1: 500, src: { key: '', line: 9 } }]
   const c = destCtx({ text: 'a\nb', items, imgs, found: { 'Heading text above': 0 } })
   await c.pvSyncDest({ page: 0, top: (1684 - 195) / 2, left: 70 })
-  assert.deepEqual(c.log, [['jump', 0]])
+  assert.deepEqual(JSON.parse(JSON.stringify(c.log)), [['jump', 0]])
 })
 
 test('a bibliography destination anchors to the entry that starts there, not the heading above', async () => {
   const items = [item('Bibliography', 141, 236.6, 182, 30.8), item('[1]', 141, 272), item('D. Knuth,', 182, 272)]
   const c = destCtx({ text: 'x', items, found: { '[1]': 42, Bibliography: 7 } })
   await c.pvSyncDest({ page: 0, top: 717.6, left: 70.87 }) // y = 248.5: inside the heading's lower half, right above the entry
-  assert.deepEqual(c.log, [['jump', 42]])
+  assert.deepEqual(JSON.parse(JSON.stringify(c.log)), [['jump', 42]])
 })
 
 test('an equation destination jumps to the formula below it, not to the paragraph after it', async () => {
@@ -64,7 +64,7 @@ test('an equation destination jumps to the formula below it, not to the paragrap
   const maths = [{ page: 0, line: { y0: 222, y1: 260 }, src: { key: '', line: 5, own: [{ line: 5, at: 2 }] } }]
   const c = destCtx({ text: 'x', items, maths, found: { 'Second relation follows.': 99 } })
   await c.pvSyncDest({ page: 0, top: (1684 - 212) / 2, left: 70 })
-  assert.deepEqual(c.log, [['src', '', 5, 2]])
+  assert.deepEqual(JSON.parse(JSON.stringify(c.log)), [['src', '', 5, 2]])
 })
 
 function genCtx(text, items, owned) {
