@@ -137,3 +137,12 @@ function viewCtxLite() {
   vm.runInContext(slice(settings, 'function srcLineWords', 'function syncWords'), c)
   return c
 }
+
+test('two words matched across raw code are no strong match ("1." of a numbering string + the heading)', () => {
+  const c = vm.createContext({ posOfLine })
+  vm.runInContext(slice(settings, 'function pvWordChar', 'function cmTop'), c)
+  vm.runInContext(slice(settings, 'function pvPosIn', 'function syncToPv'), c)
+  const src = '#set heading(numbering: "1.")\n= Intro <intro>\nBody.'
+  assert.equal(c.pvPosIn(src, '1. Intro', 0, 1, true), -1)
+  assert.equal(c.pvPosIn(src, 'Intro', 0, 2, true), src.indexOf('Intro'))
+})

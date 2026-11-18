@@ -7395,7 +7395,7 @@ function pvPosIn(txt, s, off, hint, strict) { // exact needle first, then its wo
   const heard = pvViewWords(txt, s, off, hint, strict ? 2 : 0) // the clicked word with its neighbours: exact letter, even when the run differs
   if (heard >= 0) return heard
   const words = pvNormWords(s)
-  if (!words.length) return -1
+  if (!words.length || (strict && words.length < 3)) return -1 // two words matched across raw code ("1." of a numbering string + the heading below) prove nothing
   const o = Math.max(0, Math.min(off, s.length))
   let wi = words.length - 1, k = words[wi].text.length // past the last word: its end
   for (let i = 0; i < words.length; i++) {
