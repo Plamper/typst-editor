@@ -38,6 +38,7 @@ function pushLocal(changes, oldLen) {
       })
     }, 'local') // own edits: skip pullRemote via observer (see openDoc)
     shadow = getT()
+    if (ytext.length !== shadow.length || ytext.toString() !== shadow) setYText(shadow) // the editor started from another text than Y (a session left it behind): the diff repairs it
     return
   }
   setYText(getT()) // drift: diff fallback

@@ -2526,6 +2526,7 @@ function pushLocal(changes, oldLen) {
       })
     }, 'local') // own edits: skip pullRemote via observer (see openDoc)
     shadow = getT()
+    if (ytext.length !== shadow.length || ytext.toString() !== shadow) setYText(shadow) // the editor started from another text than Y (a session left it behind): the diff repairs it
     return
   }
   setYText(getT()) // drift: diff fallback
@@ -3622,8 +3623,8 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
     for (const c of pages) sizeCanvas(c) // pvZoom just changed above: resize the new pages, not the old ones in the DOM
     if (pvStale(id, myDoc, myTplName)) { try { doc.destroy() } catch (e) {} return } // template/closed view: never swap a stale render in
     const st = preview.scrollTop // read at swap time: follow-scroll during render is kept
+    if (!pvMetaClaim(id)) { try { doc.destroy() } catch (e) {} return } // an older fallback run that finishes late must never take the page state back from a newer one
     shownN = id
-    pvMetaGen = id // page state now belongs to this render
     preview.replaceChildren(...pages)
     try { oldPdf?.destroy() } catch (e) {} // only the document that was really on screen may be released here
     oldPdf = doc
@@ -7316,13 +7317,15 @@ try { // wheel over the editor: the preview follows what is on screen, not only 
   }, { passive: true })
 } catch (e) {}
 let syncEdT = 0
+function syncEdTab() { return !!activeFile && !window.changeSession && /.typ$/i.test(activeFile) && !isTplKey(activeFile) } // an included chapter is on the page too: its own text can follow the reading point
 function queueSyncEd() { // preview scroll -> editor view: throttled, never moves the cursor
-  if (!followAll || !docId || tplName || activeFile) return
+  if (!followAll || !docId || tplName || (activeFile && !syncEdTab())) return
   if (syncEdT) return
   syncEdT = setTimeout(() => { syncEdT = 0; syncToEd() }, SYNC_MS)
 }
 function syncToEd() {
-  if (!followAll || !docId || tplName || activeFile) return
+  const fileTab = syncEdTab()
+  if (!followAll || !docId || tplName || (activeFile && !fileTab)) return
   const pv = $('preview')
   if (!pv.clientHeight || document.body.classList.contains('editonly')) return
   const pi = pvViewPage(pv, syncEdOff), slot = pi >= 0 ? pv.querySelectorAll('.pvPage')[pi] : null
@@ -7332,7 +7335,7 @@ function syncToEd() {
   const items = pvTexts[pi] || []
   if (!items.length) { // page without text (full-page image, scan): section + page ratio still points at a line
     syncEdMiss = !pvTextDone[pi]
-    if (syncEdMiss) return
+    if (syncEdMiss || fileTab) return // a file tab has no page ratio of its own
     const vh = (pvPageSize && pvPageSize.height) || 1
     const line = pvPageHint(pi, cm.state.doc.lines || 1, pvTexts.length, pvSecAtY(pi, frac * vh), frac)
     smoothFollow(cm.scrollDOM, cmTop(posOfLine(getT(), line)))
@@ -7340,16 +7343,19 @@ function syncToEd() {
   }
   syncEdMiss = false
   const vh = items[0].vh || 1, vw = items[0].vw || 1
-  const line = pvPageHint(pi, cm.state.doc.lines || 1, pvTexts.length, pvSecAtY(pi, frac * vh), frac)
-  const near = pvNearItems(items, (syncEdX >= 0 ? syncEdX : 0.5) * vw, frac * vh, 1, 1, null) // no running header/footer, no needle-less lone letters
+  const at = pvSecAtY(pi, frac * vh), line = pvPageHint(pi, cm.state.doc.lines || 1, pvTexts.length, at, frac)
+  const rx = (syncEdX >= 0 ? syncEdX : 0.5) * vw, ry = frac * vh
+  const row = it => Math.round(Math.max(0, Math.abs(it.y - ry) - (it.h || 10) / 2) / 4) // the line at the reading point first: a short left-aligned line must not lose to the line above that spans the middle
+  const near = items.filter(it => /\p{L}/u.test(it.s || '')).map(it => ({ it, d: pvItemDist(it, rx, ry, 1, 1) })).sort((a, b) => row(a.it) - row(b.it) || a.d - b.d) // no running header/footer, no needle-less lone letters
     .filter(({ it }) => it.y >= vh * 0.05 && it.y <= vh * 0.95
       && (syncText(it.s || '').length >= 4 || pvBlockLines(items, it).length > 1)).slice(0, 3)
   for (const { it } of near) { // real text under the reading point: exact, even inside large figures
     const pos = pvHerePos(pvClickNeedles(items, it, 0), line, pi, it, true) // reading follow: no guess from a lone shared word, the line estimate is better than a far-away twin
     if (pos < 0) continue
     const ln = cm.state.doc.lineAt(pos).number, sec = pvSecAtLine(ln)
-    if (!sec ? (pi === 0 || !pvSections().length) : sec.page <= pi && pi <= sec.endPage) { smoothFollow(cm.scrollDOM, cmTop(pos)); return } // no heading with a page at all: any page's text may name its line // another page's text (header, repeated title): not this spot
+    if (!sec ? (fileTab || pi === 0 || !pvSections().length) : sec.page <= pi && pi <= sec.endPage) { smoothFollow(cm.scrollDOM, cmTop(pos)); return } // no heading with a page at all: any page's text may name its line // another page's text (header, repeated title): not this spot
   }
+  if (fileTab && !at.sec) return // main-document text at the reading point: the chapter tab stays where it is
   smoothFollow(cm.scrollDOM, cmTop(posOfLine(getT(), line)))
 }
 try { $('preview').addEventListener('wheel', () => { // a reader wheel wins over a pending sync retry

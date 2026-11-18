@@ -1048,8 +1048,8 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
     for (const c of pages) sizeCanvas(c) // pvZoom just changed above: resize the new pages, not the old ones in the DOM
     if (pvStale(id, myDoc, myTplName)) { try { doc.destroy() } catch (e) {} return } // template/closed view: never swap a stale render in
     const st = preview.scrollTop // read at swap time: follow-scroll during render is kept
+    if (!pvMetaClaim(id)) { try { doc.destroy() } catch (e) {} return } // an older fallback run that finishes late must never take the page state back from a newer one
     shownN = id
-    pvMetaGen = id // page state now belongs to this render
     preview.replaceChildren(...pages)
     try { oldPdf?.destroy() } catch (e) {} // only the document that was really on screen may be released here
     oldPdf = doc
