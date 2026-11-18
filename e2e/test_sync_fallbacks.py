@@ -117,7 +117,16 @@ def _click(page, page_no, fx, fy):
       pv.scrollTop += sr.top - pr.top + sr.height * fy - pv.clientHeight / 2
     }""", [page_no, fy])
     page.wait_for_timeout(400)
-    box = page.locator(f'#preview .pvPage[data-page="{page_no}"] canvas').bounding_box()
+    canvas, box = page.locator(f'#preview .pvPage[data-page="{page_no}"][data-done] canvas'), None
+    for _ in range(40):  # a follow-up render may swap the canvas right after it was visible
+        try:
+            expect(canvas).to_be_visible(timeout=PREVIEW_TIMEOUT)
+            box = canvas.bounding_box(timeout=2_000)
+        except Exception:
+            box = None
+        if box:
+            break
+        page.wait_for_timeout(150)
     assert box, f'page {page_no} has no box'
     page.mouse.click(box['x'] + box['width'] * fx, box['y'] + box['height'] * fy)
     page.wait_for_timeout(800)
@@ -155,7 +164,7 @@ def test_generated_text_lands_on_the_call_that_built_it(page):
 
 
 def test_a_heading_with_markup_keeps_the_clicked_word(page):
-    _fixture(page, 'e2e_sync_heading_markup')
+    _fixture(page, 'e2e_sync_head_mark')
 
     _click(page, 1, 0.2950, 0.1576)  # "Fett" inside "= Ergebnisse *Fett* Teil"
     line, col = _pos(page)
@@ -206,7 +215,7 @@ def test_a_word_split_by_hyphenation_maps_to_the_whole_source_word(page):
 
 
 def test_cursor_on_a_formula_far_below_shows_its_page(page):
-    _setup(page, 'e2e_sync_late_formula', 'Late formula doc', FORMULA_LATE)
+    _setup(page, 'e2e_sync_late_math', 'Late formula doc', FORMULA_LATE)
     page.wait_for_timeout(3000)  # every page indexed, most of them never drawn
     pages = page.locator('#preview .pvPage').count()
     assert pages >= 24, pages
