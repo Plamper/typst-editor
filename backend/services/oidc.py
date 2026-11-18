@@ -25,8 +25,11 @@ from backend.services.proxy import _proxy_trusted
 log = logging.getLogger("typst.main")
 
 STATE_COOKIE = "typst_oidc_state"
+STATE_COOKIE_PATH = "/api/oidc"
 STATE_TTL = 600
 CACHE_TTL_S = 3600.0
+_MAX_STATE_FLOWS = 4
+_MAX_CONSUMED_STATES = 2048
 _HOST_RE = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9a-fA-F:]+\])(?::(\d{1,5}))?$")
 ALLOWED_ALGS = (
     "RS256",
@@ -46,6 +49,7 @@ _STATE_KEY = secrets.token_bytes(32)
 _DISCOVERY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _JWKS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _JWKS_MISS_KIDS: dict[str, set[str]] = {}
+_CONSUMED_STATES: dict[str, float] = {}
 
 
 class OidcError(Exception):
@@ -79,6 +83,7 @@ def clear_cache() -> None:
     _DISCOVERY_CACHE.clear()
     _JWKS_CACHE.clear()
     _JWKS_MISS_KIDS.clear()
+    _CONSUMED_STATES.clear()
 
 
 def _http_client() -> httpx.AsyncClient:
@@ -125,28 +130,64 @@ def _sign_state(payload: dict[str, Any]) -> str:
     return f"{b64}.{sig}"
 
 
-def _verify_state(cookie_val: str, query_state: str) -> dict[str, Any]:
-    if not cookie_val or not query_state or "." not in cookie_val:
-        raise OidcError("state_invalid", "Missing OIDC state")
+def _decode_signed_state(cookie_val: str) -> dict[str, Any] | None:
+    if not cookie_val or "." not in cookie_val:
+        return None
     b64, sig = cookie_val.split(".", 1)
     expected = hmac.new(_STATE_KEY, b64.encode("ascii"), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected):
-        raise OidcError("state_invalid", "Invalid OIDC state signature")
+        return None
     try:
         padded = b64 + "=" * (-len(b64) % 4)
         data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-    except Exception as exc:
-        raise OidcError("state_invalid", "Malformed OIDC state") from exc
-    if not isinstance(data, dict):
-        raise OidcError("state_invalid", "Malformed OIDC state")
-    if int(data.get("exp", 0)) < time.time():
-        raise OidcError("state_invalid", "Expired OIDC state")
-    st = data.get("state")
-    if not isinstance(st, str) or not hmac.compare_digest(st, query_state):
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _record_consumed_state(state: str, exp: float) -> None:
+    now = time.time()
+    if len(_CONSUMED_STATES) >= _MAX_CONSUMED_STATES:
+        expired = [k for k, v in _CONSUMED_STATES.items() if v < now]
+        for k in expired:
+            _CONSUMED_STATES.pop(k, None)
+        if len(_CONSUMED_STATES) >= _MAX_CONSUMED_STATES:
+            _CONSUMED_STATES.clear()
+    _CONSUMED_STATES[state] = exp
+
+
+def _verify_state(cookie_val: str, query_state: str) -> dict[str, Any]:
+    if not cookie_val or not query_state or "." not in cookie_val:
+        raise OidcError("state_invalid", "Missing OIDC state")
+    data = _decode_signed_state(cookie_val)
+    if data is None:
+        raise OidcError("state_invalid", "Invalid OIDC state")
+    now = time.time()
+    candidates: list[dict[str, Any]] = [data]
+    prev = data.get("prev")
+    if isinstance(prev, list):
+        candidates.extend(p for p in prev if isinstance(p, dict))
+    matched: dict[str, Any] | None = None
+    for entry in candidates:
+        st = entry.get("state")
+        if isinstance(st, str) and hmac.compare_digest(st, query_state):
+            matched = entry
+            break
+    if matched is None:
         raise OidcError("state_invalid", "Mismatched OIDC state")
-    if not isinstance(data.get("nonce"), str) or not isinstance(data.get("cv"), str):
+    try:
+        exp = int(matched.get("exp", 0))
+    except (ValueError, TypeError) as exc:
+        raise OidcError("state_invalid", "Malformed OIDC state") from exc
+    if exp < now:
+        raise OidcError("state_invalid", "Expired OIDC state")
+    if not isinstance(matched.get("nonce"), str) or not isinstance(matched.get("cv"), str):
         raise OidcError("state_invalid", "Incomplete OIDC state")
-    return data
+    st_str = str(matched["state"])
+    if st_str in _CONSUMED_STATES and _CONSUMED_STATES[st_str] >= now:
+        raise OidcError("state_invalid", "Replayed OIDC state")
+    _record_consumed_state(st_str, float(exp))
+    return matched
 
 
 async def _fetch_json(url: str, *, headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -225,15 +266,37 @@ async def start_login(req: Request, cfg: config.Config, join: str = "") -> tuple
         ("code_challenge_method", "S256"),
     ])
     auth_url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(params), parts.fragment))
-    cookie_val = _sign_state({
+    now = int(time.time())
+    payload: dict[str, Any] = {
         "state": state,
         "nonce": nonce,
         "cv": verifier,
         "join": join[:200],
         "cb": cb,
-        "exp": int(time.time()) + STATE_TTL,
-    })
-    return auth_url, cookie_val
+        "exp": now + STATE_TTL,
+    }
+    existing = _decode_signed_state(req.cookies.get(STATE_COOKIE, ""))
+    if existing is not None:
+        prev_entries: list[dict[str, Any]] = []
+        for item in [existing, *(existing.get("prev") if isinstance(existing.get("prev"), list) else [])]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                item_exp = int(item.get("exp", 0))
+            except (ValueError, TypeError):
+                continue
+            if item_exp >= now and isinstance(item.get("state"), str) and isinstance(item.get("nonce"), str) and isinstance(item.get("cv"), str):
+                prev_entries.append({
+                    "state": item["state"],
+                    "nonce": item["nonce"],
+                    "cv": item["cv"],
+                    "join": str(item.get("join") or "")[:200],
+                    "cb": str(item.get("cb") or ""),
+                    "exp": item_exp,
+                })
+        if prev_entries:
+            payload["prev"] = prev_entries[: _MAX_STATE_FLOWS - 1]
+    return auth_url, _sign_state(payload)
 
 
 async def _exchange_code(

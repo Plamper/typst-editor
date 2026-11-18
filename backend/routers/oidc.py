@@ -8,7 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from backend import auth, config, deps
+from backend import auth, config, deps, sync
 from backend.routers.auth import _cookie_secure, set_cookie
 from backend.services import oidc as oidc_svc
 
@@ -54,7 +54,7 @@ async def oidc_login(req: Request, join: str = "") -> RedirectResponse:
         oidc_svc.STATE_COOKIE,
         state_cookie,
         max_age=oidc_svc.STATE_TTL,
-        path="/",
+        path=oidc_svc.STATE_COOKIE_PATH,
         httponly=True,
         samesite="lax",
         secure=_cookie_secure(req),
@@ -71,7 +71,7 @@ async def oidc_callback(req: Request) -> RedirectResponse:
     except HTTPException as exc:
         if exc.status_code == 429 and oidc_svc.is_enabled(cfg):
             res = RedirectResponse("/?oidc_error=rate_limited", status_code=302)
-            res.delete_cookie(oidc_svc.STATE_COOKIE, path="/", samesite="lax", secure=secure, httponly=True)
+            res.delete_cookie(oidc_svc.STATE_COOKIE, path=oidc_svc.STATE_COOKIE_PATH, samesite="lax", secure=secure, httponly=True)
             return res
         raise
     if not oidc_svc.is_enabled(cfg):
@@ -81,11 +81,15 @@ async def oidc_callback(req: Request) -> RedirectResponse:
     except oidc_svc.OidcError as exc:
         log.warning("oidc callback failed (%s): %s", exc.code, exc.message)
         res = RedirectResponse(f"/?oidc_error={exc.code}", status_code=302)
-        res.delete_cookie(oidc_svc.STATE_COOKIE, path="/", samesite="lax", secure=secure, httponly=True)
+        res.delete_cookie(oidc_svc.STATE_COOKIE, path=oidc_svc.STATE_COOKIE_PATH, samesite="lax", secure=secure, httponly=True)
         return res
+    old_tok = req.cookies.get(deps.COOKIE, "")
+    if old_tok:
+        sync.drop_sess_token(old_tok)
+        await asyncio.to_thread(auth.delete_session, old_tok)
     token = await asyncio.to_thread(auth.mint, username)
     dest = f"/?join={quote(join_tok, safe='')}" if join_tok else "/"
     res = RedirectResponse(dest, status_code=302)
     set_cookie(res, req, token)
-    res.delete_cookie(oidc_svc.STATE_COOKIE, path="/", samesite="lax", secure=secure, httponly=True)
+    res.delete_cookie(oidc_svc.STATE_COOKIE, path=oidc_svc.STATE_COOKIE_PATH, samesite="lax", secure=secure, httponly=True)
     return res
