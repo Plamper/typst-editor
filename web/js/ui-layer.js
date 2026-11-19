@@ -203,7 +203,11 @@
     var f = openFor
     // Focus first: the row actions become visibility:hidden once menu-open is
     // gone, and a hidden button cannot take focus.
-    if (refocus && f) liveAnchor(f).focus()
+    if (refocus && f) {
+      var back = liveAnchor(f), backRow = back.closest && back.closest('aside .doc, aside .fhd, aside h3')
+      if (backRow) backRow.classList.add('menu-open') // a repaint may have replaced the row before it was re-anchored: its action button must be visible to take focus
+      back.focus()
+    }
     document.querySelectorAll('aside .menu-open').forEach(function (row) { row.classList.remove('menu-open') })
     openFor = null; items = []; idx = -1
     menu.hidden = true; menu.replaceChildren()

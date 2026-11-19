@@ -225,7 +225,7 @@ function onEdit(mapPos, changes, oldLen) {
   if (docRole === 'reviewer' || !ytext) return
   paintOutline()
   if (activeFile) { queueFileSave(); tabLive(); return } // file/template tab: only that text + preview, no Yjs
-  pushLocal(); queueRender(); queueSave()
+  pushLocal(changes, oldLen); queueRender(); queueSave()
   if (mapPos) mapThreads(mapPos, true, oldLen) // oldLen: anchors can sit at the pre-edit end; full-doc growth must not clip them before mapPos
   reanchor()
   if (threads.length) refreshHl()
