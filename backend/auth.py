@@ -303,6 +303,37 @@ def verify_login_token(token: str) -> dict | None:
             log.warning("verify_login_token close failed: %s", e)
 
 
+def list_login_tokens(username: str) -> list[dict]:
+    """Internal listing for maintenance scripts, never exposed over HTTP."""
+    con = db.connect()
+    try:
+        rows = con.execute("SELECT id, created_at, last_used FROM login_tokens "
+                           "WHERE username=? ORDER BY created_at", (username,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        try:
+            con.close()
+        except Exception as e:
+            log.warning("list_login_tokens close failed: %s", e)
+
+
+def revoke_login_token(tid: str, username: str = "") -> bool:
+    """Internal revoke for maintenance scripts; the token is dead immediately."""
+    con = db.connect()
+    try:
+        if username:
+            cur = con.execute("DELETE FROM login_tokens WHERE id=? AND username=?", (tid, username))
+        else:
+            cur = con.execute("DELETE FROM login_tokens WHERE id=?", (tid,))
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        try:
+            con.close()
+        except Exception as e:
+            log.warning("revoke_login_token close failed: %s", e)
+
+
 def create_session(username: str, password: str) -> str | None:
     con = db.connect()
     try:

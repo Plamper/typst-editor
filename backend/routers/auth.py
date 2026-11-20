@@ -254,40 +254,6 @@ async def revoke_session(sid: str, req: Request, res: Response,
     return {"ok": True}
 
 
-@router.post("/api/login/tokens")
-def create_login_token(req: Request, user: str = Depends(deps.me)) -> dict:
-    """Create a persistent ?token= login link; the secret is returned once."""
-    deps.limited(req, "auth", user)
-    tid, token = auth.mint_login_token(user)
-    return {"id": tid, "token": token, "created_at": db.now_iso()}
-
-
-@router.get("/api/login/tokens")
-def list_login_tokens(req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.limited(req, "auth", user)
-    con = db.connect()
-    try:
-        rows = con.execute("SELECT id, created_at, last_used FROM login_tokens "
-                           "WHERE username=? ORDER BY created_at", (user,)).fetchall()
-        return {"tokens": [dict(r) for r in rows]}
-    finally:
-        con.close()
-
-
-@router.delete("/api/login/tokens/{tid}")
-def revoke_login_token(tid: str, req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.limited(req, "auth", user)
-    con = db.connect()
-    try:
-        cur = con.execute("DELETE FROM login_tokens WHERE id=? AND username=?", (tid, user))
-        con.commit()
-        if cur.rowcount == 0:
-            raise HTTPException(404, "Login link gone")
-        return {"ok": True}
-    finally:
-        con.close()
-
-
 @router.get("/api/me")
 def get_me(req: Request, user: str = Depends(deps.me)) -> dict:
     deps.limited(req, "auth")  # own auth bucket: must not share files_list with preview polling

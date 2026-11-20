@@ -38,14 +38,11 @@ def test_pre_port_cookie_still_works(c):
 
 def test_login_link_roundtrip_and_revoke(c):
     register_user(c, "alice")
-    r = c.post("/api/login/tokens")
-    assert r.status_code == 200, r.text
-    body = r.json()
-    tok = body["token"]
+    tid, tok = auth.mint_login_token("alice")
     assert tok.startswith(auth.LOGIN_TOKEN_PREFIX)
     con = db.connect()
     try:
-        row = con.execute("SELECT token_hash FROM login_tokens WHERE id=?", (body["id"],)).fetchone()
+        row = con.execute("SELECT token_hash FROM login_tokens WHERE id=?", (tid,)).fetchone()
         assert row["token_hash"] == auth.sha(tok)
         assert con.execute("SELECT 1 FROM login_tokens WHERE token_hash=?", (tok,)).fetchone() is None
     finally:
@@ -58,12 +55,21 @@ def test_login_link_roundtrip_and_revoke(c):
     old = c.cookies.get(auth.COOKIE)
     assert c.post("/api/login/token", json={"token": tok}).status_code == 200
     assert c.cookies.get(auth.COOKIE) == old
-    listed = c.get("/api/login/tokens").json()["tokens"]
-    assert [x["id"] for x in listed] == [body["id"]]
+    listed = auth.list_login_tokens("alice")
+    assert [x["id"] for x in listed] == [tid]
     assert "token" not in listed[0]
-    assert c.delete("/api/login/tokens/" + body["id"]).status_code == 200
+    assert auth.revoke_login_token(tid, "bob") is False
+    assert auth.revoke_login_token(tid, "alice") is True
     c.post("/api/logout")
     assert c.post("/api/login/token", json={"token": tok}).status_code == 401
+
+
+def test_login_link_management_is_not_public(c):
+    register_user(c, "alice")
+    # The links exist for internal tooling only: no settings/API surface.
+    assert c.post("/api/login/tokens").status_code == 404
+    assert c.get("/api/login/tokens").status_code == 404
+    assert c.delete("/api/login/tokens/lt_test").status_code == 404
 
 
 def test_login_link_invalid(c):
@@ -74,8 +80,9 @@ def test_login_link_invalid(c):
 
 def test_login_link_survives_rename(c):
     register_user(c, "alice")
-    tok = c.post("/api/login/tokens").json()["token"]
+    tid, tok = auth.mint_login_token("alice")
     assert c.post("/api/me/name", json={"name": "alice2", "password": "pass1234"}).status_code == 200
+    assert [x["id"] for x in auth.list_login_tokens("alice2")] == [tid]
     c.post("/api/logout")
     assert c.post("/api/login/token", json={"token": tok}).status_code == 200
     assert c.get("/api/me").json()["user"] == "alice2"
