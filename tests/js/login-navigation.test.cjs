@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const vm = require('node:vm')
 
 const source = fs.readFileSync('web/js/96-login-actions.js', 'utf8')
-const start = source.indexOf("api('GET', '/api/me').then(async d => { // session")
+const start = source.indexOf('let tokenInvalid = false') // bootSession + the /api/me boot block
 const restore = source.slice(start, source.indexOf('try { (window.requestIdleCallback', start))
 
 test('late session initialization respects an already-started document navigation', async () => {
