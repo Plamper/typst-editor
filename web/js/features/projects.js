@@ -660,7 +660,7 @@ async function applyEntryRename(p, name, document, resource, target, confirm = t
     if (activeFile === old && (resource || document === docId)) {
       clearTimeout(fileT); activeFile = next
       const state = tabState.get(old); if (state) tabState.set(next, state)
-      tabState.delete(old); tabVersions.delete(old); tabVersions.set(next, result.version)
+      tabState.delete(old); tabVersions.delete(old); setTabVersion(next, result.version)
       if (resource) { tabPins.delete(name); tabPins.add(result.name) }
       else { const cached = fileCache.get(old); if (cached) fileCache.set(next, cached); fileCache.delete(old) }
       if (tabDirty) queueFileSave()

@@ -35,7 +35,7 @@ async function loadDocResources(force) {
     if (row && (tabDirty || tabSaveFlight)) row.content = getT()
     else if (row) {
       if (getT() !== row.content) { setT(row.content); gutter(); refreshHl(); paintOutline() }
-      tabVersions.set(activeFile, row.updated_at)
+      setTabVersion(activeFile, row.updated_at)
     }
   }
   docResAt = Date.now(); docResRefs = refs
