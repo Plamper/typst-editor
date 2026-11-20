@@ -1,0 +1,81 @@
+from conftest import register_user
+
+from backend import auth, db
+
+
+def test_cookie_name_is_port_scoped():
+    assert auth.cookie_name("") == auth.COOKIE
+    assert auth.cookie_name("example.com") == auth.COOKIE
+    assert auth.cookie_name("example.com:80") == auth.COOKIE
+    assert auth.cookie_name("example.com:443") == auth.COOKIE
+    assert auth.cookie_name("example.com:8978") == auth.COOKIE + "_8978"
+    assert auth.cookie_name("[::1]:8978") == auth.COOKIE + "_8978"
+    assert auth.cookie_name("bad:port") == auth.COOKIE
+
+
+def test_session_cookie_only_works_on_its_port(c):
+    r = c.post("/api/register", json={"username": "alice", "password": "pass1234"},
+               headers={"host": "testserver:8978"})
+    assert r.status_code == 200, r.text
+    name = auth.cookie_name("testserver:8978")
+    tok = r.cookies.get(name)
+    assert name == auth.COOKIE + "_8978" and tok
+    c.cookies.clear()
+    # Same browser cookie sent to another port on the same host: no session.
+    assert c.get("/api/me", headers={"host": "testserver:8979",
+                                     "cookie": f"{name}={tok}"}).status_code == 401
+    assert c.get("/api/me", headers={"host": "testserver:8978",
+                                     "cookie": f"{name}={tok}"}).status_code == 200
+
+
+def test_pre_port_cookie_still_works(c):
+    register_user(c, "alice")
+    tok = c.cookies.get(auth.COOKIE)
+    c.cookies.clear()
+    assert c.get("/api/me", headers={"host": "testserver:8978",
+                                     "cookie": f"{auth.COOKIE}={tok}"}).status_code == 200
+
+
+def test_login_link_roundtrip_and_revoke(c):
+    register_user(c, "alice")
+    r = c.post("/api/login/tokens")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    tok = body["token"]
+    assert tok.startswith(auth.LOGIN_TOKEN_PREFIX)
+    con = db.connect()
+    try:
+        row = con.execute("SELECT token_hash FROM login_tokens WHERE id=?", (body["id"],)).fetchone()
+        assert row["token_hash"] == auth.sha(tok)
+        assert con.execute("SELECT 1 FROM login_tokens WHERE token_hash=?", (tok,)).fetchone() is None
+    finally:
+        con.close()
+    c.post("/api/logout")
+    assert c.get("/api/me").status_code == 401
+    assert c.post("/api/login/token", json={"token": tok}).status_code == 200
+    assert c.get("/api/me").json()["user"] == "alice"
+    # Reload with the same token reuses the session (no session churn).
+    old = c.cookies.get(auth.COOKIE)
+    assert c.post("/api/login/token", json={"token": tok}).status_code == 200
+    assert c.cookies.get(auth.COOKIE) == old
+    listed = c.get("/api/login/tokens").json()["tokens"]
+    assert [x["id"] for x in listed] == [body["id"]]
+    assert "token" not in listed[0]
+    assert c.delete("/api/login/tokens/" + body["id"]).status_code == 200
+    c.post("/api/logout")
+    assert c.post("/api/login/token", json={"token": tok}).status_code == 401
+
+
+def test_login_link_invalid(c):
+    register_user(c, "alice")
+    assert c.post("/api/login/token", json={"token": "nope"}).status_code == 401
+    assert c.post("/api/login/token", json={"token": "tpl_" + "0" * 64}).status_code == 401
+
+
+def test_login_link_survives_rename(c):
+    register_user(c, "alice")
+    tok = c.post("/api/login/tokens").json()["token"]
+    assert c.post("/api/me/name", json={"name": "alice2", "password": "pass1234"}).status_code == 200
+    c.post("/api/logout")
+    assert c.post("/api/login/token", json={"token": tok}).status_code == 200
+    assert c.get("/api/me").json()["user"] == "alice2"

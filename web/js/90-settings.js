@@ -6,6 +6,7 @@ $('userMain').onclick = e => {
 }
 kb($('userMain'), () => $('userMain').click())
 let apiKeys = null, apiKeysLoading = false, lastKeySecret = ''
+let loginLinks = null, loginLinksLoading = false, lastLoginLink = ''
 let settingsCategory = 'account'
 const SETTINGS_CATS = [
   ['account', 'settings.navAccount'], ['editor', 'settings.navEditor'], ['shortcuts', 'settings.navShortcuts'],
@@ -110,6 +111,11 @@ function loadKeys() {
   api('GET', '/api/keys').then(d => { apiKeys = d.keys || [] })
     .catch(e => { settingsError(e.message); apiKeys = [] }).finally(() => { apiKeysLoading = false; renderSettings() })
 }
+function loadLoginLinks() {
+  if (loginLinksLoading) return; loginLinksLoading = true
+  api('GET', '/api/login/tokens').then(d => { loginLinks = d.tokens || [] })
+    .catch(e => { settingsError(e.message); loginLinks = [] }).finally(() => { loginLinksLoading = false; renderSettings() })
+}
 const shortD = s => {
   if (!s) return t('settings.never')
   try { return new Intl.DateTimeFormat(langCur, { dateStyle: 'medium' }).format(new Date(s)) }
@@ -129,21 +135,20 @@ function copyTxt(txt, inp) {
   if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(() => toast(t('common.copied'))).catch(fb)
   else fb()
 }
-function showKeySecret() {
-  if (!lastKeySecret) return
+function showSecret(titleKey, hintKey, ariaKey, secret) { // one-time secret dialog (API key, login link)
   const prev = document.activeElement
   const overlay = el('div', 'keySecretOverlay'); overlay.id = 'keySecret'; overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true'); overlay.setAttribute('aria-labelledby', 'keySecretTitle')
   overlay.onclick = e => e.stopPropagation()
   const card = el('div', 'keySecretCard')
   const top = el('div', 'keySecretTop')
-  const title = el('b', null, t('settings.keyCreated')); title.id = 'keySecretTitle'
+  const title = el('b', null, t(titleKey)); title.id = 'keySecretTitle'
   const close = icoBtn('keySecretClose', ICO_X); close.type = 'button'; close.title = t('common.close'); close.setAttribute('aria-label', t('common.close'))
-  const value = el('input', 'keySecretValue'); value.readOnly = true; value.value = lastKeySecret; value.setAttribute('aria-label', t('settings.keyOnceAria'))
-  const copy = el('button', 'keySecretCopy', t('common.copy')); copy.type = 'button'; copy.onclick = () => copyTxt(lastKeySecret, value)
+  const value = el('input', 'keySecretValue'); value.readOnly = true; value.value = secret; value.setAttribute('aria-label', t(ariaKey))
+  const copy = el('button', 'keySecretCopy', t('common.copy')); copy.type = 'button'; copy.onclick = () => copyTxt(secret, value)
   top.append(title, close)
-  card.append(top, el('p', 'keySecretHint', t('settings.keyOnceHint')), value, copy)
+  card.append(top, el('p', 'keySecretHint', t(hintKey)), value, copy)
   overlay.appendChild(card); document.body.appendChild(overlay); modalInert(true)
-  const done = () => { lastKeySecret = ''; modalInert(false); overlay.remove(); if (prev && document.contains(prev)) prev.focus() }
+  const done = () => { modalInert(false); overlay.remove(); if (prev && document.contains(prev)) prev.focus() }
   close.onclick = done
   overlay.addEventListener('keydown', e => {
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); return }
@@ -153,6 +158,16 @@ function showKeySecret() {
     else if (!e.shiftKey && (i < 0 || i === focusable.length - 1)) { e.preventDefault(); focusable[0].focus() }
   })
   setTimeout(() => { value.focus(); value.select() }, 30)
+}
+function showKeySecret() {
+  if (!lastKeySecret) return
+  const secret = lastKeySecret; lastKeySecret = ''
+  showSecret('settings.keyCreated', 'settings.keyOnceHint', 'settings.keyOnceAria', secret)
+}
+function showLoginLink() {
+  if (!lastLoginLink) return
+  const link = lastLoginLink; lastLoginLink = ''
+  showSecret('settings.loginLinkCreated', 'settings.loginLinkOnceHint', 'settings.loginLinkOnceAria', link)
 }
 function settingRange(labelKey, id, min, max, def, step, get, unit, set) { // slider row: label, filled track, live value, reset
   const row = el('div', 'row settingRow settingRangeRow')
@@ -432,6 +447,48 @@ function renderSettings() {
     sSecs.push(sec(...srows))
   }
   put('sessions', grp(t('settings.sessions'), ...sSecs))
+  const linkSecs = []
+  const lh = el('div', 'val', t('settings.loginLinkHint'))
+  lh.style.fontSize = '12px'; lh.style.lineHeight = '1.5'
+  linkSecs.push(sec(lh))
+  const lb = el('button', null, t('settings.createLoginLink'))
+  lb.onclick = e => {
+    e.stopPropagation() // renderSettings below detaches e.target: keep the panel open
+    if (lb.disabled) return
+    lb.disabled = true
+    api('POST', '/api/login/tokens')
+      .then(d => {
+        const u = new URL(location.href)
+        u.search = ''; u.hash = ''; u.searchParams.set('token', d.token)
+        lastLoginLink = u.toString()
+        loginLinks = [...(loginLinks || []), { id: d.id, created_at: d.created_at || '', last_used: '' }]
+      })
+      .catch(e => settingsError(e.message)).finally(() => { renderSettings(); showLoginLink() })
+  }
+  const lrow = el('div', 'row'); lrow.append(lb); linkSecs.push(sec(lrow))
+  if (loginLinks === null) {
+    linkSecs.push(sec(el('div', null, loginLinksLoading ? t('settings.loading') : '')))
+    if (!loginLinksLoading) loadLoginLinks()
+  } else if (!loginLinks.length) linkSecs.push(sec(el('div', null, t('settings.noLoginLinks'))))
+  else {
+    const lrows = loginLinks.map(l => {
+      const r = el('div', 'row wrap sessRow')
+      const left = el('div', 'sessLeft')
+      left.append(el('span', 'sessName', t('settings.loginLinkName')),
+        el('span', 'val', t('settings.created', { date: shortD(l.created_at) })))
+      const rb = el('button', 'btnSecondary', t('settings.revokeLoginLink'))
+      rb.onclick = () => {
+        if (rb.disabled) return; rb.disabled = true
+        api('DELETE', '/api/login/tokens/' + encodeURIComponent(l.id))
+          .then(() => { loginLinks = (loginLinks || []).filter(x => x.id !== l.id) })
+          .catch(e => settingsError(e.message)).finally(() => renderSettings())
+      }
+      r.append(left, rb)
+      return r
+    })
+    linkSecs.push(sec(...lrows))
+  }
+  put('sessions', grp(t('settings.loginLinks'), ...linkSecs))
   const dr = el('div', 'accountForm accountDeleteForm')
   const dpw = keepField(el('input'), 'deleteCurrentPassword'); dpw.type = 'password'; dpw.name = 'current-password-delete-account'; dpw.autocomplete = 'current-password'; dpw.placeholder = t('settings.currentPasswordPlaceholder'); dpw.setAttribute('aria-label', t('settings.confirmWithPassword'))
   const deletePasswordField = el('label', 'accountField'); deletePasswordField.append(el('span', null, t('settings.confirmWithPassword')), dpw)
