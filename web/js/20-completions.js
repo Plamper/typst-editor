@@ -32,10 +32,11 @@ async function loadDocResources(force) {
   window.docTpl = Object.entries(r.resources || {}).map(([name, content]) => ({ name, content, updated_at: r.versions?.[name] || '' }))
   if (isTplKey(activeFile) && !window.changeSession) {
     const row = window.docTpl.find(x => x.name === tabName(activeFile))
+    const stale = row && row.updated_at && (tabVersions.get(activeFile) || '') > row.updated_at // a late snapshot from before our save
     if (row && (tabDirty || tabSaveFlight)) row.content = getT()
-    else if (row) {
+    else if (row && !stale) {
       if (getT() !== row.content) { setT(row.content); gutter(); refreshHl(); paintOutline() }
-      setTabVersion(activeFile, row.updated_at)
+      if (row.updated_at) tabVersions.set(activeFile, row.updated_at)
     }
   }
   docResAt = Date.now(); docResRefs = refs

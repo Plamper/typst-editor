@@ -321,6 +321,21 @@ test('resource refresh updates only a clean idle active module and its base vers
   }
 })
 
+test('a late resource snapshot cannot rewind the saved base version or text', async () => {
+  const c = context({ activeFile: '@tpl/layout.typ', docProject: 'project-a', docResN: 0,
+    shadow: '', window: {}, tabSig: '',
+    api: async () => ({ resources: { 'layout.typ': 'Old remote' }, versions: { 'layout.typ': '2026-01-01T00:00:00+00:00' }, readonly: false }),
+    cm: { dispatch: () => {} }, editableComp: { reconfigure: x => x }, editMode: x => x,
+    queueTabs: () => {}, gutter: () => {}, refreshHl: () => {}, paintOutline: () => {},
+  })
+  c.setT = text => { c.text = text }
+  c.tabVersions.set(c.activeFile, '2026-01-01T00:00:01+00:00')
+  vm.runInContext(part('web/js/20-completions.js', 'async function loadDocResources(', 'const projectResources'), c)
+  await c.loadDocResources(true)
+  assert.equal(c.tabVersions.get(c.activeFile), '2026-01-01T00:00:01+00:00')
+  assert.equal(c.text, 'Draft')
+})
+
 test('sidebar role changes disable the main editor in place and preserve drafts and Yjs', () => {
   let editable
   const ytext = { marker: 'original Yjs' }

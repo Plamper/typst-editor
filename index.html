@@ -1814,10 +1814,11 @@ async function loadDocResources(force) {
   window.docTpl = Object.entries(r.resources || {}).map(([name, content]) => ({ name, content, updated_at: r.versions?.[name] || '' }))
   if (isTplKey(activeFile) && !window.changeSession) {
     const row = window.docTpl.find(x => x.name === tabName(activeFile))
+    const stale = row && row.updated_at && (tabVersions.get(activeFile) || '') > row.updated_at // a late snapshot from before our save
     if (row && (tabDirty || tabSaveFlight)) row.content = getT()
-    else if (row) {
+    else if (row && !stale) {
       if (getT() !== row.content) { setT(row.content); gutter(); refreshHl(); paintOutline() }
-      setTabVersion(activeFile, row.updated_at)
+      if (row.updated_at) tabVersions.set(activeFile, row.updated_at)
     }
   }
   docResAt = Date.now(); docResRefs = refs
@@ -5620,11 +5621,6 @@ const tabCanEdit = k => (!k || isTplKey(k) || k.startsWith('@doc/') || TEXT_EXT.
 const fileStashKey = (d, k) => 'typst-filestash-' + d + '-' + encodeURIComponent(k) // pagehide stash per file tab (keepalive may fail)
 let tabSeq = 0 // switch generation: a slow fetch must not write into a newer tab
 const tabVersions = new Map()
-const tabVersionMs = v => { const ms = Date.parse(v); return Number.isFinite(ms) ? ms : 0 }
-function setTabVersion(key, version) { // versions only move forward: a late resource snapshot must not rewind a save
-  if (!version || tabVersionMs(version) <= tabVersionMs(tabVersions.get(key) || '')) return
-  tabVersions.set(key, version)
-}
 let tabSaveFlight = null
 let tabPins = new Set(), tabSig = '', tabT = 0, tabDirty = false // pins: templates opened by hand stay even when unreferenced
 const tabState = new Map() // key -> {a, h, top}: cursor + scroll per tab
@@ -5908,7 +5904,7 @@ async function switchTab(name, nosave, preserveView = false) { // true = switche
     if (my !== tabSeq || dk !== docId) return false
     if (!tp) { toast(t('files.tplGone')); return false }
     tabPins.add(tp.name); text = tp.content || ''
-    if (tp.updated_at) setTabVersion(name, tp.updated_at)
+    if (tp.updated_at && (tabVersions.get(name) || '') < tp.updated_at) tabVersions.set(name, tp.updated_at) // late snapshot: never rewind a save
   } else if (!TEXT_EXT.test(name)) {
     const file = lastFiles.find(f => f.name === name)
     text = t('files.binaryInfo', { name, kb: Math.round((file?.size || 0) / 1024) })
@@ -5918,7 +5914,7 @@ async function switchTab(name, nosave, preserveView = false) { // true = switche
     catch (e) { if (my === tabSeq && dk === docId) toast(e.message); return false }
     if (my !== tabSeq || dk !== docId) return false // late response: must not write into the newer tab
     text = txt.content
-    if (txt.version) setTabVersion(name, txt.version)
+    if (txt.version) tabVersions.set(name, txt.version)
   }
   if (my !== tabSeq || dk !== docId || epoch !== openN || tabDirty) return false
   activeFile = name; tabDirty = false; setT(text, preserveView)
@@ -5978,7 +5974,7 @@ async function flushTab(allowStash = false) {
     const rq = tabReq(key, text)
     const result = await api('POST', rq.url, rq.body)
     if (docId !== dk) return true // doc switched meanwhile: cache is gone with it
-    if (result?.version) setTabVersion(key, result.version)
+    if (result?.version) tabVersions.set(key, result.version)
     if (isTplKey(key)) { const tp = effTpl().find(x => x.name === tabName(key)); if (tp) { tp.content = text; if (result?.version) tp.updated_at = result.version } }
     if (epoch !== openN) return false
     if (activeFile === key && getT() === text) {
@@ -6008,12 +6004,12 @@ async function loadTabTheirs(dk, key) { // 409 escape: take the server text into
       if (docId !== dk || activeFile !== key) return
       const tp = effTpl().find(x => x.name === tabName(key))
       if (!tp) { toast(t('files.tplGone')); return }
-      if (tp.updated_at) setTabVersion(key, tp.updated_at)
+      if (tp.updated_at) tabVersions.set(key, tp.updated_at)
       tabDirty = false; setT(tp.content || '')
     } else {
       const txt = await api('GET', `/api/docs/${dk}/files/${encodeURIComponent(key)}/text`)
       if (docId !== dk || activeFile !== key) return
-      if (txt.version) setTabVersion(key, txt.version)
+      if (txt.version) tabVersions.set(key, txt.version)
       tabDirty = false; setT(txt.content)
     }
     try { localStorage.removeItem(fileStashKey(dk, key)) } catch (e) {}
@@ -11917,7 +11913,7 @@ async function applyEntryRename(p, name, document, resource, target, confirm = t
     if (activeFile === old && (resource || document === docId)) {
       clearTimeout(fileT); activeFile = next
       const state = tabState.get(old); if (state) tabState.set(next, state)
-      tabState.delete(old); tabVersions.delete(old); setTabVersion(next, result.version)
+      tabState.delete(old); tabVersions.delete(old); tabVersions.set(next, result.version)
       if (resource) { tabPins.delete(name); tabPins.add(result.name) }
       else { const cached = fileCache.get(old); if (cached) fileCache.set(next, cached); fileCache.delete(old) }
       if (tabDirty) queueFileSave()
