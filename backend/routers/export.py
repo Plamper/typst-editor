@@ -174,7 +174,7 @@ def export_doc(doc_id: str, req: Request, format: str = "pdf", pdf_standard: str
     <folder>/__doc__.typ, every project file at its path) is collected once in
     `_collect_export_source`, so REST/MCP/view all compile the same set.
 
-    2C options (CLI-only, the WASM bundle cannot do them): pdf_standard =
+    Options (CLI-only, the WASM bundle cannot do them): pdf_standard =
     none|1.7|2.0|a-1b|a-2b|a-3b|a-2u|a-3u|ua-1 (pdf only, typst 0.15.1
     --pdf-standard), pages like 1-3,5 (pdf/svg/png, --pages), ppi 72-300
     (png only, --ppi). Bad values -> 400 before any compile.

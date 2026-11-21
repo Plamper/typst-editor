@@ -125,7 +125,7 @@ _TYPST_TAG: str | None = None
 def _typst_tag() -> str:
     """Cache-busting salt: fonts/packages/env changes alter the render.
 
-    B7: runs inside the same compile sandbox as every other typst call
+    Runs inside the same compile sandbox as every other typst call
     (slot + whitelisted env + rlimit preexec). A full slot queue (503) or
     any sandbox failure falls back to "unknown" instead of raising, so view
     caching never hard-fails on contention.
@@ -171,7 +171,7 @@ def _typst_tag() -> str:
 
 # --- view (M3, PR4 paging): render doc pages as PNG via typst CLI ---
 
-# 1C compile sandbox: at most COMPILE_MAX_CONCURRENT typst processes, with
+# Compile sandbox: at most COMPILE_MAX_CONCURRENT typst processes, with
 # COMPILE_QUEUE_MAX waiters; beyond that -> HTTP 503 + Retry-After (callers
 # must back off). QUEUE_MAX/TIMEOUT/RETRY_AFTER are read live so tests can
 # monkeypatch them; MAX_CONCURRENT sizes _COMPILE_SLOTS once at import (patch
@@ -184,7 +184,7 @@ COMPILE_RETRY_AFTER_S = 5
 COMPILE_MEM_BYTES = 1_000_000_000
 COMPILE_CPU_S = 30
 COMPILE_FSIZE_BYTES = 100 * 1024 * 1024
-# Env whitelist for the typst child (1C: never leak os.environ, in particular
+# Env whitelist for the typst child (never leak os.environ, in particular
 # never REGISTRATION_INVITE_TOKEN or other server secrets into compile env).
 COMPILE_ENV_ALLOW = frozenset({
     "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "TZ",
@@ -245,7 +245,7 @@ def _compile_503() -> HTTPException:
 
 @_compile_cm
 def _compile_slot():
-    """Hold one compile slot (1C sandbox). 503 + Retry-After when full."""
+    """Hold one compile slot (compile sandbox). 503 + Retry-After when full."""
     global _COMPILE_WAITING
     # Fast path: free slot, no queue accounting.
     try:
@@ -329,7 +329,7 @@ def _typst_env(root: Path) -> dict:
     # views) with a tmp fallback. TYPST_PACKAGE_CACHE_PATH is the
     # documented override (typst 0.15.1, also as --package-cache-path);
     # XDG_CACHE_HOME covers the dirs-crate fallback on Linux.
-    # 1C: whitelist env (never dict(os.environ): that leaks
+    # Whitelist env (never dict(os.environ): that leaks
     # REGISTRATION_INVITE_TOKEN and other secrets into the child).
     try:
         persistent = _files_dir().parent / "typst-cache"
@@ -537,9 +537,9 @@ EXPORT_TIMEOUT = 30.0
 EXPORT_PPI = VIEW_BASE_PPI
 EXPORT_MIMES = {"pdf": "application/pdf", "svg": "image/svg+xml",
                 "png": "image/png", "zip": "application/zip"}
-# 2C: PDF standards via server CLI (typst 0.15.1 --pdf-standard). The WASM
+# PDF standards via server CLI (typst 0.15.1 --pdf-standard). The WASM
 # bundle has no pdfStandard option, so standards always compile server-side
-# in the 1C sandbox. Curated subset (commonly needed); unknown -> 400.
+# in the compile sandbox. Curated subset (commonly needed); unknown -> 400.
 PDF_STANDARDS = frozenset({"1.7", "2.0", "a-1b", "a-2b", "a-3b", "a-2u",
                            "a-3u", "ua-1"})
 EXPORT_PPI_MIN = 72

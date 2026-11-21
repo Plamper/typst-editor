@@ -71,6 +71,6 @@ function formatSettingsSec() { // settings group section: format on save (toolba
       try { await formatDoc(true) } catch (e) {}
     }
     if (doc !== docId || tpl !== tplName || key !== activeFile || epoch !== openN) return false
-    return inner(force, auto) // forward 2E quiet flag: autosave errors stay toast-free
+    return inner(force, auto) // forward the quiet flag: autosave errors stay toast-free
   }
 }

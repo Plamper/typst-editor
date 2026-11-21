@@ -29,7 +29,7 @@ class FileEntry(NamedTuple):
 
 class FileStore(abc.ABC):
     """Layout + atomic writes for project files. Local disk for now;
-    a later object store only replaces this interface (Wave 6)."""
+    a later object store only replaces this interface."""
 
     @abc.abstractmethod
     def doc_path(self, doc_id: str, path: str) -> Path:

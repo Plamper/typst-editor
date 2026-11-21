@@ -160,7 +160,7 @@ async def save_doc(doc_id: str, b: DocSave, req: Request, user: str = Depends(de
                         raise HTTPException(404, "Doc gone")
                     if trashed["trashed"]:
                         raise HTTPException(410, "In trash - restore first")
-                    # B5: pre-tx need_edit is a fast-path only; the role must
+                    # Pre-tx need_edit is a fast-path only; the role must
                     # hold on THIS connection (unshare/downgrade may land in
                     # the gap between check and BEGIN IMMEDIATE).
                     if deps._tx_role(con, user, doc_id) not in ("owner", "editor"):
@@ -306,7 +306,7 @@ def duplicate_doc(doc_id: str, req: Request, user: str = Depends(deps.me)) -> di
     with _named_lock(f"dup:{user}"):
         try:
             with db.tx() as con:
-                # B5: outer need_edit is a fast-path only; re-check on the tx
+                # Outer need_edit is a fast-path only; re-check on the tx
                 # connection before inserting (role may change in the gap).
                 if deps._tx_role(con, user, doc_id) not in ("owner", "editor"):
                     raise HTTPException(403, "Reviewer can only comment")

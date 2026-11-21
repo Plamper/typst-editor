@@ -60,7 +60,7 @@ class DraftDeletion extends WidgetType {
 function sourceToEditor(pos, end = false) {
   const draft = window.suggestionDraft
   if (!draft) return pos
-  const basePos = diffMap(shadow, draft.base || '')(Math.min(pos, shadow.length), end) // Round5 High #2: stale pos must not overflow the changeset (empty base = changeset length 0)
+  const basePos = diffMap(shadow, draft.base || '')(Math.min(pos, shadow.length), end) // stale pos must not overflow the changeset (empty base = changeset length 0)
   return draft.changes.mapPos(Math.max(0, Math.min(basePos, draft.changes.length)), end ? 1 : -1)
 }
 function editorToSource(pos, end = false) {
@@ -74,7 +74,7 @@ function threadEditorRange(th) {
   const local = draft?.commentRanges.get(th.id)
   const length = cm.state.doc.length
   const clamp = r => ({ from: Math.max(0, Math.min(length, r.from)), to: Math.max(0, Math.min(length, r.to)) })
-  if (local) return clamp(local) // Round5 High #2: stored popover targets can trail an edit - clamp them like the derived path below
+  if (local) return clamp(local) // stored popover targets can trail an edit - clamp them like the derived path below
   return clamp({ from: sourceToEditor(th.a ?? posOfLine(shadow, th.anchor)),
     to: sourceToEditor(th.b ?? th.a ?? posOfLine(shadow, th.anchor), true) })
 }
@@ -105,7 +105,7 @@ function recordSuggestionEdit(changes, oldLen) {
   const draft = window.suggestionDraft
   draft.changes = normalizeSuggestionChanges(draft.baseState, getT(), draft.changes.compose(changes))
   draft.changed = !draft.changes.empty
-  const len = oldLen == null ? changes.length : Math.max(0, Math.min(oldLen, changes.length)) // Round5 High #2: stale popover targets must not reach mapPos
+  const len = oldLen == null ? changes.length : Math.max(0, Math.min(oldLen, changes.length)) // stale popover targets must not reach mapPos
   for (const range of draft.commentRanges.values()) { range.from = changes.mapPos(Math.max(0, Math.min(range.from, len)), -1); range.to = changes.mapPos(Math.max(0, Math.min(range.to, len)), 1) }
   closePop(true); queueRender(); paintOutline()
   queueMicrotask(() => { if (window.suggestionDraft === draft) { paintDraftSuggestions(); gutter(); paintSuggestionControls() } })

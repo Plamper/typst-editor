@@ -59,7 +59,7 @@ def get_files_dir() -> Path:
 TEXT_SUFFIX = {".typ", ".bib", ".csv", ".tsv", ".json", ".yaml", ".yml", ".toml", ".xml", ".txt", ".csl"}
 
 
-# B15: long-cached shell assets. Immutable only where the URL carries a
+# Long-cached shell assets. Immutable only where the URL carries a
 # ?v= cache-buster (vendor-cm.js?v=4, manifest.json?v=2, icons, icon.svg?v=3);
 # keep ?v in sync on redeploy or a stale bundle lingers in HTTP cache
 # (content-hashed filenames = proper fix).
@@ -181,7 +181,7 @@ def need_edit(user: str, doc_id: str) -> str:
 
 
 def _tx_role(con: sqlite3.Connection, user: str, doc_id: str) -> str:
-    # B5: authoritative role re-check ON the tx connection. need_access /
+    # Authoritative role re-check ON the tx connection. need_access /
     # need_edit open their own connection, so a pre-tx check can go stale
     # between the check and BEGIN IMMEDIATE (owner unshares/downgrades in
     # the gap). Call this as the first statement of every mutating db.tx()

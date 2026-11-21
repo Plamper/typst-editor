@@ -19,7 +19,7 @@ const AGENT_PROMPT = [ // no server address: the browser only knows its own, the
   '3. Register the MCP server in your own client: Streamable HTTP at <server>/mcp with the header "Authorization: Bearer <key>". Find out yourself how your client adds a remote MCP server; keep the key out of files that get committed.',
   '4. Check the connection with ls("/").'
 ].join('\n')
-// 2D: language without reload (same module as 05-i18n: shadow t, keep ?lang helper)
+// Language without reload (same module as 05-i18n: shadow t, keep ?lang helper)
 const LANG_KEY = 'typst_lang'
 function curLangInit() {
   try { const q = new URLSearchParams(location.search).get('lang'); if (q === 'de' || q === 'en') return q } catch (e) {}

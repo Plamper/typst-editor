@@ -33,7 +33,7 @@ function sessionRuntime(file) {
   }
   return item
 }
-function sessionChanged(f) { // Round5 High #3: the painted-set decision lives here alone (sidebar rows, PATCH/POST payloads, accept gating read it)
+function sessionChanged(f) { // the painted-set decision lives here alone (sidebar rows, PATCH/POST payloads, accept gating read it)
   if (f.action !== 'modify') return true // add/delete/rename always carry content
   if (f.content == null || f.content === f.base) return false
   return !String(f.id || '').startsWith('draft_') || !!(f.delta && !f.delta.empty) // server ids are backend-validated; draft entries must show a real delta (a wrong-buffer record with an empty delta is a false positive, never paint or send it)
@@ -125,7 +125,7 @@ function sessionRecord(changes, oldLen) {
   if (!f || s.original || s.busy) return
   if (!activeFile) for (const th of threads) if (!s.commentRanges.has(th.id)) s.commentRanges.set(th.id, threadEditorRange(th))
   // one mapping loop for every entry (thread-id keys and pending popover targets alike), same semantics as recordSuggestionEdit
-  const len = oldLen == null ? changes.length : Math.max(0, Math.min(oldLen, changes.length)) // Round5 High #2: stale popover targets beyond the changeset must not reach mapPos
+  const len = oldLen == null ? changes.length : Math.max(0, Math.min(oldLen, changes.length)) // stale popover targets beyond the changeset must not reach mapPos
   if (!activeFile) for (const range of s.commentRanges.values()) { range.from = changes.mapPos(Math.max(0, Math.min(range.from, len)), -1); range.to = changes.mapPos(Math.max(0, Math.min(range.to, len)), 1) }
   f.content = getT()
   f.delta = normalizeSuggestionChanges(f.state, f.content, f.delta.compose(changes))
@@ -142,7 +142,7 @@ async function sessionActivate(preserveView = false) {
   const identity = sessionCurrent(), key = sessionKey(identity)
   let item
   try { item = await sessionEnsure(identity) }
-  catch (e) { // Round5 High #2: a package file deleted/failed since the proposal must degrade, never crash the open
+  catch (e) { // a package file deleted/failed since the proposal must degrade, never crash the open
     if (window.changeSession !== s || key !== sessionKey(sessionCurrent())) return
     toast(e.message)
     if (window.changeSession === s && identity.kind !== 'document' && s.files.has(key)) { s.files.delete(key); s.dirty = true; sessionStash(); return sessionActivate() } // drop the broken file/resource entry once, keep the rest of the session
@@ -275,7 +275,7 @@ async function choosePackage() {
     if (project === docProject) await startChangeSession(proposal)
   } catch (e) { toast(e.message) }
 }
-// #6: topbar chip opener - entry {project|project_id, title?, id?, author?, updated_at?}
+// topbar chip opener - entry {project|project_id, title?, id?, author?, updated_at?}
 async function openTopPackage(entry) {
   const pid = entry?.project ?? entry?.project_id
   if (!pid) return
@@ -638,7 +638,7 @@ async function sessionAddFile(file) {
   s.files.set(sessionKey(identity), sessionRuntime({ ...identity, action: 'add', base: null, content, binary, changes: [] }))
   s.dirty = true; s.previewRevision++; sessionStash(); tabSig = ''; paintTabs(); paintSessionSidebar(); queueRender(); return name
 }
-async function sessionReplaceFile(name, file) { // Round5 #4: swap an existing file's content inside the package (backend file modify: base + content, changes [])
+async function sessionReplaceFile(name, file) { // swap an existing file's content inside the package (backend file modify: base + content, changes [])
   const s = window.changeSession
   if (!s || s.original || s.busy) return ''
   if (file.size > 10 * 1024 * 1024) throw Error(t('docs.maxKb'))
@@ -768,7 +768,7 @@ pvFiles = async () => {
   return pf
 }
 const sessionOriginalUpFile = upFile, sessionOriginalUpText = upText
-const stageToPackage = async file => { // Round5 #4: suggest-mode drafts must never write the live project - offer the package flow instead
+const stageToPackage = async file => { // suggest-mode drafts must never write the live project - offer the package flow instead
   if (!window.suggestionDraft) return false
   if (!await leaveSuggestionDraft()) return true // user keeps the draft: the upload is abandoned
   if (window.suggestionDraft || window.changeSession || !(await startChangeSession())) return true
@@ -814,7 +814,7 @@ const originalDeleteProjectEntry = async (project, name) => {
   if (!s || s.project !== project?.id) return sessionOriginalDeleteEntry(project, name)
   await stageSessionDelete({ kind: 'file', doc_id: '', path: name })
 }
-deleteProjectEntry = async (project, name) => { // Round5 #4: suggest-mode deletes stage into a package too - the suggester's trash is never touched (accept archives it in the project owner's trash)
+deleteProjectEntry = async (project, name) => { // suggest-mode deletes stage into a package too - the suggester's trash is never touched (accept archives it in the project owner's trash)
   if (!window.changeSession && window.suggestionDraft) {
     if (!await leaveSuggestionDraft()) return
     if (window.suggestionDraft || !await startChangeSession()) return
@@ -823,7 +823,7 @@ deleteProjectEntry = async (project, name) => { // Round5 #4: suggest-mode delet
   return originalDeleteProjectEntry(project, name)
 }
 const sessionOriginalDeleteFile = deleteFile
-deleteFile = async name => { // Round5 #4: media-manager chip delete must stage - the plain DELETE endpoint is source-blocked in-session and would live-write in suggest mode
+deleteFile = async name => { // media-manager chip delete must stage - the plain DELETE endpoint is source-blocked in-session and would live-write in suggest mode
   if (window.changeSession || window.suggestionDraft) {
     try { await deleteProjectEntry({ id: docProject }, name) } catch (e) { toast(e.message) }
     return
@@ -894,7 +894,7 @@ const sessionOriginalSourceMap = sourceToEditor, sessionOriginalEditorMap = edit
 sourceToEditor = (pos, end = false) => {
   const s = window.changeSession, f = s?.files.get(sessionKey(sessionCurrent()))
   if (!s || activeFile || !f?.delta || s.original) return sessionOriginalSourceMap(pos, end)
-  const basePos = diffMap(shadow, f.base || '')(Math.min(pos, shadow.length), end) // Round5 High #2: stale source pos must not overflow the changeset (add/empty-base files: changeset length 0)
+  const basePos = diffMap(shadow, f.base || '')(Math.min(pos, shadow.length), end) // stale source pos must not overflow the changeset (add/empty-base files: changeset length 0)
   return f.delta.mapPos(Math.max(0, Math.min(basePos, f.delta.length)), end ? 1 : -1)
 }
 editorToSource = (pos, end = false) => {

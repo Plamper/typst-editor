@@ -262,7 +262,7 @@ def _migrate_v12(con: sqlite3.Connection) -> None:
 
 
 def _migrate_v13(con: sqlite3.Connection) -> None:
-    # 1D Daten-Fundament: files table (doc_id, path, size, mtime, type),
+    # Files table (doc_id, path, size, mtime, type),
     # notifications table, read_tokens table, plus a start-scan that
     # populates files from existing on-disk attachments.
     con.execute("CREATE TABLE IF NOT EXISTS files ("

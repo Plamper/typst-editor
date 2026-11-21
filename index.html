@@ -563,7 +563,7 @@ header button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px
 #find button.on:hover { background: var(--ink); color: var(--on-ink); filter: opacity(.86); }
 #find button.on:not(:disabled):active { background: var(--ink); color: var(--on-ink); filter: opacity(.78); }
 #find .x { margin-left: auto; border: 0; background: none; box-shadow: none; color: var(--sub); }
-/* Wave 2B: format button only; format-on-save + spellcheck live in Settings (toolbar stays one line) */
+/* Format button only; format-on-save + spellcheck live in Settings (toolbar stays one line) */
 
 /* Document tabs: main.typ, project files, templates in use */
 #tabs { gap: 0; padding: 0 6px; min-height: 36px; align-items: stretch; scrollbar-width: none; }
@@ -1329,13 +1329,13 @@ body.settings-open #modal { z-index: 302; }
 .pk .pkTx { flex: 1; min-width: 0; }
 .pk b { display: block; font-size: 13.5px; font-weight: 600; }
 .pk span { display: block; margin-top: 1px; font-size: 12.5px; font-weight: 400; color: var(--sub); }
-/* 2C gallery: thumb cards in a grid (askNewDoc) */
+/* Gallery: thumb cards in a grid (askNewDoc) */
 #mCard:has(#galGrid) { width: min(680px, 96vw); } /* gallery wants room: wider than plain dialogs */
 #galGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px; margin-top: 6px; max-height: 50vh; overflow-y: auto; } /* fallback: never overflows the dialog */
 .pk.gal { flex-direction: column; align-items: stretch; gap: 8px; }
 .pk.gal img { width: 100%; height: 84px; object-fit: contain; background: var(--hover); border-radius: var(--r-sm); }
 .pk.gal.on img { background: var(--sel); }
-/* 2C export dialog fields */
+/* Export dialog fields */
 #mExtra select, #mExtra input[type=text] { width: 100%; margin-top: 6px; min-height: 38px; padding: 8px 12px; font-size: 14px; color: var(--text); background: var(--field); border: 1px solid var(--line-2); border-radius: var(--r-md); }
 #mExtra .sub { margin: 12px 0 0; font-size: 12px; color: var(--faint); }
 /* Mobile notice: only phones get here (see features/mobile-notice.js) */
@@ -1378,7 +1378,7 @@ body.settings-open #modal { z-index: 302; }
 #toast.error { border: 1px solid var(--danger); border-left-width: 3px; padding-left: 13px; }
 #toast button { margin-left: 10px; flex: none; white-space: nowrap; background: rgba(255, 255, 255, .14); color: inherit; border: 0; box-shadow: none; min-height: 28px; padding: 3px 12px; }
 #toast button:hover { background: rgba(255, 255, 255, .24); }
-/* 2E: connection status only (wsDot/wsTxt; rest of this file belongs to 2C) */
+/* Connection status (wsDot/wsTxt) */
 #wsDot { transition: background-color .3s ease; }
 #wsTxt.is-off { color: var(--faint); }
 
@@ -2450,8 +2450,8 @@ function dirtyAnchor(th) { // batch anchor saves: typing makes one request, not 
   }, SAVE_MS)
 }
 function mapThreads(mapPos, paint = true, fromLen) { // start left, end right: typing before stays out, inside/after grows
-  const t = activeFile || window.suggestionDraft ? shadow : getT() // file tab: anchors live in main, not in file text (Fix #5)
-  const len = fromLen == null ? t.length : Math.max(0, Math.min(fromLen, t.length)) // Round5 High #2: stale anchors beyond the changeset must not reach mapPos (RangeError on empty/short changesets)
+  const t = activeFile || window.suggestionDraft ? shadow : getT() // file tab: anchors live in main, not in file text
+  const len = fromLen == null ? t.length : Math.max(0, Math.min(fromLen, t.length)) // stale anchors beyond the changeset must not reach mapPos (RangeError on empty/short changesets)
   for (const th of threads) {
     if (th.a == null || th.b == null) continue
     const collapsed = th.a === th.b
@@ -2544,7 +2544,7 @@ function pullRemote(ev) {
     return
   }
   if (activeFile) { // file tab open: buffer main only, editor shows file
-    if (threads.length) mapThreads(map, false, old.length) // values yes (main-relative), paint no (Fix #5)
+    if (threads.length) mapThreads(map, false, old.length) // values yes (main-relative), paint no
     queueRender()
     return
   }
@@ -4120,7 +4120,7 @@ function refreshDocRole(d) {
   $('role').textContent = openedTrashed ? t('docs.trashBadge') : t(({ owner: 'common.roleOwner', editor: 'common.roleEditor', reviewer: 'common.roleReader' })[role])
   $('roBanner').style.display = ro ? '' : 'none'
   for (const id of ['renBtn', 'shareBtn', 'del']) $(id).style.display = role === 'owner' && !openedTrashed ? '' : 'none'
-  for (const id of ['imgBtn', 'mediaBtn', 'tplBtn', 'symBtn']) $(id).style.display = openedTrashed ? 'none' : '' // #8: reviewer keeps the media manager (read-only, copy chips only)
+  for (const id of ['imgBtn', 'mediaBtn', 'tplBtn', 'symBtn']) $(id).style.display = openedTrashed ? 'none' : '' // reviewer keeps the media manager (read-only, copy chips only)
   if (openedTrashed) $('mediaBtn').style.display = 'none'
   $('histBtn').style.display = openedTrashed ? 'none' : ''
   $('cNew').style.display = !activeFile && !openedTrashed ? '' : 'none'
@@ -4156,7 +4156,7 @@ function docRow(x, shared, bare) { // row: click opens, duplicate, trash (own), 
   if (!shared) {
     sidebarDrag(div, { project: x.project_id || '', entry: { kind: 'document', doc_id: x.id, name: x.title } }, 'move')
   }
-  if (!bare && (shared ? x.role === 'editor' : true)) { // #8: shared standalone docs can be duplicated by editors too (backend guest_copy)
+  if (!bare && (shared ? x.role === 'editor' : true)) { // shared standalone docs can be duplicated by editors too (backend guest_copy)
     const dup = icoBtn('mini', ICO_DUP); dup.title = t('docs.duplicate'); dup.setAttribute('aria-label', dup.title)
     dup.onclick = e => { e.stopPropagation(); if (dup.disabled) return; dup.disabled = true // upBusy pattern: no double doc
       api('POST', `/api/docs/${x.id}/duplicate`).then(r => openDoc(r.id)).catch(e => toast(e.message)).finally(() => dup.disabled = false) } // openDoc repaints list itself
@@ -4663,7 +4663,7 @@ function queueTplSave() {
   tplT = setTimeout(() => { if (key === tplName) flushTpl() }, SAVE_MS)
 }
 addEventListener('online', () => { if (tplName && tplDirty) flushTpl() })
-let openN = 0, synced = false // sync state ready? Else no empty save to DB (Fix #2)
+let openN = 0, synced = false // sync state ready? Else no empty save to DB
 function wsLive() { return !!(prov && prov.wsconnected) } // Yjs carries the document text; REST autosave would only 409
 let connT = 0 // debounced disconnect paint: brief flaps stay invisible, no flicker
 function paintConn() { // one status: Live / Offline (browser) / Getrennt (WS down); #save stays with queueSave/saveNow
@@ -4753,7 +4753,7 @@ async function openDoc(id) {
   for (const s of ['wsDot', 'wsTxt', 'save']) $(s).style.display = '' // doc open: status back
   $('histBtn').style.display = openedTrashed ? 'none' : '' // project history is readable from every file
   $('imgBtn').style.display = ro ? 'none' : ''
-  $('mediaBtn').style.display = openedTrashed ? 'none' : '' // #8: reviewer keeps the media manager (read-only, copy chips only)
+  $('mediaBtn').style.display = openedTrashed ? 'none' : '' // reviewer keeps the media manager (read-only, copy chips only)
   $('tplBtn').style.display = ro ? 'none' : ''
   $('symBtn').style.display = ro ? 'none' : ''
   $('colWrap').hidden = ro
@@ -4772,7 +4772,7 @@ async function openDoc(id) {
     ytext.observe((e, tx) => { if (tx.origin !== 'local') pullRemote(e) }) // only real remote updates touch editor (delta = exact changes)
     prov.awareness.on('change', renderPeers)
     pp.on('status', () => { if (prov === pp) updConn() }); pp.on('connection-close', () => { if (prov === pp) updConn() }); pp.on('connection-error', () => { if (prov === pp) updConn() })
-    pp.on('synced', s => { if (s !== true || prov !== pp) return; synced = true; if (prov === pp) { updConn(); if (threads.length && threads.some(x => x.a == null)) { reanchor(); loadComments().catch(() => {}) } } }) // re-hoist (Round5 High #1): WS sync can beat the comments GET, so an already-synced doc must re-run the range pass; loadComments skips the dedupe-render but still repaints missing ranges (only a real sync opens the gates; the vendor emits synced [false] on disconnect, and a destroyed old provider must not)
+    pp.on('synced', s => { if (s !== true || prov !== pp) return; synced = true; if (prov === pp) { updConn(); if (threads.length && threads.some(x => x.a == null)) { reanchor(); loadComments().catch(() => {}) } } }) // re-hoist: WS sync can beat the comments GET, so an already-synced doc must re-run the range pass; loadComments skips the dedupe-render but still repaints missing ranges (only a real sync opens the gates; the vendor emits synced [false] on disconnect, and a destroyed old provider must not)
     updConn()
     pushPresence()
   } else {
@@ -4829,7 +4829,7 @@ async function saveNow(force, auto) {
   if (window.changeSession) { if (!auto) await submitChangeSession(); return } // explicit (Ctrl+S/menu) saves at once; autosave passes auto=true and stays quiet on failure
   if (window.suggestionDraft && !auto) { await sendSuggestionDraft(); return }
   clearTimeout(saveT); clearTimeout(tplT)
-  if (docId && !tplName && !activeFile && !synced) { saveT = setTimeout(() => saveNow(false, true), SAVE_MS); return } // sync running: retry later instead of '' (Fix #2)
+  if (docId && !tplName && !activeFile && !synced) { saveT = setTimeout(() => saveNow(false, true), SAVE_MS); return } // sync running: retry later instead of ''
   const saveErr = e => navigator.onLine === false ? t('docs.offlineRetry') : t('docs.saveError', { msg: e.message })
   if (tplName) { await flushTpl(); return } // explicit save: flushTpl carries status + conflict toasts
   if (activeFile && docId) { // file/template tab: save that text, not main
@@ -5174,7 +5174,7 @@ function gutter() { // refresh markers: CM paints numbers itself (wrap-safe), on
   if (docId && !tplName && !activeFile) {
     m = new Set(threads.map(th => (window.suggestionDraft || window.changeSession) ? cm.state.doc.lineAt(threadEditorRange(th).from).number : th.anchor))
     if (window.suggestionDraft) for (const range of draftRanges(window.suggestionDraft)) m.add(cm.state.doc.lineAt(range.a).number)
-  } // file tab/template: no main markers (Fix #5)
+  } // file tab/template: no main markers
   if (window.changeSession && !window.changeSession.original) {
     const f = window.changeSession.files.get(sessionKey(sessionCurrent()))
     if (f && getT() === (f.content || '')) for (const range of sessionChangeRanges(f)) m.add(cm.state.doc.lineAt(range.a).number)
@@ -5406,7 +5406,7 @@ function threadCard(th) {
   return d
 }
 function invalidateCommentCache() { lastC = '' } // clears the poll dedupe key: the next loadComments re-derives ranges even though the comment list itself is unchanged (e.g. after a package accept)
-function repaintCommentRanges() { // self-healing (Round5 High #1): threads beat the first sync text and the list never changes again - without this pass the marks stay missing while the badge counts them
+function repaintCommentRanges() { // self-healing: threads beat the first sync text and the list never changes again - without this pass the marks stay missing while the badge counts them
   if (activeFile || !synced || !ytext || !threads.length || !threads.some(x => x.a == null)) return
   initRanges(); reanchor(); gutter(); refreshHl() // same pass as the fresh-list branch below; dedupe only skips rendering, never the range derivation
 }
@@ -5419,7 +5419,7 @@ async function loadComments(force) {
   if (s === lastC) { repaintCommentRanges(); return } // poll: nothing new, keep inputs untouched - but re-derive ranges the first sync skipped
   lastC = s; threads = d.comments
   for (const t of threads) t.anchor = Math.max(1, +t.anchor || 1) // heal legacy anchor 0 -> 1
-  if (!activeFile) { initRanges(); reanchor(); gutter(); refreshHl() } // file tab: do not touch main anchors (Fix #4/#5)
+  if (!activeFile) { initRanges(); reanchor(); gutter(); refreshHl() } // file tab: do not touch main anchors
   paintBadge()
   const draft = [...$('pop').querySelectorAll('input,textarea')].some(i => i.value.trim())
   if (popAnchor != null && !draft && (force || !$('pop').contains(document.activeElement))) renderPop() // draft + blur: keep text
@@ -5438,7 +5438,7 @@ $('cBadge').onclick = () => {
 $('eBadge').onclick = showErrList
 function reanchor() { // find quote: moves along; not found = anchor line (or nothing), never a stale ghost range
   const t = getT()
-  if (!docId || !ytext || activeFile || window.suggestionDraft || window.changeSession) return // file tab: anchors belong to main (Fix #4)
+  if (!docId || !ytext || activeFile || window.suggestionDraft || window.changeSession) return // file tab: anchors belong to main
   initRanges() // after sync: add ranges missing text at load
   let moved = false
   for (const th of threads) {
@@ -5546,7 +5546,7 @@ function renderMediaChips(files) {
   if (openedTrashed) { bar.style.display = 'none'; return } // trash: no manager at all
   bar.style.display = mediaOpen ? '' : 'none'
   if (!mediaOpen) return
-  const reviewer = docRole === 'reviewer' || docResReadonly // #8: readers browse + copy to library, no upload/delete/insert
+  const reviewer = docRole === 'reviewer' || docResReadonly // readers browse + copy to library, no upload/delete/insert
   if (!reviewer) {
     const add = el('button', null, t('files.upload'))
     add.onclick = () => $('imgPick').click()
@@ -5569,7 +5569,7 @@ function renderMediaChips(files) {
       const x = icoBtn(null, ICO_X); x.title = t('files.del'); x.setAttribute('aria-label', t('files.delName', { name: f.path }))
       x.onclick = () => deleteFile(f.path)
       c.appendChild(x)
-      if (window.changeSession && !window.changeSession.original && !TEXT_EXT.test(f.path)) { // Round5 #4: swap an existing image's content inside the package (add would stumble over nameExists)
+      if (window.changeSession && !window.changeSession.original && !TEXT_EXT.test(f.path)) { // swap an existing image's content inside the package (add would stumble over nameExists)
         const r = icoBtn(null, ICO_DUP); r.title = t('files.replaceName', { name: f.path }); r.setAttribute('aria-label', r.title)
         r.onclick = () => { pendingReplace = f.path; $('imgPick').click() }
         c.appendChild(r)
@@ -5969,7 +5969,7 @@ async function deleteFile(name) { // manager chip: same trash path as the sideba
   return deleteProjectEntry(projects.find(p => p.id === docProject) || { id: docProject }, name)
 }
 let imgIns = false // only via image button, not via manager upload
-let pendingReplace = '' // Round5 #4: one-shot chip target - the next picked file replaces this file's content inside the change session
+let pendingReplace = '' // one-shot chip target - the next picked file replaces this file's content inside the change session
 function insImage(name) { // #image() at cursor
   if (!cm.state.facet(EditorView.editable)) { toast(t('projects.readonly')); return }
   const m = cm.state.selection.main, ins = `#image("${refTo(name)}", width: 80%)`
@@ -5994,7 +5994,7 @@ $('imgPick').onchange = async () => {
   if (!f || !docId) return
   const swap = pendingReplace; pendingReplace = '' // one-shot: never leaks into the next pick
   try {
-    if (swap && window.changeSession) { // Round5 #4: chip replace swaps the content inside the package
+    if (swap && window.changeSession) { // chip replace swaps the content inside the package
       if (await sessionReplaceFile(swap, f)) { imgIns = false; queueRender(); return }
     }
     if (TEXT_UP.test(f.name)) { const n = await upText(f); if (n) switchTab(n) }
@@ -7312,7 +7312,7 @@ const AGENT_PROMPT = [ // no server address: the browser only knows its own, the
   '3. Register the MCP server in your own client: Streamable HTTP at <server>/mcp with the header "Authorization: Bearer <key>". Find out yourself how your client adds a remote MCP server; keep the key out of files that get committed.',
   '4. Check the connection with ls("/").'
 ].join('\n')
-// 2D: language without reload (same module as 05-i18n: shadow t, keep ?lang helper)
+// Language without reload (same module as 05-i18n: shadow t, keep ?lang helper)
 const LANG_KEY = 'typst_lang'
 function curLangInit() {
   try { const q = new URLSearchParams(location.search).get('lang'); if (q === 'de' || q === 'en') return q } catch (e) {}
@@ -9627,7 +9627,7 @@ updExports()
 closeView() // boot with no doc: onboarding card, no blobs, no comment button, read-only
 try { if (matchMedia('(max-width:720px)').matches) document.body.classList.add('noside') } catch (e) {} // mobile: sidebar closed
 updScrim()
-// downloads: source as .typ, preview as PDF; 2C: server options (standard/pages/ppi) with client fallback
+// downloads: source as .typ, preview as PDF; server options (standard/pages/ppi) with client fallback
 const dlName = ext => (($('title').textContent || t('downloads.untitled')).replace(/[^\p{L}\p{N}._-]+/gu, '_')) + ext // unicode names kept, rest _
 const dlBlob = (blob, name) => {
   const a = document.createElement('a')
@@ -11125,7 +11125,7 @@ function formatSettingsSec() { // settings group section: format on save (toolba
       try { await formatDoc(true) } catch (e) {}
     }
     if (doc !== docId || tpl !== tplName || key !== activeFile || epoch !== openN) return false
-    return inner(force, auto) // forward 2E quiet flag: autosave errors stay toast-free
+    return inner(force, auto) // forward the quiet flag: autosave errors stay toast-free
   }
 }
 // Document gallery and static welcome screen.
@@ -13681,7 +13681,7 @@ class DraftDeletion extends WidgetType {
 function sourceToEditor(pos, end = false) {
   const draft = window.suggestionDraft
   if (!draft) return pos
-  const basePos = diffMap(shadow, draft.base || '')(Math.min(pos, shadow.length), end) // Round5 High #2: stale pos must not overflow the changeset (empty base = changeset length 0)
+  const basePos = diffMap(shadow, draft.base || '')(Math.min(pos, shadow.length), end) // stale pos must not overflow the changeset (empty base = changeset length 0)
   return draft.changes.mapPos(Math.max(0, Math.min(basePos, draft.changes.length)), end ? 1 : -1)
 }
 function editorToSource(pos, end = false) {
@@ -13695,7 +13695,7 @@ function threadEditorRange(th) {
   const local = draft?.commentRanges.get(th.id)
   const length = cm.state.doc.length
   const clamp = r => ({ from: Math.max(0, Math.min(length, r.from)), to: Math.max(0, Math.min(length, r.to)) })
-  if (local) return clamp(local) // Round5 High #2: stored popover targets can trail an edit - clamp them like the derived path below
+  if (local) return clamp(local) // stored popover targets can trail an edit - clamp them like the derived path below
   return clamp({ from: sourceToEditor(th.a ?? posOfLine(shadow, th.anchor)),
     to: sourceToEditor(th.b ?? th.a ?? posOfLine(shadow, th.anchor), true) })
 }
@@ -13726,7 +13726,7 @@ function recordSuggestionEdit(changes, oldLen) {
   const draft = window.suggestionDraft
   draft.changes = normalizeSuggestionChanges(draft.baseState, getT(), draft.changes.compose(changes))
   draft.changed = !draft.changes.empty
-  const len = oldLen == null ? changes.length : Math.max(0, Math.min(oldLen, changes.length)) // Round5 High #2: stale popover targets must not reach mapPos
+  const len = oldLen == null ? changes.length : Math.max(0, Math.min(oldLen, changes.length)) // stale popover targets must not reach mapPos
   for (const range of draft.commentRanges.values()) { range.from = changes.mapPos(Math.max(0, Math.min(range.from, len)), -1); range.to = changes.mapPos(Math.max(0, Math.min(range.to, len)), 1) }
   closePop(true); queueRender(); paintOutline()
   queueMicrotask(() => { if (window.suggestionDraft === draft) { paintDraftSuggestions(); gutter(); paintSuggestionControls() } })
@@ -13970,7 +13970,7 @@ function sessionRuntime(file) {
   }
   return item
 }
-function sessionChanged(f) { // Round5 High #3: the painted-set decision lives here alone (sidebar rows, PATCH/POST payloads, accept gating read it)
+function sessionChanged(f) { // the painted-set decision lives here alone (sidebar rows, PATCH/POST payloads, accept gating read it)
   if (f.action !== 'modify') return true // add/delete/rename always carry content
   if (f.content == null || f.content === f.base) return false
   return !String(f.id || '').startsWith('draft_') || !!(f.delta && !f.delta.empty) // server ids are backend-validated; draft entries must show a real delta (a wrong-buffer record with an empty delta is a false positive, never paint or send it)
@@ -14062,7 +14062,7 @@ function sessionRecord(changes, oldLen) {
   if (!f || s.original || s.busy) return
   if (!activeFile) for (const th of threads) if (!s.commentRanges.has(th.id)) s.commentRanges.set(th.id, threadEditorRange(th))
   // one mapping loop for every entry (thread-id keys and pending popover targets alike), same semantics as recordSuggestionEdit
-  const len = oldLen == null ? changes.length : Math.max(0, Math.min(oldLen, changes.length)) // Round5 High #2: stale popover targets beyond the changeset must not reach mapPos
+  const len = oldLen == null ? changes.length : Math.max(0, Math.min(oldLen, changes.length)) // stale popover targets beyond the changeset must not reach mapPos
   if (!activeFile) for (const range of s.commentRanges.values()) { range.from = changes.mapPos(Math.max(0, Math.min(range.from, len)), -1); range.to = changes.mapPos(Math.max(0, Math.min(range.to, len)), 1) }
   f.content = getT()
   f.delta = normalizeSuggestionChanges(f.state, f.content, f.delta.compose(changes))
@@ -14079,7 +14079,7 @@ async function sessionActivate(preserveView = false) {
   const identity = sessionCurrent(), key = sessionKey(identity)
   let item
   try { item = await sessionEnsure(identity) }
-  catch (e) { // Round5 High #2: a package file deleted/failed since the proposal must degrade, never crash the open
+  catch (e) { // a package file deleted/failed since the proposal must degrade, never crash the open
     if (window.changeSession !== s || key !== sessionKey(sessionCurrent())) return
     toast(e.message)
     if (window.changeSession === s && identity.kind !== 'document' && s.files.has(key)) { s.files.delete(key); s.dirty = true; sessionStash(); return sessionActivate() } // drop the broken file/resource entry once, keep the rest of the session
@@ -14212,7 +14212,7 @@ async function choosePackage() {
     if (project === docProject) await startChangeSession(proposal)
   } catch (e) { toast(e.message) }
 }
-// #6: topbar chip opener - entry {project|project_id, title?, id?, author?, updated_at?}
+// topbar chip opener - entry {project|project_id, title?, id?, author?, updated_at?}
 async function openTopPackage(entry) {
   const pid = entry?.project ?? entry?.project_id
   if (!pid) return
@@ -14575,7 +14575,7 @@ async function sessionAddFile(file) {
   s.files.set(sessionKey(identity), sessionRuntime({ ...identity, action: 'add', base: null, content, binary, changes: [] }))
   s.dirty = true; s.previewRevision++; sessionStash(); tabSig = ''; paintTabs(); paintSessionSidebar(); queueRender(); return name
 }
-async function sessionReplaceFile(name, file) { // Round5 #4: swap an existing file's content inside the package (backend file modify: base + content, changes [])
+async function sessionReplaceFile(name, file) { // swap an existing file's content inside the package (backend file modify: base + content, changes [])
   const s = window.changeSession
   if (!s || s.original || s.busy) return ''
   if (file.size > 10 * 1024 * 1024) throw Error(t('docs.maxKb'))
@@ -14705,7 +14705,7 @@ pvFiles = async () => {
   return pf
 }
 const sessionOriginalUpFile = upFile, sessionOriginalUpText = upText
-const stageToPackage = async file => { // Round5 #4: suggest-mode drafts must never write the live project - offer the package flow instead
+const stageToPackage = async file => { // suggest-mode drafts must never write the live project - offer the package flow instead
   if (!window.suggestionDraft) return false
   if (!await leaveSuggestionDraft()) return true // user keeps the draft: the upload is abandoned
   if (window.suggestionDraft || window.changeSession || !(await startChangeSession())) return true
@@ -14751,7 +14751,7 @@ const originalDeleteProjectEntry = async (project, name) => {
   if (!s || s.project !== project?.id) return sessionOriginalDeleteEntry(project, name)
   await stageSessionDelete({ kind: 'file', doc_id: '', path: name })
 }
-deleteProjectEntry = async (project, name) => { // Round5 #4: suggest-mode deletes stage into a package too - the suggester's trash is never touched (accept archives it in the project owner's trash)
+deleteProjectEntry = async (project, name) => { // suggest-mode deletes stage into a package too - the suggester's trash is never touched (accept archives it in the project owner's trash)
   if (!window.changeSession && window.suggestionDraft) {
     if (!await leaveSuggestionDraft()) return
     if (window.suggestionDraft || !await startChangeSession()) return
@@ -14760,7 +14760,7 @@ deleteProjectEntry = async (project, name) => { // Round5 #4: suggest-mode delet
   return originalDeleteProjectEntry(project, name)
 }
 const sessionOriginalDeleteFile = deleteFile
-deleteFile = async name => { // Round5 #4: media-manager chip delete must stage - the plain DELETE endpoint is source-blocked in-session and would live-write in suggest mode
+deleteFile = async name => { // media-manager chip delete must stage - the plain DELETE endpoint is source-blocked in-session and would live-write in suggest mode
   if (window.changeSession || window.suggestionDraft) {
     try { await deleteProjectEntry({ id: docProject }, name) } catch (e) { toast(e.message) }
     return
@@ -14831,7 +14831,7 @@ const sessionOriginalSourceMap = sourceToEditor, sessionOriginalEditorMap = edit
 sourceToEditor = (pos, end = false) => {
   const s = window.changeSession, f = s?.files.get(sessionKey(sessionCurrent()))
   if (!s || activeFile || !f?.delta || s.original) return sessionOriginalSourceMap(pos, end)
-  const basePos = diffMap(shadow, f.base || '')(Math.min(pos, shadow.length), end) // Round5 High #2: stale source pos must not overflow the changeset (add/empty-base files: changeset length 0)
+  const basePos = diffMap(shadow, f.base || '')(Math.min(pos, shadow.length), end) // stale source pos must not overflow the changeset (add/empty-base files: changeset length 0)
   return f.delta.mapPos(Math.max(0, Math.min(basePos, f.delta.length)), end ? 1 : -1)
 }
 editorToSource = (pos, end = false) => {

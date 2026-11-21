@@ -164,9 +164,8 @@ def check_quota(user: str, extra: int, con: sqlite3.Connection | None = None) ->
 def invalidate_quota_cache(owner: str) -> None:
     """Drop sync's short-lived quota verdict after a quota-relevant write.
 
-    sync.py (track 1C) owns the cache and the real invalidate function;
-    this wrapper lazy-resolves it so callers stay cycle-free and keep
-    working standalone (no-op until the 1C side is merged). Never raises.
+    sync.py owns the cache and the real invalidate function; this wrapper
+    lazy-resolves it so callers stay cycle-free. Never raises.
     """
     try:
         from backend import sync as _sync

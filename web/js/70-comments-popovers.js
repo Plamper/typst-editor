@@ -324,7 +324,7 @@ function gutter() { // refresh markers: CM paints numbers itself (wrap-safe), on
   if (docId && !tplName && !activeFile) {
     m = new Set(threads.map(th => (window.suggestionDraft || window.changeSession) ? cm.state.doc.lineAt(threadEditorRange(th).from).number : th.anchor))
     if (window.suggestionDraft) for (const range of draftRanges(window.suggestionDraft)) m.add(cm.state.doc.lineAt(range.a).number)
-  } // file tab/template: no main markers (Fix #5)
+  } // file tab/template: no main markers
   if (window.changeSession && !window.changeSession.original) {
     const f = window.changeSession.files.get(sessionKey(sessionCurrent()))
     if (f && getT() === (f.content || '')) for (const range of sessionChangeRanges(f)) m.add(cm.state.doc.lineAt(range.a).number)
@@ -556,7 +556,7 @@ function threadCard(th) {
   return d
 }
 function invalidateCommentCache() { lastC = '' } // clears the poll dedupe key: the next loadComments re-derives ranges even though the comment list itself is unchanged (e.g. after a package accept)
-function repaintCommentRanges() { // self-healing (Round5 High #1): threads beat the first sync text and the list never changes again - without this pass the marks stay missing while the badge counts them
+function repaintCommentRanges() { // self-healing: threads beat the first sync text and the list never changes again - without this pass the marks stay missing while the badge counts them
   if (activeFile || !synced || !ytext || !threads.length || !threads.some(x => x.a == null)) return
   initRanges(); reanchor(); gutter(); refreshHl() // same pass as the fresh-list branch below; dedupe only skips rendering, never the range derivation
 }
@@ -569,7 +569,7 @@ async function loadComments(force) {
   if (s === lastC) { repaintCommentRanges(); return } // poll: nothing new, keep inputs untouched - but re-derive ranges the first sync skipped
   lastC = s; threads = d.comments
   for (const t of threads) t.anchor = Math.max(1, +t.anchor || 1) // heal legacy anchor 0 -> 1
-  if (!activeFile) { initRanges(); reanchor(); gutter(); refreshHl() } // file tab: do not touch main anchors (Fix #4/#5)
+  if (!activeFile) { initRanges(); reanchor(); gutter(); refreshHl() } // file tab: do not touch main anchors
   paintBadge()
   const draft = [...$('pop').querySelectorAll('input,textarea')].some(i => i.value.trim())
   if (popAnchor != null && !draft && (force || !$('pop').contains(document.activeElement))) renderPop() // draft + blur: keep text
@@ -588,7 +588,7 @@ $('cBadge').onclick = () => {
 $('eBadge').onclick = showErrList
 function reanchor() { // find quote: moves along; not found = anchor line (or nothing), never a stale ghost range
   const t = getT()
-  if (!docId || !ytext || activeFile || window.suggestionDraft || window.changeSession) return // file tab: anchors belong to main (Fix #4)
+  if (!docId || !ytext || activeFile || window.suggestionDraft || window.changeSession) return // file tab: anchors belong to main
   initRanges() // after sync: add ranges missing text at load
   let moved = false
   for (const th of threads) {

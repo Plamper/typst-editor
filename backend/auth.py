@@ -15,7 +15,7 @@ from backend.constants import PBKDF2_ROUNDS
 
 log = logging.getLogger(__name__)
 
-# 1C: PBKDF2 rounds bumped to >= 600k (was 300k). Old hashes keep working;
+# PBKDF2 rounds bumped to >= 600k (was 300k). Old hashes keep working;
 # create_session() rehashes on successful login (see needs_rehash).
 HASH_ROUNDS = 600_000
 CURRENT_ROUNDS = max(int(PBKDF2_ROUNDS), HASH_ROUNDS)
@@ -347,7 +347,7 @@ def create_session(username: str, password: str) -> str | None:
             return None
         canonical = row["name"]
         stored = row["hash"]
-        # 1C: rehash-on-login when stored rounds are stale. Best-effort:
+        # Rehash-on-login when stored rounds are stale. Best-effort:
         # a failed rehash never fails the login.
         if needs_rehash(stored):
             try:
@@ -356,7 +356,7 @@ def create_session(username: str, password: str) -> str | None:
                 con.commit()
             except Exception as e:
                 log.warning("create_session rehash failed for %s: %s", canonical, e)
-        # 1C: no expired-session DELETE here (background job owns cleanup).
+        # No expired-session DELETE here (background job owns cleanup).
     finally:
         try:
             con.close()
@@ -366,7 +366,7 @@ def create_session(username: str, password: str) -> str | None:
 
 
 def verify_session(token: str) -> str | None:
-    # 1C: read-only. Expired rows are left for the background cleanup thread
+    # Read-only. Expired rows are left for the background cleanup thread
     # (cleanup_expired_sessions) so the WS hot path never blocks on writes.
     if not token or len(token) < 32:
         return None

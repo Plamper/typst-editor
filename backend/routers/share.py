@@ -26,7 +26,7 @@ async def share_doc(doc_id: str, b: Share, req: Request, user: str = Depends(dep
     if b.role not in ("editor", "reviewer"):
         raise HTTPException(400, "role must be editor or reviewer")
     downgraded = False
-    # B5: single tx with the owner check on the tx connection (the outer
+    # Single tx with the owner check on the tx connection (the outer
     # need_access is a fast-path only); invite/share writes commit atomically.
     with db.tx() as con:
         if deps._tx_role(con, user, doc_id) != "owner":
@@ -58,8 +58,8 @@ async def unshare_doc(doc_id: str, username: str, req: Request, user: str = Depe
     deps.limited(req, "share")
     if deps.need_access(user, doc_id) != "owner":
         raise HTTPException(403, "Only owner can remove")
-    # B5+B24: single tx with the owner check on the tx connection (the outer
-    # need_access is a fast-path only). B24: only wipe invites when a share
+    # Single tx with the owner check on the tx connection (the outer
+    # need_access is a fast-path only). Only wipe invites when a share
     # row was actually removed — unsharing a never-shared username must not
     # nuke every pending link (fail-closed wipe stays for real removals, and
     # per-invite attribution would need a migration, which is out of scope).
