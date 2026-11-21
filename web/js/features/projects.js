@@ -410,7 +410,7 @@ async function uploadProjectFiles(p, files, folder = '') {
   try {
     for (const file of files) {
       if (/\.zip$/i.test(file.name)) {
-        const documents = await zipDocuments(file)
+        const documents = await zipDocuments(file, p.title)
         if (documents == null) continue
         const body = new FormData(); body.append('f', file); body.append('folder', folder); body.append('documents', JSON.stringify(documents))
         const response = await fetch(`/api/projects/${p.id}/import-zip`, { method: 'POST', body })

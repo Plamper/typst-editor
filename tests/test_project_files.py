@@ -149,7 +149,8 @@ def test_zip_import_many_and_no_documents(c):
     register_user(c, "alice")
     data = _zip({"main.typ": '#include "ch/a.typ"', "ch/a.typ": "A", "other.typ": "O", "img/x.png": b"png"})
     pre = c.post("/api/zip-preview", files={"f": ("thesis.zip", data)}).json()
-    assert pre == {"entries": ["ch/a.typ", "main.typ", "other.typ"], "suggested": ["main.typ", "other.typ"]}
+    assert pre == {"entries": ["ch/a.typ", "main.typ", "other.typ"], "suggested": ["main.typ", "other.typ"],
+                   "included_by": {"ch/a.typ": "main.typ"}, "others": ["img/x.png"]}
     r = c.post("/api/docs/import-zip", files={"f": ("thesis.zip", data)}, data={"name": "thesis.zip", "documents": json.dumps(["main.typ", "other.typ"])})
     assert r.status_code == 200, r.text
     out = r.json()

@@ -17,10 +17,14 @@
 .mBody .mRefs code { padding: 5px 9px; border-radius: var(--r-sm); background: var(--hover); color: var(--text); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; overflow-wrap: anywhere; }
 .mBody .mText { margin: 0 0 14px; }
 .mBody .mNote { margin: 12px 0 0; color: var(--faint); font-size: 12px; }
-.zipDocs .mNote { margin: 0 0 10px; }
-.zipDocs { max-height: 50vh; overflow-y: auto; }
-.mBody .mCheck { display: flex; align-items: center; gap: 8px; padding: 4px 2px; cursor: pointer; }
-.mBody .mCheck code { font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12.5px; overflow-wrap: anywhere; }
+.zipList { max-height: 44vh; overflow-y: auto; border: 1px solid var(--line-2); border-radius: var(--r-md); }
+.mBody .mCheck { display: flex; align-items: center; gap: 10px; padding: 9px 12px; color: var(--text); cursor: pointer; }
+.mBody .mCheck + .mCheck { border-top: 1px solid var(--line); }
+.mBody .mCheck:hover { background: var(--hover); }
+.mBody .mCheck input { flex: none; margin: 0; }
+.zipName { flex: 1; min-width: 0; font-size: 13.5px; overflow-wrap: anywhere; }
+.zipDir { color: var(--faint); }
+.zipHint { flex: none; font-size: 12px; color: var(--faint); }
 .mRow { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .mRow button { padding: 7px 16px; min-height: 34px; font-size: 13px; border-radius: var(--r-sm); }
 .mTop { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }

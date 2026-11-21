@@ -344,7 +344,7 @@ def test_folder_upload_lands_in_that_folder(page):
     with page.expect_file_chooser() as chooser:
         page.locator("#menu button").filter(has_text="Upload file").first.click()
     chooser.value.set_files({"name": "bundle.zip", "mimeType": "application/zip", "buffer": bundle.getvalue()})
-    expect(page.locator("#mHead")).to_have_text("Import bundle.zip")
+    expect(page.locator("#mHead")).to_have_text("Import bundle.zip into Folder upload")
     expect(page.locator("#mCard .mCheck input")).to_be_checked()
     page.click("#mYes")
     expect(page.locator("aside .doc .t", has_text="main")).to_be_visible()

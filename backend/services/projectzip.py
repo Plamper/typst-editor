@@ -36,20 +36,23 @@ def _typ_texts(archive: zipfile.ZipFile) -> dict[str, str]:
     return out
 
 
-def zip_typ_entries(data: bytes) -> dict[str, str]:
-    """Typst files of a ZIP with their text: the candidates for the document."""
+def zip_preview(data: bytes) -> dict:
+    """What the import dialog offers: every .typ file (the ones nobody includes ticked, the others with their
+    first includer) and the names of all other files, which become project files."""
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            return _typ_texts(archive)
+            texts = _typ_texts(archive)
+            others = sorted(e.filename for e in _entries(archive) if e.filename not in texts)
     except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError, EOFError) as e:
         raise HTTPException(400, "Invalid or unsupported ZIP") from e
-
-
-def zip_preview(data: bytes) -> dict:
-    """What the import dialog offers: every .typ file, and the ones nobody includes ticked."""
-    texts = zip_typ_entries(data)
-    included = {resources.resolve(posixpath.dirname(name), m.group(1)) for name, text in texts.items() for m in resources.REF_RE.finditer(text)}
-    return {"entries": sorted(texts), "suggested": sorted(n for n in texts if n not in included)}
+    included_by: dict[str, str] = {}
+    for name, text in sorted(texts.items()):
+        for m in resources.REF_RE.finditer(text):
+            target = resources.resolve(posixpath.dirname(name), m.group(1))
+            if target in texts and target != name:
+                included_by.setdefault(target, name)
+    return {"entries": sorted(texts), "suggested": sorted(n for n in texts if n not in included_by),
+            "included_by": included_by, "others": others}
 
 
 def listed(raw: str) -> list[str]:

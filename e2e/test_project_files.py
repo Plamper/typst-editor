@@ -87,7 +87,7 @@ def _zip(entries) -> bytes:
 
 def _import(page, name, data):
     page.set_input_files("#docPick", files=[{"name": name, "mimeType": "application/zip", "buffer": data}])
-    expect(page.locator("#mHead")).to_have_text(f"Import {name}")
+    expect(page.locator("#mHead")).to_have_text(f"New project “{name.removesuffix('.zip')}”")
     expect(page.locator("#mInp")).to_be_hidden()  # no title prompt: the project is named after the file
 
 
@@ -101,8 +101,10 @@ def test_zip_import_ticks_suggested_documents_and_allows_any_choice(page):
     _import(page, "Thesis.zip", source)
     checks = page.locator("#mCard .mCheck input")
     expect(checks).to_have_count(3)  # every .typ entry, nothing else
-    ticked = {page.locator("#mCard .mCheck").nth(i).inner_text(): checks.nth(i).is_checked() for i in range(3)}
+    ticked = {checks.nth(i).get_attribute("value"): checks.nth(i).is_checked() for i in range(3)}
     assert ticked == {"main.typ": True, "chap/a.typ": False, "notes.typ": True}  # suggested = roots nobody includes
+    expect(page.locator("#mCard .mCheck", has_text="chap/a.typ")).to_contain_text("included by main.typ")
+    expect(page.locator("#mCard .mNote")).to_have_text("1 other file is kept as a project file: img.png")
     page.locator("#mCard .mCheck", has_text="chap/a.typ").locator("input").check()
     page.click("#mYes")
     expect(page.locator("#title")).not_to_have_text("Welcome")

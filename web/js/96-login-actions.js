@@ -174,20 +174,32 @@ window.newProjectFromMenu = newProjectFromMenu // menubar proxy (classic ui-laye
 $('new').onclick = e => { e.stopPropagation(); openNewMenu($('new')) }
 let upBusy = false // double-click: no second doc
 $('upDoc').onclick = () => $('docPick').click()
-async function zipDocuments(f) { // every .typ of the ZIP with a checkbox: ticked ones become documents, the rest project files (null = cancelled)
+async function zipDocuments(f, project = '') { // every .typ of the ZIP with a checkbox: ticked ones become documents, the rest project files (null = cancelled)
   const body = new FormData(); body.append('f', f)
   const response = await fetch('/api/zip-preview', { method: 'POST', body })
   if (!response.ok) throw new Error(expMsg(await response.text()))
-  const { entries, suggested } = await response.json()
+  const { entries, suggested, included_by: includedBy = {}, others = [] } = await response.json()
   const box = el('div', 'mBody zipDocs')
-  box.append(el('p', 'mNote', t(entries.length ? 'docs.zipDocsNote' : 'docs.zipNoTyp')))
+  box.append(el('p', 'mText', t(entries.length ? 'docs.zipDocsNote' : 'docs.zipNoTyp')))
+  const list = el('div', 'zipList')
   const checks = entries.map(path => {
-    const label = el('label', 'mCheck'), check = document.createElement('input')
+    const label = el('label', 'mCheck'), check = document.createElement('input'), cut = path.lastIndexOf('/') + 1
     check.type = 'checkbox'; check.value = path; check.checked = suggested.includes(path)
-    label.append(check, el('code', null, path)); box.append(label)
+    const name = el('span', 'zipName')
+    if (cut) name.append(el('span', 'zipDir', path.slice(0, cut)))
+    name.append(path.slice(cut))
+    label.append(check, name)
+    if (includedBy[path]) label.append(el('span', 'zipHint', t('docs.zipIncludedBy', { name: includedBy[path] })))
+    list.append(label)
     return check
   })
-  if (!await ask(t('docs.zipDocs', { name: f.name }), { noInput: true, body: box, ok: t('docs.zipImport') })) return null
+  if (entries.length) box.append(list)
+  if (entries.length && others.length) {
+    const names = others.slice(0, 3).join(', ') + (others.length > 3 ? ', …' : '')
+    box.append(el('p', 'mNote', t(others.length === 1 ? 'docs.zipOtherOne' : 'docs.zipOtherMany', { n: others.length, names })))
+  }
+  const head = project ? t('docs.zipInto', { name: f.name, project }) : t('docs.zipNew', { name: f.name.replace(/\.zip$/i, '') })
+  if (!await ask(head, { noInput: true, body: box, ok: t('docs.zipImport') })) return null
   return checks.filter(c => c.checked).map(c => c.value)
 }
 async function importUpload(f) {

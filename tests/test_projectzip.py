@@ -112,7 +112,8 @@ def test_zip_preview_suggests_roots_and_import_takes_any_number_of_documents(c):
     register_user(c, "zipchoose")
     data = bundle([("book.typ", '#include "ch1.typ"'), ("ch1.typ", "One"), ("notes.typ", "Notes")])
     preview = c.post("/api/zip-preview", files={"f": ("s.zip", data, "application/zip")}).json()
-    assert preview == {"entries": ["book.typ", "ch1.typ", "notes.typ"], "suggested": ["book.typ", "notes.typ"]}
+    assert preview == {"entries": ["book.typ", "ch1.typ", "notes.typ"], "suggested": ["book.typ", "notes.typ"],
+                       "included_by": {"ch1.typ": "book.typ"}, "others": []}
     none = import_zip(c, data, [])
     assert none.status_code == 200, none.text
     assert none.json()["documents"] == [] and set(files_of(c, none.json()["project_id"])) == {"book.typ", "ch1.typ", "notes.typ"}

@@ -288,8 +288,9 @@ async function openTopPackage(entry) {
     if (docProject !== pid) return // open failed or raced
   }
   try {
-    if (entry.id) await startChangeSession(await api('GET', '/api/projects/' + pid + '/proposals/' + entry.id))
-    else await choosePackage() // entry without id: fall back to the in-project picker
+    if (!entry.id) { await choosePackage(); return } // entry without id: fall back to the in-project picker
+    const proposal = await api('GET', '/api/projects/' + pid + '/proposals/' + entry.id).catch(e => { if (e.status === 404) return null; throw e })
+    if (proposal?.files.length) await startChangeSession(proposal) // accepted or discarded meanwhile: the project is enough
   } catch (e) { toast(e.message) }
 }
 window.openTopPackage = openTopPackage

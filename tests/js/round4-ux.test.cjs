@@ -235,7 +235,12 @@ test('openTopPackage routes to the document, loads the proposal and avoids doubl
     window: {}, docProject: 'p1', lastOwn: [{ id: 'd1', project_id: 'p1' }], lastShared: [],
     t: key => key, toast: msg => toasts.push(msg), sidebar: async () => {}, endChangeSession: async () => true,
     choosePackage: async () => picked.push(true), startChangeSession: async p => started.push(p),
-    api: async (method, url) => { calls.push([method, url]); return { id: url.slice(url.lastIndexOf('/') + 1), title: 'P', files: [] } },
+    api: async (method, url) => {
+      calls.push([method, url])
+      const id = url.slice(url.lastIndexOf('/') + 1)
+      if (id === 'gone') throw Object.assign(new Error('Not found'), { status: 404 })
+      return { id, title: 'P', files: id === 'done' ? [] : [{ id: 'f' }] }
+    },
   })
   c.openDoc = async id => { calls.push(['openDoc', id]); c.docProject = id.indexOf('p2') >= 0 ? 'p2' : 'p1' }
   vm.runInContext(zz.slice(zz.indexOf('// #6: topbar chip opener - entry'), zz.indexOf('window.openTopPackage = openTopPackage') + 'window.openTopPackage = openTopPackage'.length), c)
@@ -260,6 +265,11 @@ test('openTopPackage routes to the document, loads the proposal and avoids doubl
   await c.openTopPackage({ project: 'p1', id: '7' })
   assert.equal(calls.length, 0)
   c.window.changeSession = null
+  // accepted (empty) or discarded (404) meanwhile: only the project opens, no empty review, no error toast
+  await c.openTopPackage({ project: 'p1', id: 'done' })
+  await c.openTopPackage({ project: 'p1', id: 'gone' })
+  assert.equal(started.length, 2)
+  assert.deepEqual(toasts, [])
   // unknown project: hint + sidebar refresh, no navigation
   await c.openTopPackage({ project: 'pX', id: '3' })
   assert.deepEqual(toasts, ['projects.openLinkedDoc'])
