@@ -145,7 +145,6 @@ def make_project_snap(project_id: str, b: SnapNew, req: Request, user: str = Dep
 @router.get("/api/projects/{project_id}/snapshots/{sid}")
 def get_project_snap(project_id: str, sid: str, req: Request, against: str = "current", user: str = Depends(deps.me)) -> dict:
     """Changes from checkpoint `sid` to `against` ("current" = the live project, or another checkpoint id)."""
-    import json
 
     from backend.services import project_history, projects
     deps.limited(req, "files_list")
@@ -160,9 +159,9 @@ def get_project_snap(project_id: str, sid: str, req: Request, against: str = "cu
             other = con.execute("SELECT content,label,created_at FROM project_snapshots WHERE id=? AND project_id=?", (against, project_id)).fetchone()
             if not other:
                 raise HTTPException(404, "Checkpoint not found")
-        saved = json.loads(row["content"])
+        saved = project_history.load(row["content"])
         if other:
-            current = json.loads(other["content"])
+            current = project_history.load(other["content"])
         else:
             with project_history.prepared(project_id, user) as (current, _):
                 pass
@@ -210,34 +209,16 @@ def delete_project_snap(project_id: str, sid: str, req: Request, user: str = Dep
 
 def _restore_project_state(project_id: str, sid: str, b: SnapRestore, user: str) -> tuple[dict, list[str], str]:
     import base64
-    import json
-    from contextlib import ExitStack
 
-    from backend.services import project_history, projects, quota
-    from backend.services.docfiles import file_type, store
-    from backend.services.locks import _named_lock
+    from backend.services import project_files, project_history, projects, quota
 
-    before = None
-    file_backup: dict[str, dict[str, bytes]] = {}
-    con = db.connect()
-    try:
-        projects.require(con, project_id, user, edit=True)
-        row = con.execute('SELECT content FROM project_snapshots WHERE id=? AND project_id=?', (sid, project_id)).fetchone()
-        if not row:
-            raise HTTPException(404, 'Checkpoint not found')
-        expected = json.loads(row['content'])
-        touched = sorted({r[0] for r in con.execute('SELECT id FROM docs WHERE project_id=?', (project_id,))} | {d['id'] for d in expected['documents']})
-    finally:
-        con.close()
-    with ExitStack() as locks:
-        for did in touched:
-            locks.enter_context(_named_lock(f'upload:{did}'))
+    backups: project_files.Backups = {}
+    with project_files.lock(project_id):
         con = db.connect()
         try:
             con.execute('BEGIN')
             projects.require(con, project_id, user, edit=True)
             expected_stamp = project_history.stamp(con, project_id)
-            file_backup = {did: {f.path: store.get(did, f.path) for f in store.list(did)} for did in touched}
             before = project_history.capture(con, project_id)
         finally:
             con.close()
@@ -248,11 +229,9 @@ def _restore_project_state(project_id: str, sid: str, b: SnapRestore, user: str)
                 row = con.execute("SELECT content FROM project_snapshots WHERE id=? AND project_id=?", (sid, project_id)).fetchone()
                 if not row:
                     raise HTTPException(404, "Checkpoint not found")
-                state = json.loads(row['content'])
+                state = project_history.load(row['content'])
                 owner = con.execute("SELECT owner FROM projects WHERE id=?", (project_id,)).fetchone()[0]
                 current = [r[0] for r in con.execute("SELECT id FROM docs WHERE project_id=?", (project_id,))]
-                if not (set(current) | {d['id'] for d in state['documents']}).issubset(touched):
-                    raise HTTPException(409, 'Project changed; retry restore')
                 for d in state['documents']:
                     existing = con.execute('SELECT project_id FROM docs WHERE id=?', (d['id'],)).fetchone()
                     if existing and existing[0] != project_id:
@@ -267,42 +246,28 @@ def _restore_project_state(project_id: str, sid: str, b: SnapRestore, user: str)
                 # quota check below accounts for it; a plain cap check here
                 # would reject restores that free space.
                 project_history.save(con, project_id, before, 'Before restore', kind='manual', author=user, check=False)
-                extra = 0
-                for d in state['documents']:
-                    old = con.execute('SELECT content,yjs FROM docs WHERE id=?', (d['id'],)).fetchone()
-                    extra += len(d['content'].encode()) - (len(old[0].encode()) + len(old[1] or b'') if old else 0)
-                    extra += sum(len(base64.b64decode(v)) for v in d['files'].values()) - sum(len(v) for v in file_backup[d['id']].values())
-                extra += sum(len(v.encode()) for v in state['resources'].values()) - sum(len(v.encode()) for v in before['resources'].values())
-                quota.check_quota(owner, extra, con)
                 new_docs = sum(not con.execute('SELECT 1 FROM docs WHERE id=?', (d['id'],)).fetchone() for d in state['documents'])
                 if new_docs + con.execute('SELECT COUNT(*) FROM docs WHERE owner=?', (owner,)).fetchone()[0] > config.load().MAX_DOCS_PER_USER:
                     raise HTTPException(400, 'Too many docs')
                 con.execute('UPDATE docs SET trashed=1 WHERE project_id=?', (project_id,))
-                con.execute('DELETE FROM project_resources WHERE project_id=?', (project_id,))
-                for name, content in state['resources'].items():
-                    con.execute('INSERT INTO project_resources VALUES (?,?,?,?)', (project_id, name, content, db.now_iso()))
                 for d in state['documents']:
-                    existing = con.execute('SELECT project_id FROM docs WHERE id=?', (d['id'],)).fetchone()
-                    if existing and existing[0] != project_id:
-                        raise HTTPException(409, 'Document belongs to another project')
-                    if not existing:
-                        con.execute('INSERT INTO docs(id,owner,title,folder,content,project_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)', (d['id'], owner, d['title'], d['folder'], d['content'], project_id, d['created_at'], db.now_iso()))
+                    try:  # a stored checkpoint is data: its folder passes the same rule as a new one
+                        d['folder'] = project_files.doc_folder(d['folder'])
+                    except ValueError:
+                        d['folder'] = ''
+                    if not con.execute('SELECT 1 FROM docs WHERE id=?', (d['id'],)).fetchone():
+                        con.execute('INSERT INTO docs(id,owner,title,folder,content,project_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)',
+                                    (d['id'], owner, d['title'], d['folder'], d['content'], project_id, d.get('created_at') or db.now_iso(), db.now_iso()))
                     else:
                         con.execute('UPDATE docs SET title=?,folder=?,content=?,trashed=0,yjs=NULL,updated_at=? WHERE id=?', (d['title'], d['folder'], d['content'], db.now_iso(), d['id']))
-                    for f in store.list(d['id']):
-                        store.delete(d['id'], f.path)
-                    con.execute('DELETE FROM files WHERE doc_id=?', (d['id'],))
-                    for name, encoded in d['files'].items():
-                        store.put(d['id'], name, base64.b64decode(encoded))
-                        stat = store.stat(d['id'], name)
-                        assert stat is not None
-                        con.execute('INSERT INTO files(doc_id,path,size,mtime,type) VALUES (?,?,?,?,?)', (d['id'], name, stat.size, stat.mtime, file_type(name)))
+                for path in [r[0] for r in con.execute('SELECT path FROM project_files WHERE project_id=?', (project_id,))]:
+                    if path not in state['files']:
+                        project_files.remove(con, project_id, path, backups)
+                for path, encoded in state['files'].items():
+                    project_files.put(con, project_id, path, base64.b64decode(encoded), backups)
+                quota.check_quota(owner, 0, con)
         except Exception as error:
-            for did, originals in file_backup.items():
-                for f in store.list(did):
-                    store.delete(did, f.path)
-                for name, data in originals.items():
-                    store.put(did, name, data)
+            project_files.undo(backups)
             if isinstance(error, sqlite3.IntegrityError):
                 raise HTTPException(409, "A document name conflicts in this project; rename it before restoring") from error
             raise

@@ -1,5 +1,4 @@
-"""Overhaul export sources: unified closure, root-renderable ZIPs, backup bundles."""
-import base64
+"""Overhaul export sources: the project tree, root-renderable ZIPs, backup bundles."""
 import io
 import shutil
 import subprocess
@@ -18,18 +17,18 @@ def _typst():
 
 
 def _bundle(c, title="Exp"):
-    """Doc with nested attachment importing global resources + csv (transitive)."""
+    """Doc with a nested project file importing snapshotted templates + csv (transitive)."""
     register_user(c, "own")
     _res(c, "base.typ", "#let base = [BASE]")
     _res(c, "lib.typ", '#import "base.typ": base\n#let hi(name) = [Hi #name (#base)]')
     _res(c, "data.csv", "name,score\nAda,100")
     did = make_doc(c, title=title,
                    content='#import "lib.typ": hi\n#include "sub/part.typ"\n= Title\nMain: #hi("main").')
-    r = c.post(f"/api/docs/{did}/files/sub/part.typ/text",
-               json={"content": '#import "../lib.typ": hi\n#let rows = csv("../data.csv")\n'
-                                'Part: #hi("nested") n=#rows.len().'})
-    assert r.status_code == 200, r.text
     pid = c.get(f"/api/docs/{did}").json()["project_id"]
+    r = c.put(f"/api/projects/{pid}/files/sub/part.typ",
+              content=(b'#import "../lib.typ": hi\n#let rows = csv("../data.csv")\n'
+                       b'Part: #hi("nested") n=#rows.len().'))
+    assert r.status_code == 200, r.text
     body = {"source_scope": "personal", "source": "data.csv", "scope": "project", "project_id": pid, "name": "data.csv"}
     p = c.post("/api/library/pull-preview", json=body)
     assert p.status_code == 200, p.text
@@ -42,7 +41,7 @@ def test_source_zip_root_paths_and_closure(c):
     r = c.post(f"/api/docs/{did}/export", params={"format": "zip"})
     assert r.status_code == 200, r.text
     names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
-    assert "main.typ" in names
+    assert "Exp.typ" in names
     assert "sub/part.typ" in names  # nested path preserved
     assert "lib.typ" in names  # direct resource
     assert "base.typ" in names  # transitive through the shelf
@@ -59,41 +58,17 @@ def test_source_zip_compiles_with_real_typst(c, tmp_path):
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     zipfile.ZipFile(io.BytesIO(r.content)).extractall(bundle)
-    assert (bundle / "main.typ").is_file()
+    assert (bundle / "RealZip.typ").is_file()
     assert (bundle / "sub" / "part.typ").is_file()
-    p = subprocess.run([_typst(), "compile", "main.typ", "out.pdf"],
+    p = subprocess.run([_typst(), "compile", "RealZip.typ", "out.pdf"],
                        cwd=bundle, capture_output=True, timeout=60)
     assert p.returncode == 0, p.stderr.decode("utf-8", "replace")[-1000:]
     pdf = bundle / "out.pdf"
     assert pdf.is_file() and pdf.read_bytes()[:5] == b"%PDF-"
 
 
-def test_rest_mcp_export_parity(c):
-    import asyncio
-
-    from backend import mcp_tools as _mt
-
-    did = _bundle(c, title="Parity")
-    r = c.post(f"/api/docs/{did}/export", params={"format": "zip"})
-    assert r.status_code == 200, r.text
-    rest_names = sorted(zipfile.ZipFile(io.BytesIO(r.content)).namelist())
-    out = asyncio.run(_mt.op_export("own", "owner", "/docs/Parity", "zip"))
-    mcp_names = sorted(zipfile.ZipFile(io.BytesIO(base64.b64decode(out["content_base64"]))).namelist())
-    assert mcp_names == rest_names
-    assert "lib.typ" in mcp_names and "base.typ" in mcp_names
 
 
-def test_view_includes_resources(c):
-    import asyncio
-
-    from backend import mcp_tools as _mt
-
-    if not _typst():
-        pytest.skip("typst CLI missing")
-    _bundle(c, title="ViewRes")
-    out = asyncio.run(_mt.op_view("own", "owner", "/docs/ViewRes", "1"))
-    sc = out.structured_content
-    assert sc["count"] >= 1  # compiles with the closure (missing lib.typ would 422)
 
 
 def test_full_backup_per_doc_closure(c):
@@ -103,9 +78,7 @@ def test_full_backup_per_doc_closure(c):
     names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
     assert "templates/lib.typ" in names  # global shelf organization kept
     assert "templates/data.csv" in names
-    # Per-doc bundle carries nested paths + the resource closure.
-    assert any(n.endswith("Bak-files/sub/part.typ") for n in names), names
-    assert any(n.endswith("Bak-files/lib.typ") for n in names), names
-    assert any(n.endswith("Bak-files/base.typ") for n in names), names
-    assert not any("Bak-files/files/" in n for n in names)
-    _ = did
+    # Each project folder carries its documents and its whole file tree.
+    pid = c.get(f"/api/docs/{did}").json()["project_id"]
+    for name in ("Bak.typ", "sub/part.typ", "lib.typ", "base.typ", "data.csv"):
+        assert f"projects/{pid}/{name}" in names, names

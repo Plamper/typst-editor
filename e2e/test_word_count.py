@@ -7,7 +7,7 @@ document is closed.
 """
 import re
 
-from helpers import create_doc, open_private_copy, register, type_source
+from helpers import create_doc, doc_project, open_private_copy, put_file, register, type_source
 from playwright.sync_api import expect
 
 
@@ -22,10 +22,7 @@ def test_word_count_follows_tab_and_document_switches(page):
     type_source(page, 'one two three four five')
     expect(page.locator('#pos')).to_contain_text('5 words')
 
-    response = page.request.post(
-        f'/api/docs/{doc_id}/files/sources.bib/text',
-        data={'content': '@book{key, title={Some bibliography words here}, year={2026}}'},
-    )
+    response = put_file(page.request, doc_project(page.request, doc_id), 'sources.bib', '@book{key, title={Some bibliography words here}, year={2026}}')
     assert response.ok, response.text()
     page.locator('aside .doc.sub .t').filter(has_text='sources.bib').click()
     bib = page.locator('#tabs button.tab').filter(has_text='sources.bib')
@@ -33,34 +30,25 @@ def test_word_count_follows_tab_and_document_switches(page):
     expect(page.locator('#pos')).to_contain_text('6 words')  # active .bib text, not main.typ
     expect(page.locator('#save')).not_to_contain_text('words')  # save state stays clean
 
-    response = page.request.post(f'/api/docs/{doc_id}/files/chapter.typ/text', data={'content': 'alpha beta gamma'})
+    response = put_file(page.request, doc_project(page.request, doc_id), 'chapter.typ', 'alpha beta gamma')
     assert response.ok, response.text()
     page.locator('aside .doc.sub .t').filter(has_text='chapter.typ').click()
     expect(page.locator('#tabs button.tab').filter(has_text='chapter.typ')).to_be_visible()
     expect(page.locator('#pos')).to_contain_text('3 words')
 
-    response = page.request.post(
-        f'/api/docs/{doc_id}/files/data.csv/text',
-        data={'content': 'alpha,beta,gamma\none,two,three\n'},
-    )
+    response = put_file(page.request, doc_project(page.request, doc_id), 'data.csv', 'alpha,beta,gamma\none,two,three\n')
     assert response.ok, response.text()
     page.locator('aside .doc.sub .t').filter(has_text='data.csv').click()
     expect(page.locator('#tabs button.tab').filter(has_text='data.csv')).to_be_visible()
     expect(page.locator('#pos')).to_contain_text('2 words')  # table editor counts its source text
 
-    response = page.request.post(
-        f'/api/docs/{doc_id}/files/config.json/text',
-        data={'content': '{"words": "one two three"}'},
-    )
+    response = put_file(page.request, doc_project(page.request, doc_id), 'config.json', '{"words": "one two three"}')
     assert response.ok, response.text()
     page.locator('aside .doc.sub .t').filter(has_text='config.json').click()
     expect(page.locator('#tabs button.tab').filter(has_text='config.json')).to_be_visible()
     expect(page.locator('#pos')).to_contain_text('4 words')
 
-    response = page.request.post(
-        f'/api/docs/{doc_id}/files',
-        multipart={'f': {'name': 'pixel.png', 'mimeType': 'image/png', 'buffer': b'\x89PNG\r\n\x1a\n'}},
-    )
+    response = put_file(page.request, doc_project(page.request, doc_id), 'pixel.png', b'\x89PNG\r\n\x1a\n')
     assert response.ok, response.text()
     page.locator('aside .doc.sub .t').filter(has_text='pixel.png').click()
     expect(page.locator('#tabs button.tab').filter(has_text='pixel.png')).to_be_visible()

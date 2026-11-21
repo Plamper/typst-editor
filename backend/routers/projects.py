@@ -1,10 +1,10 @@
-"""Shared project folders, membership and libraries."""
+"""Projects: listing, membership, documents, conversion and source ZIPs."""
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
-import posixpath
+import shutil
 import sqlite3
 from typing import Literal
 
@@ -14,8 +14,8 @@ from pydantic import BaseModel, Field
 from backend import config, db, deps, sync
 from backend.constants import MAX_TXT
 from backend.schemas import Share
-from backend.services import projects, quota, resources, trash
-from backend.services.docfiles import safe_name, safe_rename_target, store
+from backend.services import project_files, projects, quota
+from backend.services.docfiles import safe_name
 from backend.services.sidebar import notify_sidebar
 
 router = APIRouter()
@@ -26,47 +26,29 @@ class Convert(BaseModel):
     preview: str = ""
 
 
-class ResourceSave(BaseModel):
-    name: str = Field(min_length=1, max_length=240)
-    content: str = Field(max_length=200001)
-    version: str | None = None
-
-
 class ProjectDoc(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     folder: str = Field(default="", max_length=240)
     content: str = Field(default="", max_length=200001)
 
 
-def resource_name(name: str, *, new: bool = False) -> str:
-    n = safe_name(name, new=new)
-    if not resources.kind_of(n) or resources.is_reserved(n):
-        raise HTTPException(400, "Unsupported or reserved resource name")
-    return n
-
-
 def preview(con: sqlite3.Connection, user: str, folder: str) -> dict:
     existing = con.execute("SELECT project_id FROM legacy_project_folders WHERE owner=? AND folder=?", (user, folder.split("/")[0])).fetchone()
     if existing:
         p = projects.payload(con, existing[0], user)
-        return {"id": existing[0], "documents": p["documents"], "resources": {}, "preview": existing[0]}
+        return {"id": existing[0], "documents": p["documents"], "preview": existing[0]}
     docs = [dict(d) for d in con.execute("SELECT id, title, content, folder, updated_at, project_id FROM docs "
                                        "WHERE owner=? AND trashed=0 AND project_id IS NULL ORDER BY id", (user,))
             if d["folder"] == folder or d["folder"].startswith(folder + "/")]
     if not docs and not con.execute("SELECT 1 FROM folders WHERE owner=? AND kind='doc' AND name=?",
                                     (user, folder)).fetchone():
         raise HTTPException(404, "Folder not found")
-    shelf = {r["name"]: r["content"] for r in con.execute("SELECT name, content FROM templates WHERE owner=?", (user,))}
-    required: dict[str, str] = {}
     for d in docs:
-        local = {e.path: store.get(d["id"], e.path).decode("utf-8", errors="replace")
-                 for e in store.list(d["id"]) if resources.kind_of(e.path)}
         text = sync.room_text(d["id"])
         d["content"] = text if text is not None else d["content"]
-        required.update({n: c for n, c in resources.reachable_closure(shelf, local, d["content"]).items() if n not in local})
-    token = hashlib.sha256(json.dumps([docs, required], sort_keys=True).encode()).hexdigest()
-    return {"documents": docs, "resources": required, "preview": token,
-            "warning": "Only statically detectable references are included. Check dynamic file paths manually."}
+    token = hashlib.sha256(json.dumps(docs, sort_keys=True).encode()).hexdigest()
+    return {"documents": docs, "preview": token,
+            "warning": "Only statically detectable template references are copied. Check dynamic file paths manually."}
 
 
 @router.get("/api/projects")
@@ -100,17 +82,13 @@ def convert_folder(b: Convert, req: Request, user: str = Depends(deps.me)) -> di
             return {"id": p["id"]}
         if b.preview != p["preview"]:
             raise HTTPException(409, "Folder changed; review the conversion preview again")
-        quota.check_quota(user, sum(len(c.encode("utf-8")) for c in p["resources"].values()), con)
         if con.execute("SELECT 1 FROM projects WHERE owner=? AND title=? COLLATE NOCASE", (user, b.folder)).fetchone():
             raise HTTPException(409, "Project name already exists")
-        now = db.now_iso()
-        con.execute("INSERT INTO projects(id,owner,title,created_at) VALUES (?,?,?,?)", (pid, user, b.folder, now))
+        con.execute("INSERT INTO projects(id,owner,title,created_at) VALUES (?,?,?,?)", (pid, user, b.folder, db.now_iso()))
         con.execute("INSERT INTO legacy_project_folders VALUES (?,?,?)", (user, b.folder.split("/")[0], pid))
         for d in p["documents"]:
-            sub = d["folder"][len(b.folder):].lstrip("/")
-            con.execute("UPDATE docs SET project_id=?, folder=? WHERE id=?", (pid, sub, d["id"]))
-        for name, content in p["resources"].items():
-            con.execute("INSERT INTO project_resources VALUES (?,?,?,?)", (pid, name, content, now))
+            con.execute("UPDATE docs SET folder=? WHERE id=?", (d["folder"][len(b.folder):].lstrip("/"), d["id"]))
+            projects.attach_doc(con, d["id"], pid)
         for f in con.execute("SELECT name FROM folders WHERE owner=? AND kind='doc'", (user,)).fetchall():
             if f[0] == b.folder or f[0].startswith(b.folder + "/"):
                 con.execute("DELETE FROM folders WHERE owner=? AND kind='doc' AND name=?", (user, f[0]))
@@ -170,70 +148,6 @@ async def remove_member(project_id: str, username: str, req: Request, user: str 
     return {"ok": True}
 
 
-@router.get("/api/projects/{project_id}/resources")
-def list_resources(project_id: str, user: str = Depends(deps.me)) -> dict:
-    con = db.connect()
-    try:
-        p = projects.payload(con, project_id, user)
-        allowed = {r["name"] for r in p["resources"]}
-        return {"resources": [dict(x) for x in con.execute("SELECT name,content,updated_at FROM project_resources WHERE project_id=? ORDER BY name", (project_id,)) if x["name"] in allowed], "readonly": not p["can_edit_library"]}
-    finally:
-        con.close()
-
-
-@router.post("/api/projects/{project_id}/resources")
-def save_resource(project_id: str, b: ResourceSave, req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.limited(req, "templates")
-    name = resource_name(b.name, new=True)
-    size = len(b.content.encode("utf-8"))
-    if size > MAX_TXT:
-        raise HTTPException(413, "Text resource exceeds 200 KB")
-    with db.tx() as con:
-        projects.require(con, project_id, user, edit=True)
-        owner = con.execute("SELECT owner FROM projects WHERE id=?", (project_id,)).fetchone()[0]
-        old = con.execute("SELECT content, updated_at FROM project_resources WHERE project_id=? AND name=?", (project_id, name)).fetchone()
-        if old and (b.version is None or b.version != old["updated_at"]):
-            raise HTTPException(409, "Name exists or resource changed; reload or choose another name")
-        if not old and b.version is not None:
-            raise HTTPException(409, "Resource removed; keep your draft")
-        # Only a NEW module row can introduce a duplicate name; updating an
-        # existing row keeps its own names (legacy duplicates stay editable,
-        # users clean them up by renaming instead of being locked out).
-        if old is None:
-            projects.assert_resource_name_free(con, project_id, name)
-        quota.check_quota(owner, size - (len(old["content"].encode("utf-8")) if old else 0), con)
-        now = db.now_iso()
-        con.execute("INSERT INTO project_resources VALUES (?,?,?,?) ON CONFLICT(project_id,name) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at", (project_id, name, b.content, now))
-    quota.invalidate_quota_cache(owner)
-    projects.notify(project_id)
-    return {"name": name, "version": now}
-
-
-@router.delete("/api/projects/{project_id}/resources/{name:path}")
-def delete_resource(project_id: str, name: str, version: str, req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.limited(req, "delete")
-    name = resource_name(name)
-    with db.tx() as con:
-        projects.require(con, project_id, user, edit=True)
-        row = con.execute("SELECT updated_at,content FROM project_resources WHERE project_id=? AND name=?", (project_id, name)).fetchone()
-        if not row:
-            raise HTTPException(404, "Resource not found")
-        if not version or row["updated_at"] != version:
-            raise HTTPException(409, "Resource changed; reload before deleting")
-        owner = con.execute("SELECT owner FROM projects WHERE id=?", (project_id,)).fetchone()[0]
-        # Trash is charged to the project owner (library quota counts
-        # toward the owner too), never to the deleting editor.
-        trash.archive(con, owner, "resource", name, (row["content"] or "").encode(), project_id=project_id)
-        con.execute("DELETE FROM project_resources WHERE project_id=? AND name=?", (project_id, name))
-    quota.invalidate_quota_cache(owner)
-    quota.invalidate_quota_cache(user)
-    projects.notify(project_id)
-    notify_sidebar(user)
-    if owner != user:
-        notify_sidebar(owner)
-    return {"ok": True}
-
-
 @router.post("/api/projects/{project_id}/docs")
 def create_document(project_id: str, b: ProjectDoc, req: Request, user: str = Depends(deps.me)) -> dict:
     deps.limited(req, "create")
@@ -274,6 +188,7 @@ async def trash_project_documents(project_id: str, req: Request, user: str = Dep
             # archived resource copies could never be restored again.
             con.execute("DELETE FROM trash_entries WHERE project_id=?", (project_id,))
             con.execute("DELETE FROM projects WHERE id=?", (project_id,))
+            shutil.rmtree(deps.get_files_dir() / project_id, ignore_errors=True)
     for did in ids:
         await sync.drop(did)
     projects.notify(project_id)
@@ -310,149 +225,11 @@ def rename_project(project_id: str, b: ProjectTitle, req: Request, user: str = D
     return {"ok": True}
 
 
-class EntryRename(BaseModel):
-    name: str = Field(min_length=1, max_length=240)
-    target: str = Field(min_length=1, max_length=240)
-    doc_id: str = ""
-    version: str = ""
-
-
-@router.post("/api/projects/{project_id}/rename-entry-preview")
-def rename_entry_preview(project_id: str, b: EntryRename, req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.limited(req, "files_list")
-    name = safe_name(b.name)
-    target = safe_rename_target(b.target, name)
-    con = db.connect()
-    try:
-        projects.require(con, project_id, user, edit=True)
-        docs = con.execute("SELECT id,title,content FROM docs WHERE project_id=? AND trashed=0", (project_id,)).fetchall()
-        if b.doc_id:
-            if b.doc_id not in {d['id'] for d in docs}:
-                raise HTTPException(404, "Document not found")
-            try:
-                version = hashlib.sha256(store.get(b.doc_id, name)).hexdigest()
-            except FileNotFoundError:
-                raise HTTPException(404, "File not found") from None
-        else:
-            target = resource_name(target)
-            row = con.execute("SELECT updated_at,content FROM project_resources WHERE project_id=? AND name=?", (project_id, name)).fetchone()
-            if not row:
-                raise HTTPException(404, "Resource not found")
-            version = row[0]
-        references = []
-        library = {r[0]: r[1] for r in con.execute("SELECT name,content FROM project_resources WHERE project_id=?", (project_id,))}
-        for d in docs:
-            if b.doc_id and d['id'] != b.doc_id:
-                continue
-            local = projects.local_texts(d['id'])
-            local_names = {f.path for f in store.list(d['id'])}
-            live = sync.room_text(d['id'])
-            for path, content in {**library, **local, 'main.typ': live if live is not None else d['content']}.items():
-                if not path.lower().endswith('.typ'):
-                    continue
-                for match in resources.REF_RE.finditer(content):
-                    ref = match.group(1).replace('\\', '/')
-                    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), ref)) if not ref.startswith('/') else ref.lstrip('/')
-                    if resolved == name and (b.doc_id or name not in local_names):
-                        references.append(f"{d['title']}/{path}: {ref}")
-        return {"name": target, "version": version, "references": sorted(set(references))}
-    except OSError as e:
-        raise HTTPException(409, "Files changed or could not be read; retry rename preview") from e
-    finally:
-        con.close()
-
-
-@router.post("/api/projects/{project_id}/rename-entry")
-def rename_entry(project_id: str, b: EntryRename, req: Request, user: str = Depends(deps.me)) -> dict:
-    from backend.services.docfiles import file_type
-    from backend.services.locks import _named_lock
-
-    deps.limited(req, "rename")
-    old = safe_name(b.name)
-    target = safe_rename_target(b.target, old)
-    with _named_lock(f"upload:{b.doc_id}"):
-        renamed = False
-        source = destination = None
-        stat = None
-        version = b.version
-        if b.doc_id:
-            # FS work stays outside the write tx: holding BEGIN IMMEDIATE
-            # across disk I/O stalls every other writer. Permission is
-            # pre-checked here (fail fast) and re-checked inside the tx
-            # below; a lost race rolls the rename back there.
-            pre = db.connect()
-            try:
-                projects.require(pre, project_id, user, edit=True)
-                if not pre.execute("SELECT 1 FROM docs WHERE id=? AND project_id=? AND trashed=0",
-                                   (b.doc_id, project_id)).fetchone():
-                    raise HTTPException(404, "Document not found")
-                # #7: the new path must not collide with a sibling doc's local
-                # file (the source row is freed by the rename).
-                row = pre.execute("SELECT project_id FROM docs WHERE id=?", (b.doc_id,)).fetchone()
-                if row and row[0]:
-                    projects.assert_file_name_free(pre, row[0], target, exempt_files={(b.doc_id, old)})
-            finally:
-                pre.close()
-            source, destination = store.doc_path(b.doc_id, old), store.doc_path(b.doc_id, target)
-            if destination.exists():
-                raise HTTPException(409, "Name already exists")
-            if not source.is_file():
-                raise HTTPException(404, "File not found")
-            if b.version != hashlib.sha256(store.get(b.doc_id, old)).hexdigest():
-                raise HTTPException(409, "File changed; review rename again")
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                source.rename(destination)
-            except OSError as e:
-                raise HTTPException(409, "File changed or could not be renamed; retry rename preview") from e
-            renamed = True
-            stat = destination.stat()
-        try:
-            with db.tx() as con:
-                projects.require(con, project_id, user, edit=True)
-                if not b.doc_id:
-                    target = resource_name(target)
-                    if con.execute("SELECT 1 FROM project_resources WHERE project_id=? AND name=?", (project_id, target)).fetchone():
-                        raise HTTPException(409, "Name already exists")
-                    # #7: also no case-variant duplicate inside the module
-                    # namespace; the row being renamed is exempt.
-                    projects.assert_resource_name_free(con, project_id, target, exempt_name=old)
-                    row = con.execute("SELECT updated_at,content FROM project_resources WHERE project_id=? AND name=?", (project_id, old)).fetchone()
-                    if not row:
-                        raise HTTPException(404, "Resource not found")
-                    if b.version != row[0]:
-                        raise HTTPException(409, "Resource changed; review rename again")
-                    version = db.now_iso()
-                    con.execute("UPDATE project_resources SET name=?,updated_at=? WHERE project_id=? AND name=?", (target, version, project_id, old))
-                else:
-                    if not con.execute("SELECT 1 FROM docs WHERE id=? AND project_id=? AND trashed=0", (b.doc_id, project_id)).fetchone():
-                        raise HTTPException(404, "Document not found")
-                    assert stat is not None
-                    con.execute("DELETE FROM files WHERE doc_id=? AND path=?", (b.doc_id, old))
-                    con.execute("INSERT INTO files(doc_id,path,size,mtime,type) VALUES (?,?,?,?,?)", (b.doc_id, target, stat.st_size, stat.st_mtime, file_type(target)))
-        except Exception as e:
-            if renamed and destination is not None and source is not None:
-                try:
-                    if destination.exists() and not source.exists():
-                        destination.rename(source)
-                except OSError:
-                    pass
-                renamed = False
-            if isinstance(e, sqlite3.IntegrityError):
-                raise HTTPException(409, "Name already exists") from e
-            if isinstance(e, OSError):
-                raise HTTPException(409, "File changed or could not be renamed; retry rename preview") from e
-            raise
-    projects.notify(project_id)
-    return {"name": target, "version": version}
-
-
 class TransferEntry(BaseModel):
     target_project_id: str
-    kind: Literal['document', 'resource', 'file']
+    kind: Literal['document', 'file']  # file: name = project path
     doc_id: str = ''
     name: str = ''
-    target_doc_id: str = ''
     target_name: str = Field(default='', max_length=240)
     target_folder: str | None = None
     move: bool = False
@@ -468,7 +245,7 @@ async def transfer_entry(project_id: str, b: TransferEntry, req: Request, user: 
     if b.duplicate and (b.move or b.target_project_id != project_id):
         raise HTTPException(400, 'Duplicate stays in the source project')
     audience = doc_users(b.doc_id) if b.kind == 'document' else []
-    result = await asyncio.to_thread(transfer, project_id, b.target_project_id, b.kind, b.doc_id, b.name, b.target_doc_id, b.target_name, b.move, user, b.duplicate, b.target_folder, deps.req_lang(req))
+    result = await asyncio.to_thread(transfer, project_id, b.target_project_id, b.kind, b.doc_id, b.name, b.target_name, b.move, user, b.duplicate, b.target_folder, deps.req_lang(req))
     if b.move and b.kind == 'document':
         for username in audience:
             sync.drop_role_cache(username)
@@ -478,54 +255,72 @@ async def transfer_entry(project_id: str, b: TransferEntry, req: Request, user: 
     return result
 
 
+class ConvertEntry(BaseModel):
+    doc_id: str = Field(default='', max_length=100)  # this document becomes <folder>/<Title>.typ
+    path: str = Field(default='', max_length=240)  # or this .typ file becomes a document
+
+
+@router.post('/api/projects/{project_id}/convert')
+async def convert_entry(project_id: str, b: ConvertEntry, req: Request, user: str = Depends(deps.me)) -> dict:
+    """A document becomes a .typ project file or a .typ file a document; the old entry goes to the trash.
+    `broken` lists the texts that still quote a converted file (documents cannot be included)."""
+    deps.limited(req, 'move')
+    if bool(b.doc_id) == bool(b.path):
+        raise HTTPException(400, 'Convert either a document or a file')
+    if b.doc_id:
+        deps.check_doc_id(b.doc_id)
+        return await project_files.doc_to_file(project_id, b.doc_id, user)
+    return await asyncio.to_thread(project_files.file_to_doc, project_id, b.path, user)
+
+
 @router.post('/api/projects/{project_id}/import-zip')
-def import_project_source(project_id: str, f: UploadFile, req: Request, title: str = Form(...), folder: str = Form(''), user: str = Depends(deps.me)) -> dict:
+def import_project_source(project_id: str, f: UploadFile, req: Request, folder: str = Form(''), documents: str = Form('[]'), user: str = Depends(deps.me)) -> dict:
     from backend.constants import UPLOAD_MAX
-    from backend.services.projectzip import import_project_zip
+    from backend.services.projectzip import import_project_zip, listed
 
     deps.limited(req, 'create')
     data = f.file.read(UPLOAD_MAX + 1)
-    return import_project_zip(user, title, folder, data, project_id)
+    return import_project_zip(user, data, listed(documents), folder=folder, project_id=project_id)
 
 
 @router.get('/api/projects/{project_id}/export-zip')
 def export_project_zip(project_id: str, req: Request, user: str = Depends(deps.me)):
+    """The whole tree: documents as <folder>/<Title>.typ next to every project file the user may see."""
     import io
+    import posixpath
     import zipfile
 
     from fastapi.responses import Response
 
-    from backend import mcp_tools
+    from backend import render
     from backend.constants import EXPORT_MAX
 
     deps.limited(req, 'export_doc', user)
     con = db.connect()
     try:
         project = projects.payload(con, project_id, user)
-        allowed = {r['name'] for r in project['resources']}
-        library = {r['name']: r['content'] for r in con.execute('SELECT name,content FROM project_resources WHERE project_id=?', (project_id,)) if r['name'] in allowed}
+        texts = {d['id']: project_files.doc_text(d['id'], d['content']) for d in con.execute(
+            'SELECT id,content FROM docs WHERE project_id=? AND trashed=0', (project_id,))}
     finally:
         con.close()
     output = io.BytesIO()
-    total = 0
+    total, seen, skipped = 0, set(), []
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
         def write(name: str, content: bytes) -> None:
             nonlocal total
+            if name.casefold() in seen:
+                skipped.append(name)
+                return
+            seen.add(name.casefold())
             total += len(content)
             if total > EXPORT_MAX:
                 raise HTTPException(413, 'Project export too large (max 100 MB)')
             archive.writestr(name, content)
 
-        write('project.json', json.dumps({'title': project['title'], 'documents': [{k: d[k] for k in ('id', 'title', 'folder')} for d in project['documents']]}, ensure_ascii=False, indent=2).encode())
-        for name, content in library.items():
-            write('modules/' + name, content.encode())
         for doc in project['documents']:
-            deps.need_access(user, doc['id'])
-            main, files, skipped = mcp_tools._collect_export_source(doc['id'])
-            prefix = 'documents/' + doc['id'] + '/'
-            write(prefix + 'main.typ', main.encode())
-            for name, content in files:
-                write(prefix + name, content)
-            if skipped:
-                write(prefix + 'skipped.json', json.dumps(skipped).encode())
+            write(posixpath.join(doc['folder'], render._export_stem(doc['title']) + '.typ'), texts[doc['id']].encode())
+        for f in project['files']:
+            write(f['path'], project_files.read(project_id, f['path']))
+        if skipped:
+            archive.writestr('SKIPPED.txt', 'Files left out (same name as another file):\n' + '\n'.join(skipped) + '\n')
     return Response(output.getvalue(), media_type='application/zip', headers={'Content-Disposition': f'attachment; filename="project-{project_id}.zip"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})

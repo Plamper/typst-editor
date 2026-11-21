@@ -1,10 +1,8 @@
-// Resources: global per account (API), all three kinds in one list (.typ/.bib/.csv)
-// myTpl = OWN shelf (editable). docTpl (GET /api/docs/{id}/resources) is the
-// effective compile set of the open doc (owner's reachable names, read-only).
+// Personal templates: global per account (API), all kinds in one list (.typ/.bib/.csv/...)
+// myTpl = OWN shelf (editable). The open document compiles against its project files instead (see loadProjectFiles).
 let myTpl = [], tplFolders = []
 let docProject = '', docResReadonly = true
-let tplLoadN = 0, tplLoadP = null, docResAt = 0, docResN = 0, docResRefs = ''
-window.docTpl = []
+let tplLoadN = 0, tplLoadP = null
 async function loadTpl() { // list only: never touches editor text (SSE-safe, dirty editors survive)
   const n = ++tplLoadN, who = user
   let p = tplLoadP = (async () => {
@@ -12,7 +10,6 @@ async function loadTpl() { // list only: never touches editor text (SSE-safe, di
       const [r, f] = await Promise.all([api('GET', '/api/templates'), api('GET', '/api/tplfolders')])
       if (n !== tplLoadN || who !== user) return
       myTpl = r.templates; tplFolders = f.folders
-      if (docId && !docProject && isTplKey(activeFile) && tabDirty) { const row = myTpl.find(x => x.name === tabName(activeFile)); if (row) row.content = getT() }
     } catch (e) { return } // offline/error: keep the known shelf
     paintTpls()
     if (docId) queueRender()
@@ -20,37 +17,7 @@ async function loadTpl() { // list only: never touches editor text (SSE-safe, di
   await p
   while (p !== tplLoadP) { p = tplLoadP; await p } // superseded: wait for the list that really lands (callers open against it)
 }
-async function loadDocResources(force) {
-  if (!docId || (docRole === 'owner' && !docProject)) return true
-  const id = docId, epoch = openN
-  const refs = [...(activeFile ? shadow : getT()).matchAll(/"([^"\n]+\.(?:typ|bib|csv))"/gi)].map(m => m[1]).sort().join('|')
-  if (!force && Date.now() - docResAt < FILES_TTL && refs === docResRefs) return true
-  const n = ++docResN
-  const r = await api('GET', `/api/docs/${id}/resources`)
-  if (id !== docId || epoch !== openN || n !== docResN) return false
-  docResReadonly = r.readonly !== false
-  const oldRows = window.docTpl || []
-  window.docTpl = Object.entries(r.resources || {}).map(([name, content]) => ({ name, content, updated_at: r.versions?.[name] || '' }))
-  for (const row of window.docTpl) { // a late snapshot must not replace the row text a tab switch would load
-    const old = oldRows.find(x => x.name === row.name)
-    const seen = old && [old.updated_at, tabVersions.get(TPLK + row.name)].filter(Boolean).sort().pop()
-    if (old && row.updated_at && seen > row.updated_at) { row.content = old.content; row.updated_at = seen }
-  }
-  if (isTplKey(activeFile) && !window.changeSession) {
-    const row = window.docTpl.find(x => x.name === tabName(activeFile))
-    const stale = row && row.updated_at && (tabVersions.get(activeFile) || '') > row.updated_at // a late snapshot from before our save
-    if (row && (tabDirty || tabSaveFlight)) row.content = getT()
-    else if (row && !stale) {
-      if (getT() !== row.content) { setT(row.content); gutter(); refreshHl(); paintOutline() }
-      if (row.updated_at) tabVersions.set(activeFile, row.updated_at)
-    }
-  }
-  docResAt = Date.now(); docResRefs = refs
-  if (isTplKey(activeFile) && !window.changeSession) cm.dispatch({ effects: editableComp.reconfigure(editMode(tabCanEdit(activeFile))) })
-  tabSig = ''; queueTabs()
-  return true
-}
-const projectResources = () => docId && (docProject || docRole !== 'owner') ? window.docTpl : myTpl
+const fileRefs = () => lastFiles.map(f => refTo(f.path)) // completion labels: as the open text would quote them
 const RES_EXT = { template: '.typ', library: '.bib', table: '.csv', resource: '.typ', data: '.json' }
 const resLabel = kind => kind === 'library' ? t('templates.kindlibrary') : kind === 'table' ? t('templates.kindtable') : t('templates.kindModule')
 const resKind = t => (t && t.kind) || (((t || {}).name || '').toLowerCase().endsWith('.bib') ? 'library' : ((t || {}).name || '').toLowerCase().endsWith('.csv') ? 'table' : 'template')
@@ -101,7 +68,7 @@ function typstComplete(ctx) {
   const imp = before.match(/(import|include|image|bibliography|read|csv|json|yaml|toml|xml)\s*[( ]"([^"]*)$/)
   if (imp) { // after import/include/#image(": global templates + manager files
     const q = imp[2].toLowerCase()
-    const files = [...new Set([...projectResources().map(t => t.name), ...mediaNames])].filter(n => fuzzy(q, n))
+    const files = fileRefs().filter(n => fuzzy(q, n))
     return files.length ? { from: pos - imp[2].length, filter: false, options: files.slice(0, 50).map(n => ({ label: n, type: 'file' })) } : null
   }
   const rf = before.match(/#ref\s*\((<?)([^)>]*)$/)
@@ -218,7 +185,7 @@ function typstComplete(ctx) {
     if (imp || rf || ct || sr) return null // context recognized but empty (no labels/keys/params): no file noise
     const w = ctx.matchBefore(/[\p{ID_Continue}.\-/]*$/u)
     const pre = (w ? w.text : '').toLowerCase()
-    const files = [...new Set([...projectResources().map(t => t.name), ...mediaNames])].filter(n => fuzzy(pre, n))
+    const files = fileRefs().filter(n => fuzzy(pre, n))
     return files.length ? { from: w ? w.from : pos, filter: false, options: files.slice(0, 50).map(n => ({ label: n, type: 'file' })) } : null
   }
   return null

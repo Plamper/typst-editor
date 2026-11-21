@@ -30,6 +30,7 @@ function fix(v, n) {
   }
   return o
 }
+var queued = [], initFailed = false
 onmessage = function (e) {
   var j = e.data || {}
   if (j.cmd === 'init') {
@@ -39,9 +40,15 @@ onmessage = function (e) {
       api.setCompilerInitOptions({ getModule: function () { return j.compiler }, beforeBuild: [fonts] })
       T = api
       postMessage({ kind: 'ready' })
-    }).catch(function (err) { postMessage({ kind: 'ready', fail: String((err && err.message) || err) }) })
+      queued.splice(0).forEach(function (q) { onmessage({ data: q }) }) // work that arrived while the compiler was loading
+    }).catch(function (err) {
+      initFailed = true
+      postMessage({ kind: 'ready', fail: String((err && err.message) || err) })
+      queued.splice(0).forEach(function (q) { postMessage({ kind: 'done', id: q.id, fail: 'init' }) })
+    })
     return
   }
+  if (j.cmd === 'work' && !T && !initFailed) { queued.push(j); return } // first render before the compiler is up: wait for it instead of failing
   if (j.cmd !== 'work' || !T) { // pre-init work: fail the job (bare return would stall the pvTail queue forever)
     if (j.cmd === 'work' && j.id != null) postMessage({ kind: 'done', id: j.id, fail: 'init' })
     return
@@ -50,18 +57,16 @@ onmessage = function (e) {
     var diags = []
     var mapped = !j.full // incremental: the shadow files are still the ones the client sent last time
     try {
-      if (j.full) { // files/templates changed: full remap once, else only main.typ below (reset would wipe the shadow)
+      if (j.full) { // files changed: full remap once, else only the document text below (reset would wipe the shadow)
         await T.resetShadow()
-        var tp = j.tpl || []
-        for (var k2 = 0; k2 < tp.length; k2++) await T.mapShadow('/' + tp[k2].name, enc.encode(tp[k2].content))
         var fs = j.files || []
         for (var k = 0; k < fs.length; k++) await T.mapShadow('/' + fs[k].name, new Uint8Array(fs[k].bytes))
         mapped = true // survived the full block: a content error below must not resend every image
-      } // tpl first, files win: doc-local beats global on collision (see .update-review/resource-contract.md)
-      await T.addSource('/main.typ', j.main)
+      }
+      await T.addSource(j.mainPath, j.main) // the document sits in its folder: "../img/a.png" reaches the project root
       var c = await T.getCompiler()
       if (j.full) await c.reset() // remapped shadow only: resetting every keystroke drops the incremental cache
-      var r = await c.compile({ mainFilePath: '/main.typ', format: 1, diagnostics: 'full' })
+      var r = await c.compile({ mainFilePath: j.mainPath, format: 1, diagnostics: 'full' })
       var pdf = r.result
       try { diags = fix(r.diagnostics || [], 0) } catch (e2) {}
       if (pdf && pdf.length) {
@@ -88,18 +93,7 @@ function pvHash(b) { // FNV-1a over bytes: cheap change detector for text files 
   for (let i = 0; i < b.length; i++) { h ^= b[i]; h = Math.imul(h, 16777619) }
   return (h >>> 0).toString(36)
 }
-const pvFileSig = (n, c) => n + ':' + c.mtime + ':' + c.bytes.length + (c.bytes.length <= PV_HASH_MAX ? ':' + pvHash(c.bytes) : '')
-function pvResTpl() { // resolved templates this doc reaches (see .update-review/resource-contract.md)
-  try {
-    if (typeof usedTpls === 'function') {
-      const names = usedTpls(true) || []
-      const set = new Set(names)
-      if (typeof activeFile !== 'undefined' && activeFile && isTplKey(activeFile)) set.add(tabName(activeFile))
-      return projectResources().filter(x => set.has(x.name))
-    }
-  } catch (e) {}
-  return projectResources()
-}
+const pvFileSig = (n, c) => n + ':' + c.version + ':' + c.bytes.length + (c.bytes.length <= PV_HASH_MAX ? ':' + pvHash(c.bytes) : '')
 const pvJobs = new Map() // worker round-trips by job id
 let pvScale = 2, pvPageSize = null, pvSlots = [], pvObs = null // virtual list: one slot per page, only visible ones rasterized
 let pvZoomMode = 'page' // pct | width | page (persisted below; page is the calm default for a fresh browser)
@@ -187,7 +181,7 @@ function pvCall(job, id) { // one compile round-trip (rejects into the render er
       const w = pvEnsureWorker()
       if (!w || pvWorkerFail || !pvWorkerOk) { done(); bad(new Error(t('preview.compileFailed'))); return }
       const message = { ...job, full: job.sig !== pvSentSig || !pvMapped }
-      if (!message.full) { delete message.files; delete message.tpl }
+      if (!message.full) delete message.files
       let hang = 0 // a compile that never answers (wasm trap, hung package fetch) must not block every later render
       pvJobs.set(job.id, {
         ok: m => { clearTimeout(hang); pvSentSig = job.sig; pvMapped = true; done(); ok(m) },
@@ -222,40 +216,45 @@ function noteCompiler(preview) { // hint instead of endless rendering note (only
 setInterval(() => { // watchdog: dead render (init race, dropped retry) heals itself
   if (docId && !tplName && lastInfra && !$('preview').querySelector('.pvPage[data-done], canvas')) render()
 }, 3000)
-const fileCache = new Map() // name -> {mtime, bytes}: reload binaries only on change
+const fileCache = new Map() // project path -> {version, bytes}: reload only on change
 function queueRender() { clearTimeout(renderT); renderT = setTimeout(render, RENDER_MS) } // fixed 300ms compile debounce
 async function pvFiles() { // stale list after a co-editor deleted a file: refresh once, then compile without it
   try { return await pvFilesOnce() } catch (e) {
     if (!e || e.status !== 404) throw e
     filesDirty = true
-    if (e.fileName) { lastFiles = lastFiles.filter(f => f.name !== e.fileName); fileCache.delete(e.fileName) } // the dead file stays out even when the list refresh fails (429/offline): no endless 404 loop
+    if (e.fileName) { lastFiles = lastFiles.filter(f => f.path !== e.fileName); fileCache.delete(e.fileName) } // the dead file stays out even when the list refresh fails (429/offline): no endless 404 loop
     return pvFilesOnce()
   }
 }
-async function pvFilesOnce() { // file list + bytes + chips + bib keys (no compiler mapping: worker preview and main-thread export share it)
+async function loadProjectFiles(force) { // the project file list (compile root of the open document); false = superseded
+  if (!docId || !docProject) return true
+  if (!force && !filesDirty && Date.now() - filesAt < FILES_TTL) return true // list only when changed/stale, not per keystroke
+  const id = docId, epoch = openN, n = ++filesLoadN
+  let r
+  try { r = await api('GET', `/api/projects/${docProject}/files`) }
+  catch (e) { console.warn('file list stale, using cache', e); return id === docId && epoch === openN } // 429/offline: reuse lastFiles, no wipe
+  if (id !== docId || epoch !== openN || n !== filesLoadN) return false
+  lastFiles = r.files; docResReadonly = r.readonly !== false
+  filesDirty = false; filesAt = Date.now()
+  const sig = docResReadonly + '|' + lastFiles.map(f => f.path + ':' + f.version).join('|')
+  if (sig !== lastMedia) { lastMedia = sig; renderMediaChips(lastFiles); tabSig = ''; queueTabs() } // manager chips and tabs only on change
+  return true
+}
+let filesLoadN = 0
+async function pvFilesOnce() { // file list + bytes + bib keys (no compiler mapping: worker preview and main-thread export share it)
   const myDoc = docId, epoch = openN
   if (!myDoc) return null
-  if (!await loadDocResources() || myDoc !== docId || epoch !== openN) return null
-  if (filesDirty || Date.now() - filesAt > FILES_TTL) try { // list only when changed/stale, not per keystroke
-    const files = (await api('GET', `/api/docs/${myDoc}/files`)).files
-    if (myDoc !== docId) return null // doc switched meanwhile
-    lastFiles = files // only on success: failed list keeps old cache intact
-    filesDirty = false; filesAt = Date.now()
-    mediaNames = files.map(f => f.name)
-    const sig = files.map(f => f.name + f.size + ':' + f.mtime).join('|')
-    if (sig !== lastMedia) { lastMedia = sig; renderMediaChips(files) } // manager chips only on change
-  } catch (e) { console.warn('file list stale, using cache', e) } // 429/offline: reuse lastFiles below, no wipe
-  if (myDoc !== docId) return null
-  const files = lastFiles
+  if (!await loadProjectFiles() || myDoc !== docId || epoch !== openN) return null
+  const files = lastFiles, project = docProject
   const seen = new Set()
   await Promise.all(files.map(async f => { // parallel: no serial fetch for many files
-    seen.add(f.name)
-    const c = fileCache.get(f.name)
-    if (!(c && f.name === activeFile && tabDirty) && (!c || c.mtime !== f.mtime || c.bytes.length !== f.size)) { // an unsaved draft is cached by its live text: its length never matches the server size, so no refetch per keystroke
+    seen.add(f.path)
+    const c = fileCache.get(f.path)
+    if (!(c && f.path === activeFile && tabDirty) && (!c || c.version !== f.version)) { // an unsaved draft is cached by its live text: no refetch per keystroke
       let rr
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          rr = await fetch(`/api/docs/${myDoc}/files/` + encodeURIComponent(f.name))
+          rr = await fetch(fileUrl(f.path, project))
           if (rr.ok || rr.status < 500 || attempt) break
         } catch (e) { if (attempt) throw e }
         await new Promise(resolve => setTimeout(resolve, 500)) // one retry for network/server failures, never loop on denied/missing files
@@ -263,21 +262,20 @@ async function pvFilesOnce() { // file list + bytes + chips + bib keys (no compi
       }
       if (myDoc !== docId) return // next doc: drop, never fill its cache
       if (!rr.ok) {
-        const message = t('preview.fileLoadFailed', { name: f.name, status: rr.status })
-        throw Object.assign(new Error(message), { status: rr.status, fileName: f.name, diags: [{ severity: 'error', message }] }) // never compile with a missing or outdated input
+        const message = t('preview.fileLoadFailed', { name: f.path, status: rr.status })
+        throw Object.assign(new Error(message), { status: rr.status, fileName: f.path, diags: [{ severity: 'error', message }] }) // never compile with a missing or outdated input
       }
       const bytes = new Uint8Array(await rr.arrayBuffer())
       if (myDoc !== docId || epoch !== openN) return
-      if (f.name === activeFile && tabDirty) return // server bytes must not replace the live draft
-      fileCache.set(f.name, { mtime: f.mtime, bytes })
+      if (f.path === activeFile && tabDirty) return // server bytes must not replace the live draft
+      fileCache.set(f.path, { version: f.version, bytes })
       // All current inputs must survive until compilation; prune removed files below.
     }
   }))
   if (myDoc !== docId || epoch !== openN) return null // switched or reopened mid-fetch: the cache may be half filled, never compile it
   for (const k of [...fileCache.keys()]) if (!seen.has(k)) fileCache.delete(k)
-  const resTpl = pvResTpl()
-  const sig = myDoc + '\u0002' + [...fileCache].map(([n, c]) => pvFileSig(n, c)).join('|') + '\u0002' + resTpl.map(t => t.name + '\u0000' + t.content).join('\u0001')
-  if (sig !== pvBibSig) { // files/templates changed: recollect #cite sources once
+  const sig = myDoc + '\u0002' + docMain() + '\u0002' + [...fileCache].map(([n, c]) => pvFileSig(n, c)).join('|')
+  if (sig !== pvBibSig) { // files changed: recollect #cite sources once
     pvBibSig = sig
     bibKeys = []
     const bibSeen = new Set()
@@ -292,26 +290,24 @@ async function pvFilesOnce() { // file list + bytes + chips + bib keys (no compi
       if (!/\.bib$/i.test(n)) continue
       try { collect(dec.decode(c.bytes)) } catch (e) {}
     }
-    for (const tp of resTpl) if (/\.bib$/i.test(tp.name)) collect(tp.content)
   }
-  return { sig, tpl: resTpl, doc: myDoc }
+  return { sig, doc: myDoc }
 }
-async function shadowAll(main) { // files + templates as shadow: main-thread fallback and PDF/SVG export share it
+async function shadowAll(main) { // project files as shadow, the document at docMain(): main-thread fallback and PDF/SVG export share it
   const id = docId, epoch = openN
   const pf = await pvFiles()
   const current = () => id === docId && epoch === openN
   if (!pf || !current()) return false
-  if (pf.sig !== shadowSig) { // files/templates changed: full remap once, else only main.typ below
+  if (pf.sig !== shadowSig) { // files changed: full remap once, else only the document text below
     shadowSig = '' // half-mapped on throw: force remap next time
     await $typst.resetShadow()
     const comp = await $typst.getCompiler()
     await comp.reset() // remapped shadow only: resetting every keystroke drops the incremental cache
     if (!current()) return false
-    for (const t of (pf.tpl || pvResTpl())) { await $typst.mapShadow('/' + t.name, new TextEncoder().encode(t.content)); if (!current()) return false }
     for (const [n, c] of fileCache) { await $typst.mapShadow('/' + n, c.bytes); if (!current()) return false }
     shadowSig = pf.sig
   }
-  await $typst.addSource('/main.typ', main)
+  await $typst.addSource(docMain(), main)
   return current()
 }
 const pvStale = (id, myDoc, myTplName) => id < shownN || myDoc !== docId || myTplName !== tplName // a newer result is on screen: drop older work
@@ -330,12 +326,7 @@ function pvSrcList() { // live source texts for honest cross-file anchors: [{key
         out.push({ key: n, text })
       } catch (e) {}
     }
-    if (activeFile && !isTplKey(activeFile) && !out.some(s => s.key === activeFile)) out.push({ key: activeFile, text: getT() })
-    for (const t of pvResTpl()) {
-      const k = TPLK + t.name
-      if (out.some(s => s.key === k)) continue
-      out.push({ key: k, text: isTplKey(activeFile) && tabName(activeFile) === t.name ? getT() : (t.content || '') })
-    }
+    if (activeFile && !out.some(s => s.key === activeFile)) out.push({ key: activeFile, text: getT() })
   } catch (e) {}
   return out
 }
@@ -354,13 +345,12 @@ async function render() {
   cmpWait = 0; typstT0 = 0; $('cdnLine').style.display = 'none'
   let wDiags = null, doc = null // worker diags of this render: empty-pdf failures tag along (compile resolves, pdf.js throws)
   try {
-    const main = window.changeSession ? sessionMainText() : activeFile ? shadow : getT() // file tab: preview still compiles main.typ
+    const main = window.changeSession ? sessionMainText() : activeFile ? shadow : getT() // file tab: preview still compiles the document text
     const pf = await pvFiles()
     if (!pf) { if (myEpoch === openN && myDoc === docId) queueRender(); return } // a resource poll superseded the list load: retry, no other render would
     if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted compile
-    const job = { cmd: 'work', id: ++pvJobN, main, sig: pf.sig,
-      files: [...fileCache].map(([n, c]) => ({ name: n, bytes: c.bytes })),
-      tpl: (pf.tpl || []).map(x => ({ name: x.name, content: x.content })) }
+    const job = { cmd: 'work', id: ++pvJobN, main, mainPath: docMain(), sig: pf.sig,
+      files: [...fileCache].map(([n, c]) => ({ name: n, bytes: c.bytes })) }
     const m = await pvCall(job, id) // compile off the main thread: typing stays fluid
     if (!m || m.skip || pvStale(id, myDoc, myTplName)) return
     wDiags = m.diags
@@ -946,7 +936,7 @@ function saveDocScroll() { // scroll, doc switch and pagehide write the latest s
   const all = scrollMap() // merge with what another tab may have written: only this document changes below
   const prev = all[docId] && typeof all[docId] === 'object' ? all[docId] : {}
   const e = Object.assign({}, prev)
-  if (!activeFile && cm.scrollDOM.clientHeight) { // file tab or hidden editor: keep the document's own main.typ spot
+  if (!activeFile && cm.scrollDOM.clientHeight) { // file tab or hidden editor: keep the document's own the document text spot
     const ed = cm.scrollDOM, block = cm.lineBlockAtHeight(ed.scrollTop)
     e.l = cm.state.doc.lineAt(block.from).number
     e.lo = Math.max(0, Math.round(ed.scrollTop - block.top))
@@ -1013,10 +1003,10 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
     renderDirect.tail = new Promise(r => { release = r })
     await prev
     try {
-      await shadowAll(window.changeSession ? sessionMainText() : activeFile ? shadow : getT()) // file tab: preview still compiles main.typ
+      await shadowAll(window.changeSession ? sessionMainText() : activeFile ? shadow : getT()) // file tab: preview still compiles the document text
       if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted full compile
       const compiler = await $typst.getCompiler()
-      cmp = await compiler.compile({ mainFilePath: '/main.typ', format: 1, diagnostics: 'full' }) // 1 = pdf: bytes + diagnostics in one compile
+      cmp = await compiler.compile({ mainFilePath: docMain(), format: 1, diagnostics: 'full' }) // 1 = pdf: bytes + diagnostics in one compile
     } finally { release() }
     if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted pdfjs work
     doc = await pdfjsLib.getDocument({ data: cmp.result }).promise
@@ -1080,16 +1070,15 @@ let lastErrToast = '' // same non-line error: toast once, not per render
 let errKey = '', errLines = [], cmpDiags = [] // compiler errors: lint renders ranges (F1+F20), badge keeps one row per line
 function keyForPath(path) { // compiler path -> tab key (null: package or unknown file, nowhere to jump)
   const n = String(path || '').replace(/^\//, '')
-  if (!n || n === 'main.typ') return n ? '' : null
-  if (lastFiles.some(x => x.name === n)) return n
-  if (projectResources().some(x => x.name === n)) return TPLK + n
-  return null
+  if (!n) return null
+  if (/(^|\/)__doc__\.typ$/.test(n)) return ''
+  return lastFiles.some(x => x.path === n) ? n : null
 }
 function clearErr() { errKey = ''; errLines = []; cmpDiags = []; errTipHide(); cm.dispatch({ effects: setErrLine.of(RangeSet.of([])) }); cm.dispatch(setDiagnostics(cm.state, [])); updErrBadge() }
 async function errDiags() { // fallback only: pre-compile failure (render reuses its own compile)
   if (!typstReady()) return []
   try {
-    const r = await (await $typst.getCompiler()).compile({ mainFilePath: '/main.typ', diagnostics: 'full' }) // vector default is fine here, diagnostics is what matters
+    const r = await (await $typst.getCompiler()).compile({ mainFilePath: docMain(), diagnostics: 'full' }) // vector default is fine here, diagnostics is what matters
     return (r.diagnostics || []).filter(d => d.severity === 'error')
   } catch (err) { return [{ severity: 'error', message: String((err && err.message) || err || t('preview.compileFailed')) }] }
 }
@@ -1143,12 +1132,12 @@ function paintErr() { // compile errors via lint (F1): every column range render
   const doc = cm.state.doc, diags = [], byLine = new Map(), general = []
   for (const d of cmpDiags) {
     const msg = (d && d.message) || t('preview.typstErrorBare')
-    const r = d && d.path === tabPath(activeFile) ? diagRange(d, doc) : null // marks for the text in the editor (main.typ or the open tab)
+    const r = d && d.path === tabPath(activeFile) ? diagRange(d, doc) : null // marks for the text in the editor (the document text or the open tab)
     if (r) {
       diags.push({ from: r.from, to: r.to, severity: 'error', message: msg + (d.hints && d.hints.length ? '\n' + d.hints.map(h => 'â†’ ' + h).join('\n') : ''), source: 'typst' })
       if (!byLine.has(r.line)) byLine.set(r.line, { line: r.line, col: r.explicit ? r.col : 0, from: r.from, to: r.to, raw: msg, msg: msg + t('preview.lineSuffix', { line: r.line, col: r.explicit ? ':' + r.col : '' }) })
     } else { // foreign file (package) or no position: no mark possible, but never drop it
-      let where = (d && d.package ? d.package + ' ' : '') + (d && d.path && d.path !== '/main.typ' ? d.path : '')
+      let where = (d && d.package ? d.package + ' ' : '') + (d && d.path && !/(^|\/)__doc__\.typ$/.test(d.path) ? d.path : '')
       const at = String((d && (d.range || d.span || d.location)) || '').match(/(\d+)/)
       if (where && at) where += ':' + (+at[1] + 1)
       const full = (where ? where + ' Â· ' : '') + msg

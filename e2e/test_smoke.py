@@ -2,7 +2,7 @@
 import struct
 import zlib
 
-from helpers import create_doc, login, register, type_source
+from helpers import create_doc, doc_project, login, put_file, register, type_source
 from playwright.sync_api import expect
 
 PREVIEW_TIMEOUT = 60_000  # first compile downloads the WASM compiler
@@ -58,10 +58,7 @@ def test_5_upload_file_and_include(page):
     create_doc(page, "Image doc")
     docs = page.request.get("/api/docs").json()["own"]
     doc_id = next(d["id"] for d in docs if d["title"] == "Image doc")
-    r = page.request.post(
-        f"/api/docs/{doc_id}/files",
-        multipart={"f": {"name": "pixel.png", "mimeType": "image/png", "buffer": _png_1x1()}},
-    )
+    r = put_file(page.request, doc_project(page.request, doc_id), "pixel.png", _png_1x1())
     assert r.ok, r.text()
     type_source(page, '#image("pixel.png", width: 2cm)')
     expect(page.locator("#preview canvas").first).to_be_visible(timeout=PREVIEW_TIMEOUT)

@@ -1,7 +1,7 @@
 """Sidebar search: filter menu, scoped tree matches, content hits and find handoff."""
 from playwright.sync_api import expect
 
-from e2e.helpers import register
+from e2e.helpers import put_file, register
 
 
 def _setup(page, name):
@@ -11,8 +11,7 @@ def _setup(page, name):
     did = created["id"]
     doc = next(d for d in page.request.get("/api/docs").json()["own"] if d["id"] == did)
     pid = doc["project_id"]
-    assert page.request.post(f"/api/projects/{pid}/resources", data={
-        "name": "assets/sub/bild1.typ", "content": "#let bananaphone = 1"}).ok
+    assert put_file(page.request, pid, "assets/sub/bild1.typ", "#let bananaphone = 1").ok
     assert page.request.post(f"/api/projects/{pid}/folders", data={"path": "assets/leer"}).ok
     assert page.request.post("/api/projects", data={"title": "Beta project"}).ok
     page.reload()

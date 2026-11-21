@@ -1,4 +1,4 @@
-"""Explicit copies and moves between project namespaces."""
+"""Explicit copies and moves of documents and files between projects."""
 from __future__ import annotations
 
 from contextlib import ExitStack
@@ -6,38 +6,36 @@ from contextlib import ExitStack
 from fastapi import HTTPException
 
 from backend import config, db, sync
-from backend.services import projects, quota, resources
-from backend.services.docfiles import file_type, safe_name, store
-from backend.services.locks import _named_lock
+from backend.services import project_files, projects, quota, resources
+from backend.services.docfiles import safe_name
 
 
 def transfer(source: str, target: str, kind: str, doc_id: str, name: str,
-             target_doc: str, target_name: str, move: bool, user: str, duplicate: bool = False,
+             target_name: str, move: bool, user: str, duplicate: bool = False,
              target_folder: str | None = None, lang: str = "en") -> dict:
+    """kind 'document': doc_id (target_name = title, target_folder); the project files it reaches come along
+    into another project unless the same bytes are already there. kind 'file': name = project path, target_name
+    = path in the target project."""
     new_id = db.new_id('d_') if kind == 'document' and not move else doc_id
     folder: str | None = None
     if target_folder is not None:
         folder = (target_folder or '').strip().strip('/')
         if folder:
             folder = safe_name(folder + '/x', new=True)[:-2]
-    backups: dict[tuple[str, str], bytes | None] = {}
+    backups: project_files.Backups = {}
     source_owner = target_owner = ''
     with ExitStack() as locks:
-        for did in sorted({doc_id, target_doc, new_id} - {''}):
-            locks.enter_context(_named_lock(f'upload:{did}'))
+        for pid in sorted({source, target}):
+            locks.enter_context(project_files.lock(pid))
         try:
             with db.tx() as con:
                 projects.require(con, source, user, edit=move)
                 projects.require(con, target, user, edit=True)
-                source_owner = con.execute('SELECT owner FROM projects WHERE id=?', (source,)).fetchone()[0]
-                target_owner = con.execute('SELECT owner FROM projects WHERE id=?', (target,)).fetchone()[0]
+                source_owner = project_files.owner_of(con, source)
+                target_owner = project_files.owner_of(con, target)
                 if move and source_owner != target_owner and user != source_owner:
                     raise HTTPException(403, 'Only the source owner can move content to another owner')
-                shelf = {r[0]: r[1] for r in con.execute('SELECT name,content FROM project_resources WHERE project_id=?', (source,))}
-                copies = {}
-                writes: dict[tuple[str, str], bytes] = {}
-                deletes: list[tuple[str, str]] = []
-                now = db.now_iso()
+                copies: dict[str, bytes] = {}
                 if kind == 'document':
                     d = con.execute('SELECT * FROM docs WHERE id=? AND project_id=? AND trashed=0', (doc_id, source)).fetchone()
                     if not d:
@@ -56,126 +54,47 @@ def transfer(source: str, target: str, kind: str, doc_id: str, name: str,
                         raise HTTPException(409, 'Name already exists in target folder')
                     live = sync.room_snapshot(doc_id)
                     yjs, text = live if live is not None else (d['yjs'], d['content'])
-                    local = projects.local_texts(doc_id)
-                    copies = {n: c for n, c in resources.reachable_closure(shelf, local, text).items() if n not in local}
-                    if not move:
-                        # The project sidebar merges all document attachments
-                        # into one namespace. A copy in the same project (or a
-                        # target that already has the exact path) keeps using
-                        # that existing file instead of adding duplicate rows.
-                        # A case-only match must not be skipped silently: the
-                        # reference resolver and disk are case-sensitive, so
-                        # the copied document would point at a missing file.
-                        present = {r[0] for r in con.execute(
-                            "SELECT f.path FROM files f JOIN docs d ON d.id=f.doc_id "
-                            "WHERE d.project_id=? AND d.trashed=0", (target,))}
-                        present_case = {p.casefold(): p for p in present}
-                        writes = {}
-                        for entry in store.list(doc_id):
-                            other = present_case.get(entry.path.casefold())
-                            if other is not None and other != entry.path:
-                                raise HTTPException(409, f'File name differs only by case: {other}')
-                            if entry.path not in present:
-                                writes[(new_id, entry.path)] = store.get(doc_id, entry.path)
-                    extra = len(text.encode()) + sum(len(v) for v in writes.values())
-                    if move:
-                        extra = len(text.encode()) + len(yjs or b'') - len(d['content'].encode()) - len(d['yjs'] or b'') if source_owner == target_owner else len(text.encode()) + sum(f.size for f in store.list(doc_id)) + len(yjs or b'') + con.execute('SELECT COALESCE(SUM(LENGTH(CAST(content AS BLOB))),0) FROM snapshots WHERE doc_id=?', (doc_id,)).fetchone()[0]
+                    if source != target:
+                        paths = {r[0] for r in con.execute('SELECT path FROM project_files WHERE project_id=?', (source,))}
+                        for path in sorted(resources.reachable(paths, project_files.texts(con, source), d['folder'], text)):
+                            data = project_files.read(source, path)
+                            there = con.execute('SELECT version FROM project_files WHERE project_id=? AND path=? COLLATE NOCASE', (target, path)).fetchone()
+                            if there and there[0] != project_files.version(data):
+                                raise HTTPException(409, f'File name conflict in the target project: {path}')
+                            if not there:
+                                copies[path] = data
                     if (not move or source_owner != target_owner) and con.execute('SELECT COUNT(*) FROM docs WHERE owner=?', (target_owner,)).fetchone()[0] >= config.load().MAX_DOCS_PER_USER:
                         raise HTTPException(400, 'Too many docs')
-                elif kind == 'resource':
-                    from backend.routers.projects import resource_name
-                    name = resource_name(name)
-                    if duplicate:
-                        number = 1
-                        target_name = resources.copy_name(name, number, lang=lang)
-                        while con.execute('SELECT 1 FROM project_resources WHERE project_id=? AND name=?', (target, target_name)).fetchone():
-                            number += 1
-                            target_name = resources.copy_name(name, number, lang=lang)
-                    target_name = resource_name(target_name, new=True)
-                    if name not in shelf:
-                        raise HTTPException(404, 'Module not found')
-                    if source == target and move and name == target_name:
-                        return {'name': name, 'doc_id': doc_id}
-                    # Reuse dependency mapping and relative reference rewriting from library pulls.
-                    from backend.routers.library_copy import Pull, inspect_pull
-                    inspected = inspect_pull(con, user, Pull(source_scope='project', source_project_id=source, source=name, scope='project', project_id=target, name=target_name))
-                    if target_name in inspected['collisions']:
-                        raise HTTPException(409, 'Module or dependency name exists in target project')
-                    copies = inspected['content']
-                    extra = 0
-                    if move:
-                        con.execute('DELETE FROM project_resources WHERE project_id=? AND name=?', (source, name))
-                else:
-                    name = safe_name(name)
-                    if duplicate:
-                        target_doc = doc_id
-                        number = 1
-                        target_name = resources.copy_name(name, number, lang=lang)
-                        while store.stat(target_doc, target_name):
-                            number += 1
-                            target_name = resources.copy_name(name, number, lang=lang)
-                    target_name = safe_name(target_name, new=True)
-                    if not con.execute('SELECT 1 FROM docs WHERE id=? AND project_id=? AND trashed=0', (doc_id, source)).fetchone() or not con.execute('SELECT 1 FROM docs WHERE id=? AND project_id=? AND trashed=0', (target_doc, target)).fetchone():
-                        raise HTTPException(404, 'Source or target document not found')
-                    if (doc_id, name) == (target_doc, target_name):
-                        raise HTTPException(409, 'Choose another target name')
-                    if store.stat(target_doc, target_name):
-                        raise HTTPException(409, 'Name already exists in target project')
-                    # #7: the sidebar shows every doc's local files as one
-                    # list, so a copied file must stay unique among them.
-                    # A move inside this project frees the source row, copies
-                    # do not.
-                    exempt = {(target_doc, target_name)}
-                    if move and source == target:
-                        exempt.add((doc_id, name))
-                    projects.assert_file_name_free(con, target, target_name, exempt_files=exempt)
-                    try:
-                        data = store.get(doc_id, name)
-                    except FileNotFoundError:
-                        raise HTTPException(404, 'File not found') from None
-                    if len(store.list(target_doc)) >= config.load().MAX_FILES_PER_DOC:
-                        raise HTTPException(400, 'Too many files')
-                    writes[(target_doc, target_name)] = data
-                    extra = len(data) if not move or source_owner != target_owner else 0
-                    if move:
-                        deletes.append((doc_id, name))
-                additions = {}
-                for n, content in copies.items():
-                    old = con.execute('SELECT content FROM project_resources WHERE project_id=? AND name=?', (target, n)).fetchone()
-                    if old and old[0] != content:
-                        raise HTTPException(409, f'Module name conflict: {n}')
-                    if not old:
-                        additions[n] = content
-                quota.check_quota(target_owner, extra + sum(len(v.encode()) for v in additions.values()), con)
-                for n, content in additions.items():
-                    con.execute('INSERT INTO project_resources VALUES (?,?,?,?)', (target, n, content, now))
-                if kind == 'document':
+                    now = db.now_iso()
                     if move:
                         con.execute('UPDATE docs SET project_id=?,owner=?,title=?,folder=?,content=?,yjs=?,updated_at=? WHERE id=?', (target, target_owner, title, dest_folder, text, yjs, now, doc_id))
                         if source != target:
                             con.execute('DELETE FROM invites WHERE doc_id=?', (doc_id,))
                     else:
                         con.execute('INSERT INTO docs(id,owner,title,content,folder,project_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)', (new_id, target_owner, title, text, dest_folder, target, now, now))
-                for (did, path), data in writes.items():
-                    backups[(did, path)] = None
-                    store.put(did, path, data)
-                    f = store.stat(did, path)
-                    assert f is not None
-                    con.execute('INSERT INTO files(doc_id,path,size,mtime,type) VALUES (?,?,?,?,?)', (did, path, f.size, f.mtime, file_type(path)))
-                for did, path in deletes:
-                    backups[(did, path)] = store.get(did, path)
-                    store.delete(did, path)
-                    con.execute('DELETE FROM files WHERE doc_id=? AND path=?', (did, path))
-        except Exception:
-            for (did, path), original in backups.items():
-                if original is None:
-                    store.delete(did, path)
                 else:
-                    store.put(did, path, original)
+                    name = project_files.clean(name, new=False)
+                    if duplicate:
+                        number = 1
+                        target_name = resources.copy_name(name, number, lang=lang)
+                        while con.execute('SELECT 1 FROM project_files WHERE project_id=? AND path=? COLLATE NOCASE', (target, target_name)).fetchone():
+                            number += 1
+                            target_name = resources.copy_name(name, number, lang=lang)
+                    target_name = project_files.clean(target_name or name)
+                    if (source, name) == (target, target_name):
+                        raise HTTPException(409, 'Choose another target name')
+                    if con.execute('SELECT 1 FROM project_files WHERE project_id=? AND path=? COLLATE NOCASE', (target, target_name)).fetchone():
+                        raise HTTPException(409, 'Name already exists in target project')
+                    copies[target_name] = project_files.remove(con, source, name, backups) if move else project_files.read(source, name)
+                for path, data in copies.items():
+                    project_files.put(con, target, path, data, backups)
+                quota.check_quota(target_owner, 0, con)
+        except Exception:
+            project_files.undo(backups)
             raise
     quota.invalidate_quota_cache(source_owner)
     quota.invalidate_quota_cache(target_owner)
     projects.notify(source)
     if target != source:
         projects.notify(target)
-    return {'doc_id': new_id if kind == 'document' else target_doc, 'name': target_name}
+    return {'doc_id': new_id if kind == 'document' else '', 'name': target_name}

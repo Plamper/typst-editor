@@ -3,14 +3,15 @@ read-mode, notifications, migration backups, FileStore."""
 import sqlite3
 
 import pytest
-from conftest import login, make_doc, register_user
+from conftest import login, make_doc, project_of, put_file, register_user
 
 from backend import auth, db, deps
 from backend.routers.events import match_event, split_event
 from backend.services import notifications as notif_svc
+from backend.services import project_files
 from backend.services import quota as quota_svc
 from backend.services import sidebar as sidebar_svc
-from backend.services.docfiles import LocalFileStore, safe_name, sync_doc_files
+from backend.services.docfiles import LocalFileStore, safe_name
 
 
 def _watch(user):
@@ -32,7 +33,7 @@ def _old_db(tmp_path, monkeypatch):
     db.init_db()
     con = db.connect()
     try:
-        con.execute("DROP TABLE files")
+        con.execute("DROP TABLE IF EXISTS files")
         con.execute("DROP TABLE notifications")
         con.execute("DROP TABLE read_tokens")
         con.execute("DELETE FROM schema_version WHERE v >= 13")
@@ -54,34 +55,29 @@ def _old_db(tmp_path, monkeypatch):
     return tmp_path / "old.db"
 
 
-def test_migrate_v13_backfills_files_table(tmp_path, monkeypatch):
+def test_migrate_v13_to_v34_moves_old_attachments(tmp_path, monkeypatch):
     dbpath = _old_db(tmp_path, monkeypatch)
     con = db.connect()
     try:
         assert con.execute("SELECT COUNT(*) AS n FROM schema_version WHERE v<=13").fetchone()["n"] == 12
-        con.execute("SELECT 1 FROM files").fetchone()
-        raise AssertionError("files should not exist yet")
-    except sqlite3.OperationalError:
-        pass  # expected: old schema
-    finally:
-        con.close()
-    con = db.connect()
-    try:
         db.migrate(con)
         con.commit()
-        rows = con.execute("SELECT path, size FROM files ORDER BY path").fetchall()
+        pid = con.execute("SELECT project_id FROM docs WHERE id='d_x'").fetchone()[0]
+        rows = con.execute("SELECT path, size FROM project_files WHERE project_id=? ORDER BY path", (pid,)).fetchall()
         assert [(r["path"], r["size"]) for r in rows] == [("a.png", 10), ("sub/b.typ", 2)]
         assert con.execute("SELECT COUNT(*) AS n FROM schema_version WHERE v<=13").fetchone()["n"] == 13
         assert con.execute("SELECT COUNT(*) AS n FROM notifications").fetchone()["n"] == 0
     finally:
         con.close()
     assert dbpath.is_file()
-    # Re-run: idempotent, no duplicate rows, no second backup.
+    assert (tmp_path / "files" / pid / "a.png").read_bytes() == b"1234567890"
+    assert (tmp_path / "files" / "d_orphan" / "x.png").is_file()  # no doc row: left alone
+    # Re-run: idempotent, no duplicate rows.
     con = db.connect()
     try:
         db.migrate(con)
         con.commit()
-        assert con.execute("SELECT COUNT(*) AS n FROM files").fetchone()["n"] == 2
+        assert con.execute("SELECT COUNT(*) AS n FROM project_files").fetchone()["n"] == 2
     finally:
         con.close()
 
@@ -117,41 +113,42 @@ def test_quota_reads_table_not_disk(c):
     from backend import deps as _deps
 
     register_user(c, "alice")
-    did = make_doc(c, "Q")
+    pid = project_of(c, make_doc(c, "Q"))
     base = quota_svc.user_bytes("alice")
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("a.png", b"x" * 100)}).status_code == 200
+    v = put_file(c, pid, "a.png", b"x" * 100).json()["version"]
     assert quota_svc.user_bytes("alice") == base + 100
-    # Bypass: raw disk write is invisible until the next listing (contract).
-    (_deps.get_files_dir() / did / "sneaky.png").write_bytes(b"y" * 50)
+    # A raw disk write outside the service is never counted (nor listed).
+    (_deps.get_files_dir() / pid / "sneaky.png").write_bytes(b"y" * 50)
     assert quota_svc.user_bytes("alice") == base + 100
-    assert c.get(f"/api/docs/{did}/files").status_code == 200
-    assert quota_svc.user_bytes("alice") == base + 150
-    assert c.delete(f"/api/docs/{did}/files/sneaky.png").status_code == 200
+    assert [f["path"] for f in c.get(f"/api/projects/{pid}/files").json()["files"]] == ["a.png"]
+    assert c.delete(f"/api/projects/{pid}/files/a.png", params={"version": v}).status_code == 200
     # Delete archives to trash (trash_entries counts toward quota until emptied).
-    assert quota_svc.user_bytes("alice") == base + 150
-    trash = c.get("/api/docs").json()["trash"]
-    assert any(x.get("title") == "sneaky.png" for x in trash)
-    for x in [t for t in trash if t.get("title") == "sneaky.png"]:
-        if x.get("kind"):
-            assert c.delete(f"/api/trash/{x['id']}").status_code == 200
     assert quota_svc.user_bytes("alice") == base + 100
+    entry = next(t for t in c.get("/api/docs").json()["trash"] if t.get("title") == "a.png")
+    assert c.delete(f"/api/trash/{entry['id']}").status_code == 200
+    assert quota_svc.user_bytes("alice") == base
 
 
-def test_hard_delete_drops_file_rows(c):
+def test_project_files_outlive_documents_until_the_project_goes(c):
     register_user(c, "alice")
     did = make_doc(c, "Weg")
+    pid = project_of(c, did)
     pre = quota_svc.user_bytes("alice")
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("a.png", b"x" * 40)}).status_code == 200
+    assert put_file(c, pid, "a.png", b"x" * 40).status_code == 200
     assert quota_svc.user_bytes("alice") == pre + 40
     assert c.delete(f"/api/docs/{did}").status_code == 200  # trash
-    assert c.delete(f"/api/docs/{did}").status_code == 200  # hard delete
+    assert c.delete(f"/api/docs/{did}").status_code == 200  # hard delete: the files belong to the project
+    assert quota_svc.user_bytes("alice") == pre + 40 - 2
+    other = c.post(f"/api/projects/{pid}/docs", json={"title": "Rest"}).json()["id"]
+    assert c.delete(f"/api/projects/{pid}").status_code == 200
+    assert c.delete("/api/trash").json()["documents"] == [other]
     con = db.connect()
     try:
-        assert con.execute("SELECT COUNT(*) AS n FROM files WHERE doc_id=?", (did,)).fetchone()["n"] == 0
+        assert con.execute("SELECT COUNT(*) AS n FROM project_files WHERE project_id=?", (pid,)).fetchone()["n"] == 0
     finally:
         con.close()
-    # File rows (40) and the doc content ("hi") are gone via FK cascade.
-    assert quota_svc.user_bytes("alice") == pre - 2
+    assert not (deps.get_files_dir() / pid).exists()
+    assert quota_svc.user_bytes("alice") < pre  # files, documents and checkpoints are gone
 
 
 def test_search_reads_table_not_disk(c):
@@ -159,32 +156,32 @@ def test_search_reads_table_not_disk(c):
 
     register_user(c, "alice")
     did = make_doc(c, "Suche", content="ganz normaler Inhalt")
-    assert c.post(f"/api/docs/{did}/files",
-                  files={"f": ("refs.bib", b"@article{Mueller2024quantenphysik, author={M}}")}).status_code == 200
+    pid = project_of(c, did)
+    v = put_file(c, pid, "refs.bib", b"@article{Mueller2024quantenphysik, author={M}}").json()["version"]
     hits = c.get("/api/search", params={"q": "mueller2024quanten"}).json()["hits"]
     assert [h["id"] for h in hits] == [did]
-    # Bypass write: invisible until the next listing (contract).
-    (_deps.get_files_dir() / did / "zqxwjk-notizen.csv").write_text("a,b\n")
+    # Bypass write: never found (names come from the table).
+    (_deps.get_files_dir() / pid / "zqxwjk-notizen.csv").write_text("a,b\n")
     assert c.get("/api/search", params={"q": "zqxwjk"}).json()["hits"] == []
-    c.get(f"/api/docs/{did}/files")
+    put_file(c, pid, "zqxwjk-notizen.csv", b"a,b\n", force=1)
     hits = c.get("/api/search", params={"q": "zqxwjk"}).json()["hits"]
     assert [h["id"] for h in hits] == [did]
     # API delete removes the hit again.
-    assert c.delete(f"/api/docs/{did}/files/refs.bib").status_code == 200
+    assert c.delete(f"/api/projects/{pid}/files/refs.bib", params={"version": v}).status_code == 200
     assert c.get("/api/search", params={"q": "mueller2024quanten"}).json()["hits"] == []
 
 
 def test_subpath_upload(c):
     register_user(c, "alice")
-    did = make_doc(c, "Pfade")
-    r = c.post(f"/api/docs/{did}/files", files={"f": ("sub/a.png", b"12345")})
+    pid = project_of(c, make_doc(c, "Pfade"))
+    r = put_file(c, pid, "sub/a.png", b"12345")
     assert r.status_code == 200, r.text
-    assert r.json()["name"] == "sub/a.png"
-    names = [f["name"] for f in c.get(f"/api/docs/{did}/files").json()["files"]]
+    assert r.json()["path"] == "sub/a.png"
+    names = [f["path"] for f in c.get(f"/api/projects/{pid}/files").json()["files"]]
     assert "sub/a.png" in names
-    assert c.get(f"/api/docs/{did}/files/sub/a.png").status_code == 200
-    assert c.post(f"/api/docs/{did}/files/sub/n.typ/text", json={"content": "hi"}).status_code == 200
-    assert c.get(f"/api/docs/{did}/files/sub/n.typ/text").json()["content"] == "hi"
+    assert c.get(f"/api/projects/{pid}/files/sub/a.png").status_code == 200
+    assert put_file(c, pid, "sub/n.typ", b"hi").status_code == 200
+    assert c.get(f"/api/projects/{pid}/files/sub/n.typ").content == b"hi"
     assert quota_svc.user_bytes("alice") >= 7  # 5 + 2 bytes counted from the table
 
 
@@ -215,15 +212,16 @@ def test_local_filestore(tmp_path):
         st.doc_path("d_1", "../escape.txt")
 
 
-def test_sync_doc_files_heals(c):
-    from backend import deps as _deps
-
+def test_project_file_rows_carry_version(c):
     register_user(c, "alice")
-    did = make_doc(c, "Heal")
-    (_deps.get_files_dir() / did).mkdir(parents=True, exist_ok=True)
-    (_deps.get_files_dir() / did / "ext.png").write_bytes(b"1234")
-    assert sync_doc_files(did) == 1
-    assert quota_svc.user_bytes("alice") >= 4
+    pid = project_of(c, make_doc(c, "Heal"))
+    put_file(c, pid, "ext.png", b"1234")
+    con = db.connect()
+    try:
+        row = con.execute("SELECT size,version,type FROM project_files WHERE project_id=?", (pid,)).fetchone()
+    finally:
+        con.close()
+    assert tuple(row) == (4, project_files.version(b"1234"), ".png")
 
 
 def test_read_token_flow(c):
@@ -342,14 +340,21 @@ async def test_file_event_on_upload_and_sharee(c):
     register_user(c, "bob")
     login(c, "alice")
     did = make_doc(c, "Ereignis")
+    pid = project_of(c, did)
     c.post(f"/api/docs/{did}/share", json={"username": "bob", "role": "editor"})
     ea, eb = _watch("alice"), _watch("bob")
     try:
-        assert c.post(f"/api/docs/{did}/files", files={"f": ("a.png", b"1")}).status_code == 200
-        assert await asyncio.wait_for(ea[1].get(), timeout=5) == f"file:{did}"
-        assert await asyncio.wait_for(eb[1].get(), timeout=5) == f"file:{did}"
-        assert c.delete(f"/api/docs/{did}/files/a.png").status_code == 200
-        assert await asyncio.wait_for(ea[1].get(), timeout=5) == f"file:{did}"
+        v = put_file(c, pid, "a.png", b"1").json()["version"]
+        seen = []
+        while f"file:{did}" not in seen:
+            seen.append(await asyncio.wait_for(ea[1].get(), timeout=5))
+        seen = []
+        while f"file:{did}" not in seen:
+            seen.append(await asyncio.wait_for(eb[1].get(), timeout=5))
+        assert c.delete(f"/api/projects/{pid}/files/a.png", params={"version": v}).status_code == 200
+        seen = []
+        while f"file:{did}" not in seen:
+            seen.append(await asyncio.wait_for(ea[1].get(), timeout=5))
     finally:
         _unwatch("alice", ea)
         _unwatch("bob", eb)
@@ -381,50 +386,37 @@ def test_events_doc_filter_guards_access(c):
     assert c.get("/api/events", params={"doc_id": "nope"}).status_code == 404
 
 
-def test_mcp_text_write_updates_table_and_quota(c):
-    """R1 blocker 1: MCP file writes hit the files table immediately."""
-    from backend import mcp_tools as mcp
-
+def test_text_write_updates_table_and_quota(c):
+    """Project file writes hit the table immediately."""
     register_user(c, "alice")
-    make_doc(c, "MCPDatei")
+    pid = project_of(c, make_doc(c, "MCPDatei"))
     base = quota_svc.user_bytes("alice")
-    mcp.op_create("alice", "owner", "/docs/MCPDatei/notizen.typ", "eins zwei drei")
+    project_files.write(pid, "notizen.typ", b"eins zwei drei", "alice")
     con = db.connect()
     try:
-        row = con.execute("SELECT size FROM files WHERE path=? AND doc_id IN "
-                          "(SELECT id FROM docs WHERE owner=? AND title=?)",
-                          ("notizen.typ", "alice", "MCPDatei")).fetchone()
+        row = con.execute("SELECT size FROM project_files WHERE path=? AND project_id=?", ("notizen.typ", pid)).fetchone()
     finally:
         con.close()
-    assert row is not None  # write-through, no list_files healing needed
     assert row["size"] == len(b"eins zwei drei")
-    assert quota_svc.user_bytes("alice") == base + row["size"]
+    assert quota_svc.user_bytes("alice") == base + 14
 
 
-def test_duplicate_copies_files_table_rows(c):
-    """R1 blocker 1: duplicated docs carry their files-table rows."""
+def test_duplicate_shares_the_project_files(c):
+    """A duplicate stays in its project and reaches the same files (no copies)."""
     register_user(c, "alice")
     did = make_doc(c, "Vorlage")
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("bild.png", b"x" * 30)}).status_code == 200
-    assert c.post(f"/api/docs/{did}/files/data.typ/text", json={"content": "hallo"}).status_code == 200
+    pid = project_of(c, did)
+    put_file(c, pid, "bild.png", b"x" * 30)
     nid = c.post(f"/api/docs/{did}/duplicate").json()["id"]
-    con = db.connect()
-    try:
-        src = con.execute("SELECT path, size FROM files WHERE doc_id=? ORDER BY path", (did,)).fetchall()
-        dst = con.execute("SELECT path, size FROM files WHERE doc_id=? ORDER BY path", (nid,)).fetchall()
-    finally:
-        con.close()
-    assert [(r["path"], r["size"]) for r in dst] == [(r["path"], r["size"]) for r in src] != []
-    listed = {f["name"]: f["size"] for f in c.get(f"/api/docs/{nid}/files").json()["files"]}
-    assert listed == {r["path"]: r["size"] for r in src}
+    assert project_of(c, nid) == pid
+    assert [f["path"] for f in c.get(f"/api/projects/{pid}/files").json()["files"]] == ["bild.png"]
 
 
-def test_search_finds_duplicated_filename(c):
-    """R1 blocker 1: search reads the copied rows (filename hit on the copy)."""
+def test_search_finds_project_filename_for_every_document(c):
+    """A file name hit lists the documents of its project."""
     register_user(c, "alice")
     did = make_doc(c, "Original", content="ganz normaler Inhalt")
-    name = "zqxwjk-protokoll.csv"
-    assert c.post(f"/api/docs/{did}/files", files={"f": (name, b"a,b\n1,2\n")}).status_code == 200
+    put_file(c, project_of(c, did), "zqxwjk-protokoll.csv", b"a,b\n1,2\n")
     nid = c.post(f"/api/docs/{did}/duplicate").json()["id"]
     hits = c.get("/api/search", params={"q": "zqxwjk-protokoll"}).json()["hits"]
     assert {h["id"] for h in hits} == {did, nid}

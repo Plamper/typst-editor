@@ -1,8 +1,8 @@
-"""Overhaul resources: account-global .typ/.bib/.csv shelf, shared resolution, exports."""
+"""Overhaul resources: account-global .typ/.bib/.csv shelf, project snapshots, reachability, exports."""
 import io
 import zipfile
 
-from conftest import login, make_doc, register_user
+from conftest import login, make_doc, project_of, put_file, register_user
 
 
 def _res(c, name, content="#x", folder="", version=""):
@@ -59,56 +59,49 @@ def test_two_users_same_filename_isolated(c):
     assert [t for t in r.json()["templates"] if t["name"] == "lib.typ"][0]["content"] == "ALICE"
 
 
-def test_shared_doc_resolves_owner_resources_transitively(c):
+def test_shared_doc_reaches_snapshotted_files_transitively(c):
     register_user(c, "own")
     did = make_doc(c, title="Shared", content='#include "mid.typ"')
     _res(c, "mid.typ", '#include "leaf.typ"\n#bibliography("refs.bib")')
     _res(c, "leaf.typ", "LEAF")
     _res(c, "refs.bib", "@book{k1,}")
-    _res(c, "unrelated.typ", "NOPE")  # must NOT leak into the effective set
+    _res(c, "unrelated.typ", "NOPE")  # must NOT leak into the project
     _snapshot(c, did, "mid.typ")
     register_user(c, "viw")
-    # share with viewer (owner still logged? register logs in as v; switch back)
     login(c, "own")
     assert c.post(f"/api/docs/{did}/share", json={"username": "viw", "role": "editor"}).status_code == 200
     login(c, "viw")
     r = c.get(f"/api/docs/{did}/resources")
     assert r.status_code == 200
     body = r.json()
-    assert body["owner"] == "own" and body["readonly"] is True
-    assert set(body["resources"]) == {"mid.typ", "leaf.typ", "refs.bib"}
-    assert "unrelated.typ" not in body["resources"]
+    assert body["readonly"] is True
+    assert {f["path"] for f in body["files"]} == {"mid.typ", "leaf.typ", "refs.bib"}
 
 
-def test_local_file_wins_over_owner_resource(c):
+def test_existing_project_file_wins_over_template(c):
     register_user(c, "own")
-    did = make_doc(c, title="D", content='#include "same.typ"')
+    pid = project_of(c, make_doc(c, title="D"))
     _res(c, "same.typ", "OWNER VERSION")
-    # doc-local file with same name
-    r = c.post(f"/api/docs/{did}/files/same.typ/text", json={"content": "LOCAL VERSION"})
+    assert put_file(c, pid, "same.typ", b"PROJECT VERSION").status_code == 200
+    r = c.post(f"/api/projects/{pid}/docs", json={"title": "E", "content": '#include "same.typ"'})
     assert r.status_code == 200, r.text
-    register_user(c, "viw")
-    login(c, "own")
-    c.post(f"/api/docs/{did}/share", json={"username": "viw", "role": "editor"})
-    login(c, "viw")
-    r = c.get(f"/api/docs/{did}/resources")
-    assert r.json()["resources"] == {}
-    assert r.json()["local"] == ["same.typ"]
+    assert c.get(f"/api/projects/{pid}/files/same.typ").content == b"PROJECT VERSION"
 
 
 def test_denied_mutations_and_unshare_revocation(c):
     register_user(c, "own")
     did = make_doc(c, title="D", content="hi")
+    pid = project_of(c, did)
     _res(c, "own.typ", "O")
     register_user(c, "viw")
     login(c, "own")
     c.post(f"/api/docs/{did}/share", json={"username": "viw", "role": "reviewer"})
     login(c, "viw")
-    # reviewer cannot edit doc attachments...
-    assert c.post(f"/api/docs/{did}/files/x.typ/text", json={"content": "z"}).status_code == 403
-    # ...but CAN read the owner's reachable set (none here)
+    # reviewer cannot write project files...
+    assert put_file(c, pid, "x.typ", b"z").status_code in (403, 404)
+    # ...but CAN read what the document reaches (none here)
     assert c.get(f"/api/docs/{did}/resources").status_code == 200
-    # unshare revokes resource access too
+    # unshare revokes access too
     login(c, "own")
     assert c.delete(f"/api/docs/{did}/share/viw").status_code == 200
     login(c, "viw")
@@ -201,7 +194,7 @@ def test_export_doc_merges_owner_resources(c):
     r = c.post(f"/api/docs/{did}/export?format=zip")
     assert r.status_code == 200, r.text
     names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
-    assert "main.typ" in names
+    assert "Exp.typ" in names
     assert "part.typ" in names  # owner's resource merged at root, viewer's shelf untouched
     assert c.get("/api/templates").json()["templates"] == []
 
@@ -210,21 +203,21 @@ def test_reserved_main_typ_rejected(c):
     from backend import db as _db
 
     register_user(c, "usr")
-    assert _res(c, "main.typ", "x").status_code == 400
-    assert _res(c, "MAIN.TYP", "x").status_code == 400
+    assert _res(c, "__doc__.typ", "x").status_code == 400
+    assert _res(c, "__DOC__.TYP", "x").status_code == 400
     _res(c, "a.typ", "A")
-    assert c.post("/api/templates/a.typ/duplicate", json={"name": "main.typ"}).status_code == 400
+    assert c.post("/api/templates/a.typ/duplicate", json={"name": "__doc__.typ"}).status_code == 400
     # Pre-existing main.typ rows stay readable/deletable (cleanup path).
     con = _db.connect()
     try:
         con.execute("INSERT INTO templates (owner, name, content, line, folder, updated_at) "
-                    "VALUES (?,?,?,?,?,?)", ("usr", "main.typ", "OLD", "", "", _db.now_iso()))
+                    "VALUES (?,?,?,?,?,?)", ("usr", "__doc__.typ", "OLD", "", "", _db.now_iso()))
         con.commit()
     finally:
         con.close()
-    assert c.get("/api/templates/main.typ").status_code == 200
-    assert _res(c, "main.typ", "new").status_code == 400  # updates rejected too
-    assert c.delete("/api/templates/main.typ").status_code == 200
+    assert c.get("/api/templates/__doc__.typ").status_code == 200
+    assert _res(c, "__doc__.typ", "new").status_code == 400  # updates rejected too
+    assert c.delete("/api/templates/__doc__.typ").status_code == 200
 
 
 def test_insert_line_case_insensitive():
@@ -236,30 +229,25 @@ def test_insert_line_case_insensitive():
 
 
 def test_effective_includes_versions(c):
+    from backend.services import project_files
+
     register_user(c, "own")
-    did = make_doc(c, title="D", content='#include "a.typ"')
     _res(c, "a.typ", "A")
-    ver = _snapshot(c, did, "a.typ")["version"]
-    assert ver
+    did = make_doc(c, title="D", content='#include "a.typ"')
     r = c.get(f"/api/docs/{did}/resources")
     assert r.status_code == 200
-    body = r.json()
-    assert set(body["resources"]) == {"a.typ"}
-    assert body["versions"] == {"a.typ": ver}
+    assert r.json()["files"] == [{"path": "a.typ", "size": 1, "version": project_files.version(b"A")}]
 
 
 def test_nested_relative_resolution(c):
     register_user(c, "own")
     did = make_doc(c, title="N", content='#include "sub/part.typ"\nHi')
-    r = c.post(f"/api/docs/{did}/files/sub/part.typ/text",
-               json={"content": '#include "leaf.typ"\nPART'})
-    assert r.status_code == 200, r.text
-    _res(c, "leaf.typ", "LEAF")
-    _snapshot(c, did, "leaf.typ")
-    r = c.get(f"/api/docs/{did}/resources")
-    body = r.json()
-    assert "sub/part.typ" in body["local"]
-    assert "leaf.typ" in body["resources"]  # relative fallback reaches the shelf
+    pid = project_of(c, did)
+    assert put_file(c, pid, "sub/part.typ", b'#include "leaf.typ"\nPART').status_code == 200
+    put_file(c, pid, "sub/leaf.typ", b"LEAF")
+    put_file(c, pid, "leaf.typ", b"ROOT")
+    body = c.get(f"/api/docs/{did}/resources").json()
+    assert sorted(f["path"] for f in body["files"]) == ["sub/leaf.typ", "sub/part.typ"]  # relative to the including file
 
 
 def test_quoted_prose_ignored():
@@ -296,12 +284,11 @@ def test_duplicate_quota_rollback(c, monkeypatch):
 def test_csv_contents_do_not_expand(c):
     register_user(c, "own")
     did = make_doc(c, title="D", content='#csv("data.csv")')
-    _res(c, "data.csv", 'a,b\n"x.typ",2')
-    _res(c, "x.typ", "PHANTOM")
-    _snapshot(c, did, "data.csv")
+    pid = project_of(c, did)
+    put_file(c, pid, "data.csv", b'a,b\n"x.typ",2')
+    put_file(c, pid, "x.typ", b"PHANTOM")
     body = c.get(f"/api/docs/{did}/resources").json()
-    assert set(body["resources"]) == {"data.csv"}
-    assert "x.typ" not in body["resources"]
+    assert [f["path"] for f in body["files"]] == ["data.csv"]
 
 
 def test_resource_can_be_cleared_and_reopened(c):
@@ -323,10 +310,11 @@ def test_data_formats_are_global_local_and_exportable(c):
         assert c.get("/api/templates/" + name).json()["content"] == text
         refs.append('#let file_' + ext + ' = "' + name + '"')
     did = make_doc(c, title="Formats", content="\n".join(refs))
+    pid = project_of(c, did)
     for ext, text in samples.items():
         name = "local." + ext
-        assert c.post(f"/api/docs/{did}/files/{name}/text", json={"content": text}).status_code == 200
-        assert c.get(f"/api/docs/{did}/files/{name}/text").json()["content"] == text
+        assert put_file(c, pid, name, text.encode()).status_code == 200
+        assert c.get(f"/api/projects/{pid}/files/{name}").text == text
     exported = c.post(f"/api/docs/{did}/export?format=zip")
     assert exported.status_code == 200
     archive = zipfile.ZipFile(io.BytesIO(exported.content))

@@ -3,7 +3,7 @@ import sqlite3
 
 from playwright.sync_api import expect
 
-from e2e.helpers import register
+from e2e.helpers import put_file, register
 
 
 def test_mention_and_change_notice_in_the_inbox(browser, base_url, tmp_path_factory):
@@ -36,7 +36,7 @@ def test_mention_and_change_notice_in_the_inbox(browser, base_url, tmp_path_fact
         expect(bob.locator("#pop")).to_contain_text("please check @inbox_bob")
         expect(bob.locator("#inboxN")).to_be_hidden()
         # level "all": the change notice (written by the server after a checkpoint) opens the change screen
-        assert alice.request.post(f"/api/projects/{pid}/resources", data={"name": "lib.typ", "content": "#let a = 1\nsecond line"}).ok
+        assert put_file(alice.request, pid, "lib.typ", "#let a = 1\nsecond line").ok
         db = next(tmp_path_factory.getbasetemp().glob("e2e-data*/app.db"))
         con = sqlite3.connect(str(db))
         con.execute("INSERT INTO notifications (id,recipient,type,doc_id,text,is_read,created_at,project_id,ref,actor) VALUES "

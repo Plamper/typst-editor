@@ -134,7 +134,7 @@ def test_change_notice_goes_to_the_owner_with_the_editor_as_actor(c):
         con.commit()
     finally:
         con.close()
-    assert c.post(f'/api/projects/{pid}/resources', json={'name': 'bob.typ', 'content': 'x'}).status_code == 200
+    assert c.put(f'/api/projects/{pid}/files/bob.typ', content=b'x').status_code == 200
     assert _inbox(c, 'bob')['items'] == []  # never notify the actor about their own change
     changes = [n for n in _inbox(c, 'alice')['items'] if n['type'] == 'changes']
     assert len(changes) == 1

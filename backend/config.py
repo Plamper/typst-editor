@@ -40,7 +40,7 @@ class Config:
     SESSION_SECONDS: int = 1209600
     MAX_DOCS_PER_USER: int = 100
     MAX_BYTES_PER_USER: int = 524288000
-    MAX_FILES_PER_DOC: int = 200
+    MAX_FILES_PER_DOC: int = 1000  # per project since the project file tree (v34)
     RATE_LOGIN_PER_MIN: int = 10
     RATE_REGISTER_PER_HOUR: int = 20
     RATE_AUTH_PER_MIN: int = 60

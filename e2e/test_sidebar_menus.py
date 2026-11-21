@@ -2,7 +2,7 @@
 import io
 import zipfile
 
-from helpers import create_doc, register
+from helpers import create_doc, file_paths, put_file, register
 from playwright.sync_api import expect
 
 
@@ -152,7 +152,7 @@ def test_project_and_folder_plus_open_the_same_compact_menu(page):
     group = page.locator(".project-group").filter(has=page.locator(".fhd.project b", has_text="Plus menu doc")).first
     head = group.locator(".fhd.project")
     menu = page.locator("#menu")
-    entries = ("New document", "New module", "New folder", "Upload file", "Import from my modules")
+    entries = ("New document", "New file", "New folder", "Upload file", "Import from my modules")
 
     head.hover()
     head.locator("button.mini").first.click()
@@ -237,7 +237,7 @@ def test_folder_module_submenu_skips_the_type_picker(page):
     folder = page.locator("aside .fhd.folder").filter(has=page.locator("b", has_text="sub")).first
     folder.hover()
     folder.locator("button.mini").first.click()
-    page.locator("#menu button").filter(has_text="New module").first.hover()
+    page.locator("#menu button").filter(has_text="New file").first.hover()
     sub = page.locator("#submenu")
     expect(sub).to_be_visible()
     sub.locator("button").filter(has_text=".typ").first.click()
@@ -249,8 +249,8 @@ def test_folder_module_submenu_skips_the_type_picker(page):
     page.fill("#mInp", "mod")
     page.click("#mYes")
     expect(page.locator("#modal")).to_be_hidden()
-    resources = page.request.get(f"/api/projects/{pid}/resources").json()["resources"]
-    assert "sub/mod.typ" in [r["name"] for r in resources]
+    expect(page.locator("#tabs button.tab", has_text="mod.typ")).to_be_visible()
+    assert "sub/mod.typ" in file_paths(page.request, pid)
 
 
 def test_module_suggestion_selects_only_the_name(page):
@@ -274,7 +274,7 @@ def test_rename_keeps_the_folder_path_out_of_the_input(page):
     register(page, "e2e_rename_path")
     create_doc(page, "Rename path")
     pid = next(d["project_id"] for d in page.request.get("/api/docs").json()["own"] if d["title"] == "Rename path")
-    assert page.request.post(f"/api/projects/{pid}/resources", data={"name": "sub/notes.typ", "content": "= Notes"}).ok
+    assert put_file(page.request, pid, "sub/notes.typ", "= Notes").ok
     page.reload()
     page.wait_for_function("window.__booted === true")
 
@@ -290,7 +290,7 @@ def test_rename_keeps_the_folder_path_out_of_the_input(page):
     inp.press("Enter")
     page.locator("#mYes").click()  # rename preview confirms the new path
     expect(page.locator("aside .doc .t", has_text="renamed.typ")).to_be_visible()
-    names = [r["name"] for r in page.request.get(f"/api/projects/{pid}/resources").json()["resources"]]
+    names = file_paths(page.request, pid)
     assert "sub/renamed.typ" in names and "sub/notes.typ" not in names
 
 
@@ -299,9 +299,7 @@ def test_duplicate_document_does_not_clone_files_in_other_folders(page):
     create_doc(page, "Duplicate files")
     doc = next(d for d in page.request.get("/api/docs").json()["own"] if d["title"] == "Duplicate files")
     pid = doc["project_id"]
-    uploaded = page.request.post(f"/api/docs/{doc['id']}/files", multipart={
-        "f": {"name": "bilder/pfeil.svg", "mimeType": "image/svg+xml", "buffer": b"<svg/>"},
-    })
+    uploaded = put_file(page.request, pid, "bilder/pfeil.svg", b"<svg/>")
     assert uploaded.ok, uploaded.text()
 
     page.reload()
@@ -313,9 +311,8 @@ def test_duplicate_document_does_not_clone_files_in_other_folders(page):
     expect(page.locator("#own .doc .t", has_text="Duplicate files (copy)")).to_be_visible()
 
     project = page.request.get(f"/api/projects/{pid}").json()
-    assert [f["name"] for f in project["files"]] == ["bilder/pfeil.svg"]  # the project file stays shared, not cloned
-    copy = next(d for d in project["documents"] if d["title"] == "Duplicate files (copy)")
-    assert page.request.get(f"/api/docs/{copy['id']}/files").json()["files"] == []
+    assert [f["path"] for f in project["files"]] == ["bilder/pfeil.svg"]  # the project file stays shared, not cloned
+    assert any(d["title"] == "Duplicate files (copy)" for d in project["documents"])
 
 
 def test_folder_upload_lands_in_that_folder(page):
@@ -336,8 +333,7 @@ def test_folder_upload_lands_in_that_folder(page):
         expect(page.locator("aside .doc .t", has_text=name)).to_be_visible()
 
     project = page.request.get(f"/api/projects/{pid}").json()
-    assert "sub/note.txt" in [r["name"] for r in project["resources"]]
-    assert "sub/pic.png" in [f["name"] for f in project["files"]]
+    assert {"sub/note.txt", "sub/pic.png"} <= {f["path"] for f in project["files"]}
 
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w") as z:
@@ -348,12 +344,12 @@ def test_folder_upload_lands_in_that_folder(page):
     with page.expect_file_chooser() as chooser:
         page.locator("#menu button").filter(has_text="Upload file").first.click()
     chooser.value.set_files({"name": "bundle.zip", "mimeType": "application/zip", "buffer": bundle.getvalue()})
-    expect(page.locator("#mHead")).to_have_text("New document")
-    page.fill("#mInp", "Zip folder doc")
+    expect(page.locator("#mHead")).to_have_text("Import bundle.zip into Folder upload")
+    expect(page.locator("#mCard .mCheck input")).to_be_checked()
     page.click("#mYes")
-    expect(page.locator("aside .doc .t", has_text="Zip folder doc")).to_be_visible()
+    expect(page.locator("aside .doc .t", has_text="main")).to_be_visible()
     project = page.request.get(f"/api/projects/{pid}").json()
-    assert any(d["title"] == "Zip folder doc" and d["folder"] == "sub" for d in project["documents"])  # ZIP import keeps the folder
+    assert any(d["title"] == "main" and d["folder"] == "sub" for d in project["documents"])  # ZIP import lands in the folder
 
 
 def test_empty_trash_lives_behind_the_section_three_dot(page):
@@ -445,7 +441,7 @@ def test_read_only_member_can_still_copy_entries_out_of_a_shared_project(page, b
     create_doc(page, "Shared source")
     doc = next(d for d in page.request.get("/api/docs").json()["own"] if d["title"] == "Shared source")
     pid = doc["project_id"]
-    assert page.request.post(f"/api/projects/{pid}/resources", data={"name": "layout.typ", "content": "#let a = 1"}).ok
+    assert put_file(page.request, pid, "layout.typ", "#let a = 1").ok
     other = browser.new_context(base_url=base_url, locale="en-US")
     try:
         peer = other.new_page()
@@ -471,10 +467,10 @@ def test_folder_copy_to_another_project_is_rolled_back_when_an_entry_conflicts(p
     create_doc(page, "Source doc")
     pid = next(d["project_id"] for d in page.request.get("/api/docs").json()["own"] if d["title"] == "Source doc")
     target = page.request.post("/api/projects", data={"title": "Rollback target"}).json()["id"]
-    assert page.request.post(f"/api/projects/{pid}/resources", data={"name": "util.typ", "content": "source"}).ok
-    assert page.request.post(f"/api/projects/{target}/resources", data={"name": "util.typ", "content": "other"}).ok
+    assert put_file(page.request, pid, "util.typ", "source").ok
+    assert put_file(page.request, target, "util.typ", "other").ok
     assert page.request.post(f"/api/projects/{pid}/docs", data={"title": "A ok", "folder": "src", "content": "fine"}).ok
-    assert page.request.post(f"/api/projects/{pid}/docs", data={"title": "B needs util", "folder": "src", "content": '#include "util.typ"'}).ok
+    assert page.request.post(f"/api/projects/{pid}/docs", data={"title": "B needs util", "folder": "src", "content": '#include "/util.typ"'}).ok
     page.reload()
     page.wait_for_function("window.__booted === true")
 
@@ -490,4 +486,4 @@ def test_folder_copy_to_another_project_is_rolled_back_when_an_entry_conflicts(p
     payload = page.request.get(f"/api/projects/{target}").json()
     assert [d["title"] for d in payload["documents"]] == []  # the finished first copy was undone
     assert "src" not in payload["folders"]
-    assert [r["name"] for r in payload["resources"]] == ["util.typ"]
+    assert [f["path"] for f in payload["files"]] == ["util.typ"]

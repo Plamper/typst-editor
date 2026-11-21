@@ -9,7 +9,7 @@ pv2 (stale switch): a render queued for the doc must not replace the template
 pv3 (long doc): 30 pages render virtualized; a re-render keeps the deep scroll
     anchor; cursor follow reaches the first/last page through the text index.
 """
-from helpers import create_doc, open_private_copy, register
+from helpers import create_doc, doc_project, open_private_copy, put_file, register
 from playwright.sync_api import expect
 
 PREVIEW_TIMEOUT = 60_000
@@ -26,9 +26,7 @@ def test_pv1_include_tab_same_length_edit_recompiles(page):
     create_doc(page, "OV include doc")
     doc_id = _doc_id(page, "OV include doc")
     chap_v1 = "Body alpha one\n"
-    r = page.request.post(
-        f"/api/docs/{doc_id}/files/chapter.typ/text", data={"content": chap_v1}
-    )
+    r = put_file(page.request, doc_project(page.request, doc_id), 'chapter.typ', chap_v1)
     assert r.ok, r.text()
     page.click("#cm .cm-content")
     page.keyboard.press("ControlOrMeta+A")

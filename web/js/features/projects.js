@@ -1,4 +1,4 @@
-// Projects own documents and their copied resource library.
+// Projects own documents and one file tree (every other file at a project path).
 function projectEditable(p) { return p.can_edit_library ?? ['owner', 'editor'].includes(p.role) }
 function canStageProjectDelete(project) {
   const s = window.changeSession
@@ -6,7 +6,7 @@ function canStageProjectDelete(project) {
 }
 function projectEntries(p) {
   const documents = p.documents || [...lastOwn, ...lastShared].filter(d => d.project_id === p.id)
-  return { documents, resources: p.resources || [], files: p.files || [] }
+  return { documents, files: p.files || [] }
 }
 function projectAction(host, icon, label, run) {
   const b = icoBtn('mini', icon); b.title = label; b.setAttribute('aria-label', label)
@@ -123,14 +123,14 @@ function sidebarInlineRename(host, label, value, opts = {}) { // rename in place
   })
 }
 const projectEntryFlights = new Map()
-function openProjectEntry(p, document, name, resource) {
-  const key = JSON.stringify([p.id, document, name, resource])
+function openProjectEntry(p, document, name) {
+  const key = JSON.stringify([p.id, document, name])
   if (projectEntryFlights.has(key)) return projectEntryFlights.get(key)
-  const flight = openProjectEntryOnce(p, document, name, resource).finally(() => projectEntryFlights.delete(key))
+  const flight = openProjectEntryOnce(p, document, name).finally(() => projectEntryFlights.delete(key))
   projectEntryFlights.set(key, flight)
   return flight
 }
-async function openProjectEntryOnce(p, document, name, resource) {
+async function openProjectEntryOnce(p, document, name) { // a file opens next to a document of its project (the preview compiles that document)
   if (!document) {
     toast(t('projects.needsDocument'))
     document = await newProjectDoc(p.id)
@@ -138,21 +138,9 @@ async function openProjectEntryOnce(p, document, name, resource) {
   }
   if (docId !== document) await openDoc(document)
   if (docId !== document || docProject !== p.id) return
-  if (name) {
-    if (activeFile === (resource ? TPLK + name : name)) return
-    if (resource && !window.changeSession) {
-      const epoch = openN
-      let loaded = false
-      for (let attempt = 0; attempt < 3 && !loaded; attempt++) { // a poll may supersede the list load; retry while the doc is unchanged
-        loaded = await loadDocResources(true)
-        if (docId !== document || docProject !== p.id || openN !== epoch) return
-      }
-      if (!loaded) return
-      tabPins.add(name)
-    }
-    await switchTab(resource ? TPLK + name : name)
-  }
+  if (name && activeFile !== name) await switchTab(name)
 }
+const fileHost = (p, entries = projectEntries(p)) => docProject === p.id && entries.documents.some(d => d.id === docId) ? docId : entries.documents[0]?.id // document a file tab opens next to
 const FOLDER_LEVELS = 2 // folder levels inside a project (a/b/file); deeper legacy paths fold into the last level
 function splitEntryPath(name) { // 'a/b/x.typ' -> { dir: 'a/b', base: 'x.typ' }, clamped to FOLDER_LEVELS
   const parts = String(name).split('/').filter(Boolean), dirs = parts.slice(0, -1).slice(0, FOLDER_LEVELS)
@@ -162,8 +150,7 @@ const folderParents = path => { const parts = path.split('/'); return parts.map(
 function projectTree(p, entries) { // folders (explicit + implied by paths) and the entries inside each one
   const items = [
     ...entries.documents.map(d => ({ kind: 'document', dir: String(d.folder || '').split('/').filter(Boolean).slice(0, FOLDER_LEVELS).join('/'), label: d.title, d })),
-    ...entries.resources.map(r => ({ kind: 'resource', resource: true, name: r.name, document: entries.documents.find(d => d.id === docId)?.id || entries.documents[0]?.id, ...(x => ({ dir: x.dir, label: x.base }))(splitEntryPath(r.name)) })),
-    ...entries.files.map(f => ({ kind: 'file', resource: false, name: f.name, document: f.doc_id, ...(x => ({ dir: x.dir, label: x.base }))(splitEntryPath(f.name)) })),
+    ...entries.files.map(f => ({ kind: 'file', name: f.path, ...(x => ({ dir: x.dir, label: x.base }))(splitEntryPath(f.path)) })),
   ]
   const known = new Set()
   for (const f of (p.folders || [])) folderParents(f.split('/').slice(0, FOLDER_LEVELS).join('/')).forEach(x => known.add(x))
@@ -175,14 +162,14 @@ function projectTree(p, entries) { // folders (explicit + implied by paths) and 
     allItems: items, // flat list for search filtering
     all: sorted,
     dirOf(entry) { // folder an entry sits in (for reveal / drop)
-      return items.find(i => i.kind === entry.kind && (entry.kind === 'document' ? i.d.id === entry.doc_id : i.name === entry.name && (i.kind === 'resource' || i.document === entry.doc_id)))?.dir || ''
+      return items.find(i => i.kind === entry.kind && (entry.kind === 'document' ? i.d.id === entry.doc_id : i.name === entry.name))?.dir || ''
     },
   }
 }
 let lastReveal = ''
 function revealActiveFolder(p, tree) { // opening a file shows its folder: unfold once per change of the active file
   if (docProject !== p.id) return
-  const entry = activeFile ? (isTplKey(activeFile) ? { kind: 'resource', name: tabName(activeFile) } : { kind: 'file', name: activeFile, doc_id: docId }) : { kind: 'document', doc_id: docId }
+  const entry = activeFile ? { kind: 'file', name: activeFile } : { kind: 'document', doc_id: docId }
   const key = p.id + '\u0001' + docId + '\u0001' + activeFile
   if (key === lastReveal) return
   lastReveal = key
@@ -195,8 +182,7 @@ function paintProjects(box, shared) {
   projects.filter(p => (p.role !== 'owner') === shared).forEach(p => {
     const entries = projectEntries(p), tree = projectTree(p, entries)
     const titleHit = searching && searchMatch(p.title)
-    const entryKey = item => item.kind === 'document' ? 'd:' + item.d.id
-      : item.kind === 'resource' ? 'r:' + p.id + '/' + item.name : 'f:' + item.document + '/' + item.name
+    const entryKey = item => item.kind === 'document' ? 'd:' + item.d.id : 'f:' + p.id + '/' + item.name
     const folderHit = path => searchMatch(path)
     const inFolderHit = dir => !!dir && folderParents(dir).some(folderHit)
     const itemHit = item => titleHit || inFolderHit(item.dir) ||
@@ -249,27 +235,26 @@ function paintProjects(box, shared) {
     const folderRows = new Map() // a drop anywhere inside a folder lights up its header, not the whole group
     const dropVisual = folder => (folder && folderRows.get(folder)) || h
     const entryRow = (item, level, folder) => {
-      const { name, document, resource } = item
-      const hitKey = resource ? 'r:' + p.id + '/' + name : 'f:' + document + '/' + name
-      const row = el('div', 'doc sub' + ((resource ? docProject === p.id && activeFile === TPLK + name : docId === document && activeFile === name) ? ' cur' : '')); row.appendChild(searchTextEl('t', searching ? name : item.label)); row.title = name
+      const { name } = item, hitKey = 'f:' + p.id + '/' + name
+      const row = el('div', 'doc sub' + (docProject === p.id && activeFile === name ? ' cur' : '')); row.appendChild(searchTextEl('t', searching ? name : item.label)); row.title = name
       row.style.setProperty('--lv', level)
-      row.dataset.packageKey = [resource ? 'resource' : 'file', resource ? '' : document, name].join(':')
+      row.dataset.packageKey = ['file', '', name].join(':')
       const open = () => {
         const q = searchFindQ(hitKey)
-        return openProjectEntry(p, document, name, resource).then(() => {
-          if (q && (resource ? activeFile === TPLK + name : docId === document && activeFile === name)) findWith(q)
+        return openProjectEntry(p, fileHost(p, entries), name).then(() => {
+          if (q && docProject === p.id && activeFile === name) findWith(q)
         })
       }
       row.onclick = open; kb(row, open)
-      const entry = { kind: resource ? 'resource' : 'file', doc_id: document, name }
+      const entry = { kind: 'file', name }
       if (projectEditable(p)) {
-        const rename = projectAction(row, ICO_EDIT, t('files.renameHead'), () => renameProjectEntry(p, name, document, resource, row))
+        const rename = projectAction(row, ICO_EDIT, t('files.renameHead'), () => renameProjectEntry(p, name, row))
         rename.dataset.menuKey = 'rename'; rename.dataset.menuLabel = t('menu.renameShort'); rename.dataset.menuHint = 'menu.renameHint'
       }
-      projectDrag(row, p, { ...entry, folder: name.split('/').slice(0, -1).join('/') })
+      projectDrag(row, p, entry)
       projectDropTarget(row, p, folder, dropVisual(folder)) // dropping on a file targets the folder it lives in
       if (projectEditable(p) || canStageProjectDelete(p.id)) {
-        const trash = projectAction(row, ICO_TRASH, t('docs.moveTrash'), () => deleteProjectEntry(p, name, document, resource))
+        const trash = projectAction(row, ICO_TRASH, t('docs.moveTrash'), () => deleteProjectEntry(p, name))
         trash.dataset.menuDanger = ''; trash.dataset.menuKey = 'trash'; trash.dataset.menuLabel = t('menu.actionTrash'); trash.dataset.menuHint = 'menu.trashHint'
       }
       compactSidebarActions(row, 0, actions => entryMenuItems(p, entry, actions))
@@ -278,7 +263,7 @@ function paintProjects(box, shared) {
     }
     const documentRow = (d, level, folder) => {
       const row = docRow({ ...d, project_id: p.id, role: d.role || p.role }, shared, true)
-      row.dataset.packageKey = ['document', d.id, 'main.typ'].join(':')
+      row.dataset.packageKey = ['document', d.id, ''].join(':')
       row.classList.add('sub'); row.classList.toggle('cur', d.id === docId && !activeFile); row.style.setProperty('--lv', level)
       const first = row.querySelector('button.mini')
       if (projectEditable(p)) {
@@ -358,13 +343,11 @@ async function newProjectResource(id, folder = '', chosenExt = '') {
   const raw = await ask(t('files.newFileHead'), { value: 'file' + ext, ph: t('files.newFilePh', { ext: ext.slice(1) }), maxLen: 240, stem: true })
   if (!raw?.trim()) return
   const typed = raw.trim().replace(/^\/+/, ''), file = typed.toLowerCase().endsWith(ext) ? typed : typed + ext
-  const name = folder ? folder + '/' + file : file
-  const result = await api('POST', `/api/projects/${id}/resources`, { name: name.trim(), content: fileStart(name.split('.').pop().toLowerCase()) })
-  await sidebarFresh() // the pending refresh may have started before the module existed
+  const path = folder ? folder + '/' + file : file
+  const result = await putFile(fileUrl(path, id), fileStart(ext.slice(1)))
+  await sidebarFresh() // the pending refresh may have started before the file existed
   const project = projects.find(p => p.id === id) || await api('GET', `/api/projects/${id}`)
-  const documents = projectEntries(project).documents
-  const document = documents.find(d => d.id === docId)?.id || documents[0]?.id
-  await openProjectEntry(project, document, result.name, true)
+  await openProjectEntry(project, fileHost(project), result.path)
 }
 async function pullLibrary(source, target, targetFolder = '') {
   const document = docId, project = docProject, epoch = openN
@@ -397,7 +380,7 @@ async function pullLibrary(source, target, targetFolder = '') {
     if (dependencies.length && !await ask(t('projects.copyWithDependencies') + '\n' + dependencies.join('\n'), { noInput: true })) return null
     if (!current()) return null
     const result = await api('POST', '/api/library/pull', { ...body, preview: preview.preview })
-    await loadTpl(); if (current()) await loadDocResources(true); await sidebar()
+    await loadTpl(); if (current()) await loadProjectFiles(true); await sidebar()
     return result.name || body.name
   }
   return null
@@ -415,77 +398,32 @@ async function insertPersonalResource(tpl) {
   if (!project || docResReadonly) return
   const name = await pullLibrary({ source_scope: 'personal', source: tpl.name }, { scope: 'project', project_id: project }, tpl.folder || '')
   if (!name || docId !== document || docProject !== project || openN !== epoch || activeFile !== file) return
-  addTpl(resLine({ name }))
+  addTpl(resLine({ name: refTo(name) }))
 }
-async function copyToLibrary(source, sourceDocId = docId, targetOverride = null) {
-  const document = docId, epoch = openN
-  const current = () => docId === document && openN === epoch
-  try {
-    if (!await flushTab() || !current()) return
-    const targets = [{ scope: 'personal', title: t('projects.personalLibrary') }, ...projects.filter(projectEditable).map(p => ({ scope: 'project', project_id: p.id, title: p.title }))]
-    const i = targetOverride ? 0 : await askPick(t('projects.copy'), targets.map(p => [p.title, '']))
-    if (i == null || i < 0 || !targets[i]) return
-    if (!current()) return
-    const target = targetOverride || targets[i]
-    const folder = ''
-    let name = target.scope === 'personal' ? source.split('/').pop() : source
-    while (docId === document && openN === epoch) {
-      name = await ask(t('projects.copyName'), { value: name, maxLen: 240 })
-      if (!name?.trim() || !current()) return
-      const body = { source, scope: target.scope, ...(target.project_id ? { project_id: target.project_id } : {}), name: name.trim(), folder: folder.trim() }
-      const url = `/api/docs/${sourceDocId}/library-copy`
-      const preview = await api('POST', url + '-preview', body)
-      if (!current()) return
-      const collisions = preview.collisions || []
-      if (collisions.length || Object.keys(collisions).length) { toast(t('common.nameExists')); continue }
-      const dependencies = preview.dependencies || preview.deps || []
-      if (dependencies.length && !await ask(t('projects.copyWithoutDependencies') + '\n' + dependencies.join('\n'), { noInput: true })) return
-      if (!current()) return
-      await api('POST', url, { ...body, preview: preview.preview })
-      await loadTpl(); if (current()) { await loadDocResources(true); tabSig = ''; queueRender() }
-      toast(t('projects.copied')); return
-    }
-  } catch (e) { toast(e.message) }
+function copyFileToPersonal(project, path) { // a project text file (with what it includes) into the personal modules
+  return pullLibrary({ source_scope: 'project', source_project_id: project, source: path }, { scope: 'personal' })
 }
 
 async function uploadProjectFiles(p, files, folder = '') {
   if (!projectEditable(p)) return
-  const at = n => folder ? folder + '/' + n : n // dropped on a folder: it lands there
-  let attachmentDoc = projectEntries(p).documents.find(d => d.id === docId)?.id || projectEntries(p).documents[0]?.id
+  const at = n => (folder ? folder + '/' : '') + uploadName(n) // dropped on a folder: it lands there
   try {
     for (const file of files) {
       if (/\.zip$/i.test(file.name)) {
-        const title = await ask(t('docs.newDocTitle'), { value: file.name.replace(/\.zip$/i, '') })
-        if (!title?.trim()) continue
-        const body = new FormData(); body.append('f', file); body.append('title', title.trim()); body.append('folder', folder)
+        const documents = await zipDocuments(file, p.title)
+        if (documents == null) continue
+        const body = new FormData(); body.append('f', file); body.append('folder', folder); body.append('documents', JSON.stringify(documents))
         const response = await fetch(`/api/projects/${p.id}/import-zip`, { method: 'POST', body })
         if (!response.ok) throw new Error(expMsg(await response.text()))
-        attachmentDoc ||= (await response.json()).id
       } else if (/\.typ$/i.test(file.name)) {
-        const choice = await askPick(file.name, [[t('docs.pickDoc'), ''], [t('projects.newResource'), t('projects.newResourceHint')]])
-        if (choice === 0) {
-          const created = await api('POST', `/api/projects/${p.id}/docs`, { title: file.name, content: await file.text(), folder })
-          attachmentDoc ||= created.id
-        } else if (choice === 1) await api('POST', `/api/projects/${p.id}/resources`, { name: at(file.name), content: await file.text() })
-      } else if (TEXT_EXT.test(file.name)) await api('POST', `/api/projects/${p.id}/resources`, { name: at(file.name), content: await file.text() })
-      else {
-        if (!attachmentDoc) attachmentDoc = (await api('POST', `/api/projects/${p.id}/docs`, { title: t('projects.attachments'), content: '', folder })).id
-        const existing = (await api('GET', `/api/docs/${attachmentDoc}/files`)).files
-        const name = at(file.name.replace(/^[.]+/, '').replace(/[^A-Za-z0-9._ ()-]/g, '_').slice(0, 100))
-        if (existing.some(f => f.name === name)) throw new Error(t('common.nameExists'))
-        const body = new FormData(); body.append('f', file, name)
-        const response = await fetch(`/api/docs/${attachmentDoc}/files`, { method: 'POST', body })
-        if (!response.ok) throw new Error(expMsg(await response.text()))
-      }
+        const choice = await askPick(file.name, [[t('docs.pickDoc'), ''], [t('projects.newFile'), t('projects.newResourceHint')]])
+        if (choice === 0) await api('POST', `/api/projects/${p.id}/docs`, { title: file.name.replace(/\.typ$/i, ''), content: await file.text(), folder })
+        else if (choice === 1) await putFile(fileUrl(at(file.name), p.id), file)
+      } else await putFile(fileUrl(at(file.name), p.id), file)
     }
   } finally {
     shut.delete('project:' + p.id); saveShut(); await sidebar()
-    if (docProject === p.id && docId) {
-      filesDirty = true
-      lastFiles = (await api('GET', `/api/docs/${docId}/files`)).files
-      mediaNames = lastFiles.map(f => f.name); renderMediaChips(lastFiles)
-      await loadDocResources(true); queueRender()
-    }
+    if (docProject === p.id && docId) { await loadProjectFiles(true); queueRender() }
   }
 }
 async function uploadToProject(files) {
@@ -507,7 +445,7 @@ function projectMenu(p, folder = '', anchor) { // the + on a project/folder open
   const run = fn => () => Promise.resolve().then(fn).catch(e => toast(e.message))
   const items = [
     { label: t('docs.newDocTitle'), title: t('docs.pickDocSub'), run: run(() => newProjectDoc(p.id, folder)) },
-    { label: t('projects.newResource'), title: t('projects.newResourceHint'), submenu: () => fileTypeMenuItems(ext => run(() => newProjectResource(p.id, folder, ext))()) },
+    { label: t('projects.newFile'), title: t('projects.newResourceHint'), submenu: () => fileTypeMenuItems(ext => run(() => newProjectResource(p.id, folder, ext))()) },
   ]
   if ((folder ? folder.split('/').length : 0) < FOLDER_LEVELS) { // no deeper level below this one
     items.push({ label: t('projects.newFolder'), title: t('projects.newFolderHint'), run: run(() => newProjectFolder(p, folder)) })
@@ -540,38 +478,21 @@ async function deleteFolder(p, path) {
   if (window.changeSession || window.suggestionDraft) { toast(t('packages.sourceBlocked')); return }
   if (!await flushTab() || !await flushTpl()) return
   if (!await ask(t('projects.folderTrashConfirm', { name: path }), { noInput: true, danger: true })) return
-  const fresh = await api('GET', `/api/projects/${p.id}`)
-  const items = folderContents(fresh, path)
-  const trashedDocs = new Set(items.documents.map(d => d.id))
-  try {
-    for (const d of items.documents) await api('DELETE', `/api/docs/${d.id}`)
-    for (const r of items.resources) {
-      await api('DELETE', `/api/projects/${p.id}/resources/${encodeURIComponent(r.name)}?version=${encodeURIComponent(r.updated_at || '')}`)
-    }
-    for (const f of items.files) {
-      if (trashedDocs.has(f.doc_id)) continue // files travel with their trashed document
-      await api('DELETE', `/api/docs/${f.doc_id}/files/${encodeURIComponent(f.name)}`)
-    }
-    await api('DELETE', `/api/projects/${p.id}/folders?path=${encodeURIComponent(path)}`)
-  } catch (e) {
-    // The backend rejects a folder that refilled concurrently; keep the
-    // message local instead of leaking the raw 409 text into the UI.
-    toast(e.status === 409 && /not empty/i.test(e.message) ? t('projects.folderNotEmpty') : e.message)
-    await sidebar(); return
-  }
-  if (docId && trashedDocs.has(docId)) closeView()
-  else if (activeFile && (items.resources.some(r => TPLK + r.name === activeFile) || items.files.some(f => f.name === activeFile && f.doc_id === docId))) await switchTab('', true)
-  if (docId) { filesDirty = true; await loadDocResources(true); tabSig = ''; queueRender() }
+  let result
+  try { result = await api('DELETE', `/api/projects/${p.id}/folders?path=${encodeURIComponent(path)}`) } // documents and files below it go to the trash
+  catch (e) { toast(e.message); await sidebar(); return }
+  if (docId && result?.documents?.includes(docId)) closeView()
+  else if (activeFile && insideFolder(activeFile, path)) await switchTab('', true)
+  if (docId) { filesDirty = true; await loadProjectFiles(true); tabSig = ''; queueRender() }
   await sidebar()
 }
 async function afterFolderRename(p, path, target) {
   const doc = docId, epoch = openN, was = activeFile
-  const inside = key => { const n = isTplKey(key) ? tabName(key) : key; return n === path || n.startsWith(path + '/') }
-  const mapped = was && inside(was) ? (isTplKey(was) ? TPLK : '') + target + (isTplKey(was) ? tabName(was) : was).slice(path.length) : ''
+  const mapped = was && insideFolder(was, path) ? target + was.slice(path.length) : ''
   tabRemapPrefix(p.id, path, target)
   filesDirty = true
   if (mapped && docId === doc && openN === epoch) await switchTab('', true)
-  if (docId === doc && openN === epoch && docProject === p.id) { await loadDocResources(true); tabSig = ''; queueRender() }
+  if (docId === doc && openN === epoch && docProject === p.id) { await loadProjectFiles(true); tabSig = ''; queueRender() }
   await sidebarFresh() // a refresh started before the rename still lists the old path: paintTabs would drop the mapped tab
   if (mapped && docId === doc && openN === epoch) await switchTab(mapped)
 }
@@ -605,13 +526,12 @@ async function deleteProject(p) {
   if (!await ask(t('projects.deleteWarning'), { noInput: true, danger: true })) return
   await api('DELETE', `/api/projects/${p.id}`)
   // The whole project is gone: leave no editable zombie tab behind (saves
-  // would only 410) and keep a local draft for offline main.typ edits.
-  const openModule = activeFile && isTplKey(activeFile) && projectEntries(p).resources.some(r => r.name === tabName(activeFile))
-  if (docProject === p.id || openModule) closeView()
+  // would only 410) and keep a local draft for offline the document text edits.
+  if (docProject === p.id) closeView()
   await sidebar()
 }
 async function renameProjectDocument(d, host) {
-  host = sidebarLiveHost(host, ['document', d.id, 'main.typ'].join(':'))
+  host = sidebarLiveHost(host, ['document', d.id, ''].join(':'))
   const label = host?.querySelector('.t')
   const title = label ? await sidebarInlineRename(host, label, d.title, { label: t('docs.renameDoc') }) : await ask(t('docs.renameDoc'), { value: d.title })
   if (!title?.trim()) return
@@ -619,9 +539,9 @@ async function renameProjectDocument(d, host) {
   if (docId === d.id) { $('title').textContent = title.trim(); docTitle = title.trim(); tabSig = ''; paintTabs() }
   await sidebar()
 }
-async function renameProjectEntry(p, name, document, resource, host) {
+async function renameProjectEntry(p, name, host) {
   if (!p) { toast(t('projects.contextGone')); return }
-  host = sidebarLiveHost(host, [resource ? 'resource' : 'file', resource ? '' : document, name].join(':'))
+  host = sidebarLiveHost(host, ['file', '', name].join(':'))
   if (!await flushTab() || !await flushTpl()) return
   const label = host?.querySelector('.t')
   const dir = folderParent(name), base = folderBase(name) // the row shows only the name; the folder path stays hidden while renaming
@@ -630,7 +550,7 @@ async function renameProjectEntry(p, name, document, resource, host) {
   if (!typed) return
   const target = typed.includes('/') ? typed : joinFolder(dir, typed) // typing a path still moves as before
   if (target === name) return
-  await applyEntryRename(p, name, document, resource, target)
+  await applyEntryRename(p, name, target)
 }
 function renameBody(name, references) { // structured rename dialog: target first, then references, then the warning
   const body = el('div', 'mBody')
@@ -645,30 +565,21 @@ function renameBody(name, references) { // structured rename dialog: target firs
   body.append(el('p', 'mNote', t('projects.dynamicReferences')))
   return body
 }
-async function applyEntryRename(p, name, document, resource, target, confirm = true) { // rename or move (a new path = a new folder): references are listed, never rewritten
+async function applyEntryRename(p, name, target, confirm = true) { // rename or move (a new path = a new folder): the listed quoted references follow
   if (!await flushTab() || !await flushTpl()) return
   const doc = docId, epoch = openN
-  const body = { name, target, doc_id: resource ? '' : document }
-  const preview = await api('POST', `/api/projects/${p.id}/rename-entry-preview`, body)
+  const preview = await api('POST', `/api/projects/${p.id}/files-move-preview`, { path: name, target })
   if (doc !== docId || epoch !== openN) return
-  if (confirm && !await ask(t('files.renameHead'), { noInput: true, body: renameBody(preview.name, preview.references), ok: t('projects.renameAction') })) return
+  if (confirm && !await ask(t('files.renameHead'), { noInput: true, body: renameBody(preview.path, preview.references), ok: t('projects.renameAction') })) return
   if (doc !== docId || epoch !== openN) return
-  const result = await api('POST', `/api/projects/${p.id}/rename-entry`, { ...body, target: preview.name, version: preview.version })
-  tabRemapEntry(p.id, resource ? 'r:' + name : 'f:' + document + '/' + name, resource ? 'r:' + result.name : 'f:' + document + '/' + result.name)
-  if (docId === doc && openN === epoch && docProject === p.id) {
-    const old = resource ? TPLK + name : name, next = resource ? TPLK + result.name : result.name
-    if (activeFile === old && (resource || document === docId)) {
-      clearTimeout(fileT); activeFile = next
-      const state = tabState.get(old); if (state) tabState.set(next, state)
-      tabState.delete(old); tabVersions.delete(old); tabVersions.set(next, result.version)
-      if (resource) { tabPins.delete(name); tabPins.add(result.name) }
-      else { const cached = fileCache.get(old); if (cached) fileCache.set(next, cached); fileCache.delete(old) }
-      if (tabDirty) queueFileSave()
-    }
-    filesDirty = true; await loadDocResources(true); tabSig = ''; queueRender()
-  }
-  await sidebar()
-  toast(confirm ? t('files.renamed', { name: result.name }) : t('files.moved', { name: result.name }))
+  const result = await api('POST', `/api/projects/${p.id}/files-move`, { path: name, target: preview.path, version: preview.version, fix_refs: true })
+  tabRemapEntry(p.id, 'f:' + name, 'f:' + result.path)
+  const reopen = docId === doc && openN === epoch && docProject === p.id && activeFile === name
+  if (reopen) await switchTab('', true) // the moved text may carry rewritten references: load it fresh under its new path
+  if (docId === doc && openN === epoch && docProject === p.id) { filesDirty = true; await loadProjectFiles(true); tabSig = ''; queueRender() }
+  await sidebarFresh()
+  if (reopen && docId === doc && openN === epoch) await switchTab(result.path)
+  toast(confirm ? t('files.renamed', { name: result.path }) : t('files.moved', { name: result.path }))
 }
 async function moveEntryToFolder(p, entry, folder) { // drag onto a folder (or the project): same project only
   if (folder && folder.split('/').length > FOLDER_LEVELS) { toast(t('projects.folderDepth', { n: FOLDER_LEVELS })); return }
@@ -680,7 +591,7 @@ async function moveEntryToFolder(p, entry, folder) { // drag onto a folder (or t
   }
   const base = entry.name.split('/').pop(), next = folder ? folder + '/' + base : base
   if (next === entry.name) return
-  await applyEntryRename(p, entry.name, entry.doc_id, entry.kind === 'resource', next, false) // drag = just move, no dialog
+  await applyEntryRename(p, entry.name, next, false) // drag = just move, no dialog
 }
 async function folderTransferTo(source, path, target, parent, move) { // drag a folder onto a folder header or the project root
   if ((parent ? parent.split('/').length : 0) + 1 > FOLDER_LEVELS) { toast(t('projects.folderDepth', { n: FOLDER_LEVELS })); return null }
@@ -707,18 +618,19 @@ async function folderTransferTo(source, path, target, parent, move) { // drag a 
   const name = await targetFolderName(fresh, parent, folderBase(path), !move)
   return name ? copyFolderTree(source, path, fresh, parent, name, move) : null
 }
-async function deleteProjectEntry(p, name, document, resource) {
+async function trashFile(project, path) { // a delete names the version it removes: take it from a fresh list
+  const file = (await api('GET', `/api/projects/${project}/files`)).files.find(f => f.path === path)
+  if (!file) throw new Error(t('files.tplGone'))
+  await api('DELETE', fileUrl(path, project) + '?version=' + encodeURIComponent(file.version))
+}
+async function deleteProjectEntry(p, name) {
   if (!p) { toast(t('projects.contextGone')); return }
   const doc = docId, epoch = openN
   if (!await ask(t('files.delConfirm', { name }), { noInput: true, danger: true })) return
-  if (resource) {
-    const current = (await api('GET', `/api/projects/${p.id}/resources`)).resources.find(r => r.name === name)
-    if (!current) { toast(t('files.tplGone')); await sidebar(); return }
-    await api('DELETE', `/api/projects/${p.id}/resources/${encodeURIComponent(name)}?version=${encodeURIComponent((current.updated_at || current.version))}`)
-  } else await api('DELETE', `/api/docs/${document}/files/${encodeURIComponent(name)}`)
+  try { await trashFile(p.id, name) } catch (e) { toast(e.message); await sidebar(); return }
   if (docId === doc && openN === epoch && docProject === p.id) {
-    if (activeFile === (resource ? TPLK + name : name) && (resource || document === docId) && !tabDirty) await switchTab('', true)
-    filesDirty = true; await loadDocResources(true); queueRender()
+    if (activeFile === name && !tabDirty) await switchTab('', true)
+    filesDirty = true; await loadProjectFiles(true); queueRender()
   }
   await sidebar()
 }
@@ -732,7 +644,7 @@ function cleanFolderName(raw) { return String(raw || '').trim().replace(/[\\/]+/
 function folderIsUsed(p, path) {
   if (projectFolderPaths(p).includes(path)) return true
   const entries = projectEntries(p)
-  return entries.documents.some(d => (d.folder || '') === path) || entries.resources.some(r => r.name === path) || entries.files.some(f => f.name === path)
+  return entries.documents.some(d => (d.folder || '') === path) || entries.files.some(f => f.path === path)
 }
 async function targetFolderName(p, parent, base, copy) {
   if (!folderIsUsed(p, joinFolder(parent, base))) return base
@@ -752,8 +664,7 @@ function folderContents(p, path) {
   const entries = projectEntries(p)
   return {
     documents: entries.documents.filter(d => insideFolder(d.folder || '', path)),
-    resources: entries.resources.filter(r => insideFolder(r.name, path)),
-    files: entries.files.filter(f => insideFolder(f.name, path)),
+    files: entries.files.filter(f => insideFolder(f.path, path)),
     folders: (p.folders || []).filter(f => insideFolder(f, path)),
   }
 }
@@ -763,8 +674,7 @@ function folderTreeFits(items, path, targetPath) { // never start a copy/move th
   if (tooDeep(targetPath)) return false
   if (items.folders.some(f => tooDeep(targetPath + rel(f)))) return false
   if (items.documents.some(d => tooDeep(targetPath + rel(d.folder || '')))) return false
-  if (items.resources.some(r => tooDeep(folderParent(targetPath + rel(r.name))))) return false
-  if (items.files.some(f => tooDeep(folderParent(targetPath + rel(f.name))))) return false
+  if (items.files.some(f => tooDeep(folderParent(targetPath + rel(f.path))))) return false
   return true
 }
 function projectCopyName(name, n = 1) {
@@ -778,20 +688,6 @@ function uniqueDocTitle(used, title) {
   for (let n = 1; ; n++) {
     const candidate = projectCopyName(title, n)
     if (!used.has(candidate.toLowerCase())) return candidate
-  }
-}
-async function attachmentsDoc(p) {
-  const docs = projectEntries(p).documents
-  if (docs.length) return docs[0].id
-  for (let n = 1; ; n++) {
-    const title = n === 1 ? t('projects.attachments') : `${t('projects.attachments')} ${n}`
-    try {
-      const r = await api('POST', `/api/projects/${p.id}/docs`, { title, content: '' })
-      p.documents = [...(p.documents || []), { id: r.id, title, folder: '' }]
-      return r.id
-    } catch (e) {
-      if (e.status !== 409) throw e
-    }
   }
 }
 async function pickTargetFolder(p, head, exclude = '', reserve = 0) {
@@ -813,12 +709,6 @@ async function transferEntryTo(p, entry, target, folder, move, opts = {}) {
   // keep the existing folder path. Choosing a target folder explicitly wins.
   const keep = !!opts.keepPath && !folder
   const destFolder = entry.kind === 'document' ? (keep ? (entry.folder || '') : folder) : folder
-  let targetDoc = opts.targetDoc || ''
-  if (entry.kind === 'file' && !targetDoc) {
-    const docs = projectEntries(target).documents
-    if (!docs.length) { toast(t('projects.uploadNeedsDoc')); return null }
-    targetDoc = docs.find(d => d.id === entry.doc_id)?.id || docs.find(d => d.id === docId)?.id || docs[0].id
-  }
   let name = opts.name || (entry.kind === 'document' ? entry.name : keep ? entry.name : entry.name.split('/').pop())
   let askName = opts.askName !== false
   let duplicate = !!opts.duplicate
@@ -832,14 +722,14 @@ async function transferEntryTo(p, entry, target, folder, move, opts = {}) {
     }
     const targetName = entry.kind === 'document' || name.includes('/') ? name : (destFolder ? destFolder + '/' + name : name)
     if (entry.kind !== 'document' && targetName.split('/').length - 1 > FOLDER_LEVELS) { toast(t('projects.folderDepth', { n: FOLDER_LEVELS })); return null }
-    const body = { kind: entry.kind, doc_id: entry.doc_id || '', name: entry.name, target_project_id: target.id, target_doc_id: targetDoc, target_name: targetName, move }
+    const body = { kind: entry.kind, doc_id: entry.doc_id || '', name: entry.name, target_project_id: target.id, target_name: targetName, move }
     if (entry.kind === 'document') body.target_folder = destFolder
     if (duplicate) body.duplicate = true
     try {
       const result = await api('POST', `/api/projects/${p.id}/transfer`, body)
       if (opts.refresh !== false) {
         await sidebar(); filesDirty = true
-        if (docId) { await loadDocResources(true); tabSig = ''; queueRender() }
+        if (docId) { await loadProjectFiles(true); tabSig = ''; queueRender() }
       }
       if (entry.kind === 'document' && move && docId === entry.doc_id) await openDoc(result.doc_id)
       return result
@@ -852,32 +742,49 @@ async function transferEntryTo(p, entry, target, folder, move, opts = {}) {
   }
 }
 function entryMenuItems(p, entry, actions) {
-  const what = entry.kind === 'document' ? 'document' : entry.kind === 'resource' ? 'module' : 'file'
+  const what = entry.kind
   const rename = actions.find(b => b.dataset.menuKey === 'rename')
   const trash = actions.find(b => b.dataset.menuKey === 'trash')
   const session = !!window.changeSession
   const writable = projectEditable(p) && !session
   return [
     rename && menuButtonItem(rename, what),
+    writable && convertMenuItem(p, entry),
     writable && sidebarMenuItem('duplicate', () => transferEntryTo(p, entry, p, entryFolder(entry), false, { askName: false, duplicate: true }), { what }),
     !session && sidebarMenuItem('copy', null, { what, submenu: () => entryDestinationItems(p, entry, false, writable) }),
     writable && sidebarMenuItem('move', null, { what, submenu: () => entryDestinationItems(p, entry, true) }),
     trash && menuButtonItem(trash, what),
   ].filter(Boolean)
 }
+function convertMenuItem(p, entry) { // the only conversions: document -> .typ file, .typ file -> document
+  if (entry.kind === 'document') return { label: t('projects.convertToFile'), title: t('projects.convertToFileHint'), run: () => convertEntry(p, entry) }
+  return /\.typ$/i.test(entry.name) ? { label: t('projects.convertToDocument'), title: t('projects.convertDocumentHint'), run: () => convertEntry(p, entry) } : null
+}
+async function convertEntry(p, entry) {
+  try {
+    const document = entry.kind === 'document'
+    if (!document) { // documents cannot be #included: show who still does
+      const { references } = await api('POST', `/api/projects/${p.id}/files-move-preview`, { path: entry.name, target: entry.name })
+      if (references?.length && !await ask([t('projects.convertBreaks'), ...references].join('\n'), { noInput: true })) return
+    }
+    const shown = document ? docId === entry.doc_id && !activeFile : docProject === p.id && activeFile === entry.name // was the converted thing open?
+    const r = await api('POST', `/api/projects/${p.id}/convert`, document ? { doc_id: entry.doc_id } : { path: entry.name })
+    await sidebarFresh() // the new entry shows at once; the old tab drops out with its entry
+    if (r.id) { await openDoc(r.id); return }
+    const target = projects.find(x => x.id === p.id) || p, host = projectEntries(target).documents.find(d => d.id !== entry.doc_id)
+    if (shown && host) await openProjectEntry(target, host.id, r.path)
+    else if (shown) closeView()
+  } catch (e) { toast(e.message) }
+}
 function entryDestinationItems(p, entry, move, within = true) {
-  const what = entry.kind === 'document' ? 'document' : entry.kind === 'resource' ? 'module' : 'file'
+  const what = entry.kind
   const items = []
   if (within) items.push(sidebarMenuItem('copy', () => transferEntryWithin(p, entry, move), { what, label: t('menu.copyHere'), title: t('menu.copyHereHint') }))
   items.push(sidebarMenuItem('copy', () => transferEntryOther(p, entry, move), { what, label: t('menu.copyOther'), title: t('menu.copyOtherHint') }))
-  if (!move && (entry.kind === 'resource' || (entry.kind === 'file' && TEXT_EXT.test(entry.name)))) {
-    items.push(sidebarMenuItem('copy', () => copyEntryGlobal(p, entry), { what, label: t('menu.copyGlobal'), title: t('menu.copyGlobalHint') }))
+  if (!move && entry.kind === 'file' && TEXT_EXT.test(entry.name)) {
+    items.push(sidebarMenuItem('copy', () => copyFileToPersonal(p.id, entry.name), { what, label: t('menu.copyGlobal'), title: t('menu.copyGlobalHint') }))
   }
   return items
-}
-function copyEntryGlobal(p, entry) {
-  if (entry.kind === 'resource') return pullLibrary({ source_scope: 'project', source_project_id: p.id, source: entry.name }, { scope: 'personal' })
-  return copyToLibrary(entry.name, entry.doc_id, { scope: 'personal' })
 }
 async function transferEntryWithin(p, entry, move) {
   const folder = await pickTargetFolder(p, t('menu.copyHere'))
@@ -897,7 +804,7 @@ async function transferEntryOther(p, entry, move) {
   return transferEntryTo(p, entry, target, folder, move)
 }
 async function projectEntryMenu(p, entry, anchor) {
-  const what = entry.kind === 'document' ? 'document' : entry.kind === 'resource' ? 'module' : 'file'
+  const what = entry.kind
   const items = [
     sidebarMenuItem('copy', null, { what, submenu: () => entryDestinationItems(p, entry, false) }),
     sidebarMenuItem('move', null, { what, submenu: () => entryDestinationItems(p, entry, true) }),
@@ -955,16 +862,11 @@ async function copyFolderTree(source, path, target, parent, name, move) {
   const items = folderContents(src, path)
   if (!folderTreeFits(items, path, targetPath)) { toast(t('projects.folderDepth', { n: FOLDER_LEVELS })); return null }
   // Every entry is its own request. Keep an undo step per finished entry so a
-  // conflict half-way (quota, a dependency module, a permission) rolls the
+  // conflict half-way (quota, a name clash, a permission) rolls the
   // whole folder back instead of leaving a half-transferred tree behind.
   const done = [], created = []
   const known = new Set(projectFolderPaths(tgt))
   const back = body => () => api('POST', `/api/projects/${target.id}/transfer`, body) // a move is undone by moving it home again
-  const undoCopiedResource = to => async () => {
-    const fresh = await api('GET', `/api/projects/${target.id}`)
-    const r = (fresh.resources || []).find(x => x.name === to)
-    if (r) await api('DELETE', `/api/projects/${target.id}/resources/${encodeURIComponent(to)}?version=${encodeURIComponent(r.updated_at || '')}`)
-  }
   const makeFolder = async p => {
     await api('POST', `/api/projects/${target.id}/folders`, { path: p })
     if (!known.has(p)) { known.add(p); created.push(p) }
@@ -972,12 +874,21 @@ async function copyFolderTree(source, path, target, parent, name, move) {
   try {
     for (const p of folderParents(targetPath)) await makeFolder(p)
     for (const f of items.folders) await makeFolder(f === path ? targetPath : targetPath + '/' + f.slice(path.length + 1))
+    for (const f of items.files) { // files first: a document copied after them finds the files it reaches already there
+      const to = targetPath + '/' + f.path.slice(path.length).replace(/^\/+/, '')
+      const result = await transferEntryTo(source, { kind: 'file', name: f.path }, tgt, '', move, {
+        askName: false, name: to, strict: true, refresh: false,
+      })
+      if (!result) continue
+      done.push(move
+        ? back({ kind: 'file', name: to, target_project_id: source.id, target_name: f.path, move: true })
+        : () => trashFile(target.id, to))
+    }
     const usedByFolder = new Map() // titles are unique per folder, so a copied folder keeps document names unless its target folder already has them
     const usedIn = folder => {
       if (!usedByFolder.has(folder)) usedByFolder.set(folder, new Set(projectEntries(tgt).documents.filter(d => (d.folder || '') === folder).map(d => d.title.toLowerCase())))
       return usedByFolder.get(folder)
     }
-    const docMap = new Map()
     for (const d of items.documents) {
       const rel = d.folder && d.folder !== path ? d.folder.slice(path.length + 1) : ''
       const folder = rel ? targetPath + '/' + rel : targetPath
@@ -988,37 +899,9 @@ async function copyFolderTree(source, path, target, parent, name, move) {
         askName: false, name: suggested, strict: true, refresh: false,
       })
       if (!result) continue
-      docMap.set(d.id, result.doc_id)
       done.push(move
-        ? back({ kind: 'document', doc_id: d.id, name: suggested, target_project_id: source.id, target_doc_id: '', target_name: d.title, target_folder: d.folder || '', move: true })
+        ? back({ kind: 'document', doc_id: d.id, name: suggested, target_project_id: source.id, target_name: d.title, target_folder: d.folder || '', move: true })
         : () => api('DELETE', `/api/docs/${result.doc_id}`))
-    }
-    for (const r of items.resources) {
-      const to = targetPath + '/' + r.name.slice(path.length).replace(/^\/+/, '')
-      const result = await transferEntryTo(source, { kind: 'resource', doc_id: '', name: r.name }, tgt, '', move, {
-        askName: false, name: to, strict: true, refresh: false,
-      })
-      if (!result) continue
-      done.push(move
-        ? back({ kind: 'resource', doc_id: '', name: to, target_project_id: source.id, target_doc_id: '', target_name: r.name, move: true })
-        : undoCopiedResource(to))
-    }
-    let attachDoc = ''
-    for (const f of items.files) {
-      if (docMap.has(f.doc_id)) continue // files travel with their copied or moved document
-      let targetDoc = target.id === source.id ? f.doc_id : ''
-      if (!targetDoc) {
-        if (!attachDoc) attachDoc = await attachmentsDoc(tgt)
-        targetDoc = attachDoc
-      }
-      const to = targetPath + '/' + f.name.slice(path.length).replace(/^\/+/, '')
-      const result = await transferEntryTo(source, { kind: 'file', doc_id: f.doc_id, name: f.name }, tgt, '', move, {
-        askName: false, name: to, targetDoc, strict: true, refresh: false,
-      })
-      if (!result) continue
-      done.push(move
-        ? back({ kind: 'file', doc_id: targetDoc, name: to, target_project_id: source.id, target_doc_id: f.doc_id, target_name: f.name, move: true })
-        : () => api('DELETE', `/api/docs/${targetDoc}/files/${encodeURIComponent(to)}`))
     }
   } catch (e) {
     let stuck = 0
@@ -1026,7 +909,7 @@ async function copyFolderTree(source, path, target, parent, name, move) {
     for (const p of created.sort((a, b) => b.split('/').length - a.split('/').length)) { // deepest first; a folder that is not empty stays
       try { await api('DELETE', `/api/projects/${target.id}/folders?path=${encodeURIComponent(p)}`) } catch (err) {}
     }
-    try { await sidebar(); filesDirty = true; if (docId) { await loadDocResources(true); tabSig = ''; queueRender() } } catch (err) {}
+    try { await sidebar(); filesDirty = true; if (docId) { await loadProjectFiles(true); tabSig = ''; queueRender() } } catch (err) {}
     const failure = new Error(t(stuck ? 'projects.folderTransferPartial' : 'projects.folderTransferUndone', { reason: e.message }))
     failure.status = e.status
     throw failure
@@ -1036,7 +919,7 @@ async function copyFolderTree(source, path, target, parent, name, move) {
     catch (e) { if (e.status !== 409) throw e }
   }
   await sidebar(); filesDirty = true
-  if (docId) { await loadDocResources(true); tabSig = ''; queueRender() }
+  if (docId) { await loadProjectFiles(true); tabSig = ''; queueRender() }
   return targetPath
 }
 function folderMenuItems(p, path, actions) {

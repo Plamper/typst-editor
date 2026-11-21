@@ -11,7 +11,7 @@ test('queued preview jobs remap after a superseded compile changed the worker re
   })
   vm.runInContext(source.slice(source.indexOf('let pvTail ='), source.indexOf('let typstT0 =')), context)
   const tick = () => new Promise(resolve => setImmediate(resolve))
-  const job = (id, sig) => ({ id, sig, cmd: 'work', main: sig, files: [{ name: sig + '.png' }], tpl: [] })
+  const job = (id, sig) => ({ id, sig, cmd: 'work', main: sig, files: [{ name: sig + '.png' }] })
   const first = context.pvCall(job(1, 'proposal'), 1)
   await tick()
   assert.equal(sent[0].full, true)
@@ -34,22 +34,23 @@ test('queued preview jobs remap after a superseded compile changed the worker re
 
 function fileContext(files, cache = new Map()) {
   const source = fs.readFileSync('web/js/50-preview.js', 'utf8')
-  const c = vm.createContext({ docId: 'doc', openN: 1, loadDocResources: async () => true,
+  const c = vm.createContext({ docId: 'doc', docProject: 'p', openN: 1, docMain: () => '/__doc__.typ', fileUrl: path => '/api/projects/p/files/' + path,
+    renderMediaChips() {}, queueTabs() {}, lastMedia: '', docResReadonly: false, tabSig: '', console: { warn() {} },
     filesDirty: false, filesAt: Date.now(), FILES_TTL: 15000, lastFiles: files, fileCache: cache,
     activeFile: '', tabDirty: false, fetch: async () => ({ ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer }),
-    api: async () => ({ files }), pvResTpl: () => [], pvFileSig: n => n, pvBibSig: '', bibKeys: [], TextDecoder, Uint8Array,
+    api: async () => ({ files }), pvFileSig: n => n, pvBibSig: '', bibKeys: [], TextDecoder, Uint8Array,
     t: (_key, args) => args.name + ': HTTP ' + args.status, setTimeout: fn => fn() })
   vm.runInContext(source.slice(source.indexOf('async function pvFiles()'), source.indexOf('async function shadowAll(')), c)
   return c
 }
 
 test('every render retains all 51 image inputs and prunes only deleted inputs', async () => {
-  const files = Array.from({ length: 51 }, (_, i) => ({ name: `image-${i}.png`, size: 1, mtime: 1 }))
+  const files = Array.from({ length: 51 }, (_, i) => ({ path: `image-${i}.png`, size: 1, version: 'v1' }))
   const c = fileContext(files)
   for (let i = 0; i < 3; i++) {
     await c.pvFiles()
     assert.equal(c.fileCache.size, 51)
-    assert.ok(files.every(f => c.fileCache.has(f.name)))
+    assert.ok(files.every(f => c.fileCache.has(f.path)))
   }
   c.lastFiles = files.slice(1)
   await c.pvFiles()
@@ -59,28 +60,28 @@ test('every render retains all 51 image inputs and prunes only deleted inputs', 
 
 test('loading another image cannot evict current inputs larger than 100 MB', async () => {
   const size = 60 * 1024 * 1024
-  const files = [{ name: 'a.png', size, mtime: 1 }, { name: 'b.png', size, mtime: 1 }, { name: 'c.png', size: 1, mtime: 1 }]
-  const cache = new Map(files.slice(0, 2).map(f => [f.name, { mtime: 1, bytes: { length: size } }]))
+  const files = [{ path: 'a.png', size, version: 'v1' }, { path: 'b.png', size, version: 'v1' }, { path: 'c.png', size: 1, version: 'v1' }]
+  const cache = new Map(files.slice(0, 2).map(f => [f.path, { version: 'v1', bytes: { length: size } }]))
   const c = fileContext(files, cache)
   await c.pvFiles()
   assert.equal(cache.size, 3)
 })
 
 test('failed image downloads stop resource preparation and can recover on the next render', async () => {
-  const c = fileContext([{ name: 'god-test.png', size: 1, mtime: 2 }])
-  c.fileCache.set('god-test.png', { mtime: 1, bytes: new Uint8Array([0]) })
+  const c = fileContext([{ path: 'god-test.png', size: 1, version: 'v2' }])
+  c.fileCache.set('god-test.png', { version: 'v1', bytes: new Uint8Array([0]) })
   const fetch = c.fetch
   c.fetch = async () => ({ ok: false, status: 403 })
   await assert.rejects(c.pvFiles(), /god-test.png: HTTP 403/)
-  assert.equal(c.fileCache.get('god-test.png').mtime, 1)
+  assert.equal(c.fileCache.get('god-test.png').version, 'v1')
   c.fetch = fetch
   await c.pvFiles()
-  assert.equal(c.fileCache.get('god-test.png').mtime, 2)
+  assert.equal(c.fileCache.get('god-test.png').version, 'v2')
 })
 
 test('temporary image server and network failures recover once without reloading', async () => {
   for (const network of [false, true]) {
-    const c = fileContext([{ name: 'god-test.png', size: 1, mtime: 1 }])
+    const c = fileContext([{ path: 'god-test.png', size: 1, version: 'v1' }])
     const success = c.fetch
     let calls = 0
     c.fetch = async (...args) => {
@@ -97,7 +98,7 @@ test('temporary image server and network failures recover once without reloading
 })
 
 test('persistent server failures stop after two attempts and retain readable diagnostics', async () => {
-  const c = fileContext([{ name: 'god-test.png', size: 1, mtime: 1 }])
+  const c = fileContext([{ path: 'god-test.png', size: 1, version: 'v1' }])
   let calls = 0
   c.fetch = async () => { calls++; return { ok: false, status: 503 } }
   await assert.rejects(c.pvFiles(), error => error.diags[0].message === 'god-test.png: HTTP 503')
@@ -105,7 +106,7 @@ test('persistent server failures stop after two attempts and retain readable dia
 })
 
 test('a deleted file refreshes the list once instead of blocking the preview', async () => {
-  const files = [{ name: 'gone.png', size: 1, mtime: 1 }, { name: 'keep.png', size: 1, mtime: 1 }]
+  const files = [{ path: 'gone.png', size: 1, version: 'v1' }, { path: 'keep.png', size: 1, version: 'v1' }]
   const c = fileContext(files)
   c.filesAt = 0 // first list still names the deleted file
   c.fetch = async url => String(url).includes('gone.png')
@@ -128,7 +129,7 @@ test('a content error after the worker mapped the files does not resend them', a
   })
   vm.runInContext(source.slice(source.indexOf('let pvTail ='), source.indexOf('let typstT0 =')), context)
   const tick = () => new Promise(resolve => setImmediate(resolve))
-  const job = (id, sig) => ({ id, sig, cmd: 'work', main: sig, files: [{ name: sig + '.png' }], tpl: [] })
+  const job = (id, sig) => ({ id, sig, cmd: 'work', main: sig, files: [{ name: sig + '.png' }] })
   const first = context.pvCall(job(1, 'with-image'), 1)
   await tick()
   context.pvJobs.get(1).bad(Object.assign(new Error('content'), { mapped: true, diags: [] }))
@@ -142,4 +143,16 @@ test('a content error after the worker mapped the files does not resend them', a
   assert.equal(sent[1].files, undefined)
   context.pvJobs.get(2).ok({})
   await second
+})
+
+test('project files load once by path and a moved document remaps the compiler shadow', async () => {
+  const c = fileContext([{ path: 'img/logo.png', size: 1, version: 'v1' }])
+  const urls = [], fetch = c.fetch
+  c.fetch = async url => { urls.push(url); return fetch() }
+  let main = '/__doc__.typ'
+  c.docMain = () => main
+  const before = (await c.pvFiles()).sig
+  main = '/Chapters/__doc__.typ' // the document moved into a folder: its relative paths start there now
+  assert.notEqual((await c.pvFiles()).sig, before)
+  assert.deepEqual(urls, ['/api/projects/p/files/img/logo.png'])
 })

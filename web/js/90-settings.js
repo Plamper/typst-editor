@@ -12,7 +12,13 @@ const SETTINGS_CATS = [
   ['sessions', 'settings.navSessions'], ['api', 'settings.navApi'], ['storage', 'settings.navStorage']
 ]
 const settingsError = message => toast(message || t('common.requestFailed'), null, null, 5000, 'error')
-const AGENT_PROMPT = 'Install the Typst Editor skill from https://raw.githubusercontent.com/fl-grtg/typst-editor/main/skills/typst-editor/SKILL.md and follow its section 0 to connect to my Typst server. Ask me for server URL and API key if missing.'
+const AGENT_PROMPT = [ // no server address: the browser only knows its own, the agent may run elsewhere
+  'Connect yourself to my Typst Editor server:',
+  '1. Install the skill from https://raw.githubusercontent.com/fl-grtg/typst-editor/main/skills/typst-editor/SKILL.md',
+  '2. Ask me for the server address (as reachable from where you run) and an API key (Settings > API keys in the editor).',
+  '3. Register the MCP server in your own client: Streamable HTTP at <server>/mcp with the header "Authorization: Bearer <key>". Find out yourself how your client adds a remote MCP server; keep the key out of files that get committed.',
+  '4. Check the connection with ls("/").'
+].join('\n')
 // 2D: language without reload (same module as 05-i18n: shadow t, keep ?lang helper)
 const LANG_KEY = 'typst_lang'
 function curLangInit() {
@@ -333,6 +339,8 @@ function renderSettings() {
   const kn = keepField(el('input'), 'keyName'); kn.placeholder = t('settings.keyName'); kn.maxLength = 40; kn.setAttribute('aria-label', t('settings.keyName'))
   const rs = el('select'); rs.setAttribute('aria-label', t('common.roleAria'))
   ;[['editor', t('common.roleEditor')], ['reviewer', t('settings.roleReviewer')]].forEach(([v, lab]) => { const o = el('option', null, lab); o.value = v; rs.appendChild(o) })
+  const ms = el('select'); ms.setAttribute('aria-label', t('settings.keyMode')); ms.title = t('settings.keyMode')
+  ;[['auto', t('settings.modeAuto')], ['direct', t('settings.modeDirect')], ['propose', t('settings.modePropose')]].forEach(([v, lab]) => { const o = el('option', null, lab); o.value = v; ms.appendChild(o) })
   const es = el('select'); es.setAttribute('aria-label', t('settings.expiry'))
   ;[[t('settings.never'), ''], [t('settings.expDays', { n: 30 }), '30'], [t('settings.expDays', { n: 90 }), '90'], [t('settings.expDays', { n: 365 }), '365']].forEach(([label, v]) => { const o = el('option', null, label); o.value = v; es.appendChild(o) })
   const cb = el('button', null, t('common.create'))
@@ -341,16 +349,16 @@ function renderSettings() {
     if (cb.disabled) return
     if (!kn.value.trim()) { settingsError(t('settings.needKeyName')); return }
     cb.disabled = true
-    api('POST', '/api/keys', { name: kn.value.trim(), role: rs.value, expires_in_days: es.value ? +es.value : null })
+    api('POST', '/api/keys', { name: kn.value.trim(), role: rs.value, mode: ms.value, expires_in_days: es.value ? +es.value : null })
       .then(d => { // no refetch: one POST per create, list updates locally (was POST+GET, 2 keys-bucket hits)
         lastKeySecret = d.key
         kn.value = ''
-        apiKeys = [...(apiKeys || []), { id: d.id, name: d.name, prefix: d.prefix, role: d.role, expires_at: d.expires_at || '', last_used: '', created_at: '' }]
+        apiKeys = [...(apiKeys || []), { id: d.id, name: d.name, prefix: d.prefix, role: d.role, mode: d.mode, expires_at: d.expires_at || '', last_used: '', created_at: '' }]
       })
       .catch(e => settingsError(e.message)).finally(() => { renderSettings(); showKeySecret() })
   }
-  const cr = el('div', 'row keyCreateRow'); cr.append(kn, rs, es, cb)
-  const createSec = ksec(cr); createSec.classList.add('keyCreateSec'); keySecs.push(createSec)
+  const cr = el('div', 'row keyCreateRow'); cr.append(kn, rs, ms, es, cb)
+  const createSec = ksec(cr, el('p', 'keyHelp', t('settings.keyHelp'))); createSec.classList.add('keyCreateSec'); keySecs.push(createSec)
   if (apiKeys === null) {
     keySecs.push(ksec(el('div', null, apiKeysLoading ? t('settings.loading') : '')))
     if (!apiKeysLoading) loadKeys()
@@ -394,9 +402,23 @@ function renderSettings() {
           .catch(e => { rsel.value = k.role; settingsError(e.message) })
           .finally(() => { rsel.disabled = false })
       }
+      const msel = el('select', 'keyModeSel') // mode editable in place like the role
+      ;[['auto', t('settings.modeAuto')], ['direct', t('settings.modeDirect')], ['propose', t('settings.modePropose')]].forEach(([v, lab]) => {
+        const o = el('option', null, lab); o.value = v; if (v === (k.mode || 'auto')) o.selected = true; msel.appendChild(o)
+      })
+      msel.setAttribute('aria-label', t('settings.modeForKey', { name: k.name })); msel.title = t('settings.keyMode')
+      msel.onchange = () => {
+        const mode = msel.value
+        if (mode === (k.mode || 'auto')) return
+        msel.disabled = true
+        api('PATCH', '/api/keys/' + encodeURIComponent(k.id), { mode })
+          .then(d => { k.mode = d.mode || mode; toast(t('settings.modeChanged')) })
+          .catch(e => { msel.value = k.mode || 'auto'; settingsError(e.message) })
+          .finally(() => { msel.disabled = false })
+      }
       const eS = el('span', 'val', t('settings.expires', { date: shortD(k.expires_at) })); eS.title = k.expires_at || t('settings.never')
       eS.style.fontSize = '12px'
-      sub.append(pc, eS, rsel)
+      sub.append(pc, eS, rsel, msel)
       left.append(nm, sub)
       r.append(left, rb)
       return r
@@ -711,7 +733,7 @@ try { // the editor view: a reader scroll moves the preview in step, not only th
   }, { passive: true })
 } catch (e) {}
 let syncEdT = 0
-function syncEdTab() { return !!activeFile && !window.changeSession && /.typ$/i.test(activeFile) && !isTplKey(activeFile) } // an included chapter is on the page too: its own text can follow the reading point
+function syncEdTab() { return !!activeFile && !window.changeSession && /.typ$/i.test(activeFile) } // an included chapter is on the page too: its own text can follow the reading point
 function queueSyncEd() { // preview scroll -> editor view: throttled, never moves the cursor
   if (!followAll || !docId || tplName || (activeFile && !syncEdTab())) return
   if (syncEdT) return
@@ -827,7 +849,7 @@ function pvNormWords(s) { // syncText words with their raw span: "don’t" -> do
   }
   return out
 }
-function pvMainText() { return activeFile ? shadow : getT() } // main.typ, also while a text tab is open
+function pvMainText() { return activeFile ? shadow : getT() } // the document text, also while a text tab is open
 function pvFileAnchor(key, main) { // main line where a text file enters the page (include first, import as weak hint)
   if (!key) return 0
   const want = tabName(key).replace(/^\.?\//, '').replace(/\.typ$/i, '')
@@ -837,7 +859,7 @@ function pvFileAnchor(key, main) { // main line where a text file enters the pag
   for (let i = 0; i < mask.length; i++) {
     const m = mask[i].match(/(?:^|[#=({,;]|\blet\s+\w+\s*=)\s*(include|import)\s*\(?\s*(?:<([^>]+)>|"([^"]+)"|([^\s:,)]+))/) // #include "a.typ", #include("a.typ"), #let x = include "a.typ", #{ include "a.typ" }
     if (!m) continue
-    const path = String(m[2] || m[3] || m[4] || '').replace(/^\.?\//, '').replace(/\.typ$/i, '')
+    const path = smPath(docFolder ? docFolder + '/' : '', String(m[2] || m[3] || m[4] || '')).replace(/\.typ$/i, '') // the document's relative paths start in its folder
     if (path === want) { if (m[1] === 'include') return i + 1; if (!weak) weak = i + 1 }
     else if (path.split('/').pop() === base && !loose) loose = m[1] === 'include' ? i + 1 : 0
   }
@@ -1999,7 +2021,7 @@ function pvGuessLine(line, sec) { // no text anchor at all: proportional inside 
 function syncToPv(force) { // force: explicit navigation (outline/find), works even with follow off
   const edge = force ? 0 : syncEdge // read once: a stale end from an earlier editor scroll never steers a later sync
   syncEdge = 0
-  const fileTab = !!activeFile && !window.changeSession && /\.typ$/i.test(activeFile) && !isTplKey(activeFile) // an included chapter is on the page too: its text and its own headings (also in the PDF outline) anchor it
+  const fileTab = !!activeFile && !window.changeSession && /\.typ$/i.test(activeFile) // an included chapter is on the page too: its text and its own headings (also in the PDF outline) anchor it
   if ((!followAll && !force) || !docId || tplName || (activeFile && !window.changeSession && !fileTab)) return
   if (scrollRestore && !scrollRestore.pv) return // reopened doc: saved preview spot wins over the first follow
   const pv = $('preview')

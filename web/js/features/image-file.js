@@ -9,10 +9,10 @@ async function paintImageFile(name) {
     if (imageFile.dataset.key && !/\.(bib|csv|tsv)$/i.test(name)) $('cmWrap').hidden = false
     imageFile.dataset.key = ''; clear(); return
   }
-  const mtime = (typeof lastFiles !== 'undefined' && lastFiles) ? (lastFiles.find(f => f.name === name) || {}).mtime : ''
+  const version = lastFiles.find(f => f.path === name)?.version
   const session = window.changeSession
-  const proposed = session?.files.get(sessionKey({ kind: 'file', doc_id: docId, path: name }))
-  const key = docId + '/' + name + '@' + (mtime || '') + (session ? ':' + session.previewRevision + ':' + session.original : '')
+  const proposed = session?.files.get(sessionKey({ kind: 'file', path: name }))
+  const key = docProject + '/' + name + '@' + (version || '') + (session ? ':' + session.previewRevision + ':' + session.original : '')
   if (key === imageFile.dataset.key) {
     if (imageFile.dataset.failed) { imageFile.dataset.failed = '1'; imageFile.hidden = true; $('cmWrap').hidden = false }
     else $('cmWrap').hidden = true
@@ -29,7 +29,7 @@ async function paintImageFile(name) {
   try {
     const staged = proposed ? sessionBytes(proposed, session.original || proposed.action === 'delete') : null
     if (proposed && staged == null) { toast(t('packages.fileAbsent')); view.onerror(); return }
-    const response = staged ? new Response(staged) : await fetch(`/api/docs/${docId}/files/${encodeURIComponent(name)}`)
+    const response = staged ? new Response(staged) : await fetch(fileUrl(name))
     if (!response.ok) throw Error(response.status)
     const bytes = await response.arrayBuffer()
     if (imageFile.dataset.key !== key) return

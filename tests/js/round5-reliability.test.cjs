@@ -268,7 +268,7 @@ test('sessionReplaceFile swaps an existing file inside the package, add-over-nam
   const want = Buffer.from(data).toString('base64')
   const s = { project: 'p', files: new Map(), original: false, busy: false, dirty: false, commentRanges: new Map(), previewRevision: 0 }
   const c = vm.createContext({
-    window: { changeSession: s }, docId: 'd', activeFile: '', lastFiles: [{ name: 'pic.png', size: 2 }],
+    window: { changeSession: s }, docId: 'd', activeFile: '', lastFiles: [{ path: 'pic.png', size: 2 }],
     TEXT_EXT: /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i,
     sessionKey: k => [k.kind, k.doc_id || '', k.path].join(':'),
     sessionRuntime: f => ({ ...f, id: f.id || 'draft_9' }),
@@ -284,7 +284,7 @@ test('sessionReplaceFile swaps an existing file inside the package, add-over-nam
   })
   vm.runInContext(zz.slice(zz.indexOf('async function sessionReplaceFile'), zz.indexOf('const reviewTools')), c)
   assert.equal(await c.sessionReplaceFile('pic.png', { name: 'new.png', size: data.length, arrayBuffer: async () => data.buffer }), 'pic.png')
-  const entry = s.files.get('file:d:pic.png')
+  const entry = s.files.get('file::pic.png')
   assert.equal(entry.action, 'modify')
   assert.equal(entry.base, want) // base = the stored content
   assert.equal(entry.content, want) // content = the new bytes, base64 like the backend contract
@@ -306,21 +306,21 @@ test('media manager gains a replace chip for binary files only while a change se
     window: { changeSession: { original: false } }, pendingReplace: '',
     TEXT_EXT: /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i, ICO_DUP: 'dup', ICO_X: 'x',
     el: (tag, cls, text) => mk(cls, text), icoBtn: (cls, icon) => mk(cls, icon),
-    deleteFile: () => { throw Error('delete not expected here') }, copyToLibrary: () => {}, mediaInsert: () => 'x',
+    deleteFile: () => { throw Error('delete not expected here') }, copyFileToPersonal: async () => {}, docResReadonly: false, docProject: 'p', mediaInsert: () => 'x',
     cm: { state: { facet: () => true, selection: { main: { from: 0, to: 0 } } }, dispatch() {}, focus() {} }, toast() {},
   })
   vm.runInContext(files.slice(files.indexOf('function renderMediaChips(files)'), files.indexOf("$('mediaBtn').onclick")), c)
-  c.renderMediaChips([{ name: 'pic.png', size: 2000 }])
+  c.renderMediaChips([{ path: 'pic.png', size: 2000 }])
   const chip = bar.children[1] // children[0] is the upload button, the chip follows
   assert.equal(bar.children.length, 2)
   assert.equal(chip.children.length, 4) // name + size + delete X + replace
   chip.children[3].onclick()
   assert.equal(c.pendingReplace, 'pic.png')
   assert.equal(input.clicked, true) // opens the picker directly
-  c.renderMediaChips([{ name: 'a.typ', size: 10 }])
+  c.renderMediaChips([{ path: 'a.typ', size: 10 }])
   assert.equal(bar.children[1].children.length, 4) // text file: name + size + X + copy, no replace (tab editing covers it)
   c.window.changeSession = null
-  c.renderMediaChips([{ name: 'pic.png', size: 2000 }])
+  c.renderMediaChips([{ path: 'pic.png', size: 2000 }])
   assert.equal(bar.children[1].children.length, 3) // outside a session: name + size + X only
 })
 

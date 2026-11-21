@@ -1,22 +1,22 @@
-﻿"""Project-wide history and file actions."""
-from conftest import login, register_user
+"""Project-wide history and file actions."""
+from conftest import login, put_file, register_user
 
 from backend import db
 
 
-def test_checkpoint_restores_documents_modules_and_binary_attachments(c):
+def test_checkpoint_restores_documents_and_every_project_file(c):
     register_user(c, 'alice')
     did = c.post('/api/docs/create', json={'title': 'First', 'content': 'first source'}).json()['id']
     pid = c.get(f'/api/docs/{did}').json()['project_id']
     other = c.post(f'/api/projects/{pid}/docs', json={'title': 'Second', 'content': 'second source'}).json()['id']
-    assert c.post(f'/api/projects/{pid}/resources', json={'name': 'data.csv', 'content': 'a,b\n1,2'}).status_code == 200
-    assert c.post(f'/api/docs/{did}/files', files={'f': ('image.png', b'\x89PNG\x00\xff', 'image/png')}).status_code == 200
+    v = put_file(c, pid, 'data.csv', b'a,b\n1,2').json()['version']
+    img = put_file(c, pid, 'image.png', b'\x89PNG\x00\xff').json()['version']
     snap = c.post(f'/api/projects/{pid}/snapshots', json={'label': 'Whole project'})
     assert snap.status_code == 200, snap.text
     sid = snap.json()['id']
-    version = c.get(f'/api/projects/{pid}/resources').json()['resources'][0]['updated_at']
-    c.post(f'/api/projects/{pid}/resources', json={'name': 'data.csv', 'content': 'changed', 'version': version})
-    c.delete(f'/api/docs/{did}/files/image.png')
+    put_file(c, pid, 'data.csv', b'changed', version=v)
+    c.delete(f'/api/projects/{pid}/files/image.png', params={'version': img})
+    put_file(c, pid, 'later.txt', b'later')
     c.delete(f'/api/docs/{other}')
     added = c.post(f'/api/projects/{pid}/docs', json={'title': 'Added later'}).json()['id']
     diff = c.get(f'/api/projects/{pid}/snapshots/{sid}').json()
@@ -25,8 +25,9 @@ def test_checkpoint_restores_documents_modules_and_binary_attachments(c):
     result = c.post(f'/api/projects/{pid}/snapshots/{sid}/restore', json={})
     assert result.status_code == 200, result.text
     assert c.get(f'/api/docs/{other}').json()['content'] == 'second source'
-    assert c.get(f'/api/docs/{did}/files/image.png').content == b'\x89PNG\x00\xff'
-    assert c.get(f'/api/projects/{pid}/resources').json()['resources'][0]['content'] == 'a,b\n1,2'
+    assert c.get(f'/api/projects/{pid}/files/image.png').content == b'\x89PNG\x00\xff'
+    assert c.get(f'/api/projects/{pid}/files/data.csv').content == b'a,b\n1,2'
+    assert c.get(f'/api/projects/{pid}/files/later.txt').status_code == 404
     with db.tx() as con:
         assert con.execute('SELECT trashed FROM docs WHERE id=?', (added,)).fetchone()[0] == 1
     history = c.get(f'/api/projects/{pid}/snapshots').json()['snapshots']
@@ -34,22 +35,22 @@ def test_checkpoint_restores_documents_modules_and_binary_attachments(c):
     assert before['kind'] == 'manual'  # the safety net must survive auto-retention
 
 
-def test_project_rename_entries_and_editor_delete(c):
+def test_project_file_moves_and_editor_delete(c):
     register_user(c, 'alice')
     did = c.post('/api/docs/create', json={'title': 'Rename'}).json()['id']
     pid = c.get(f'/api/docs/{did}').json()['project_id']
-    c.post(f'/api/projects/{pid}/resources', json={'name': 'old.typ', 'content': 'original'})
-    c.post(f'/api/projects/{pid}/resources', json={'name': 'occupied.typ', 'content': 'keep'})
-    url = f'/api/projects/{pid}/rename-entry'
-    assert c.post(url, json={'name': 'old.typ', 'target': 'occupied.typ'}).status_code == 409
-    body = {'name': 'old.typ', 'target': 'new.typ'}
+    v = put_file(c, pid, 'old.typ', b'original').json()['version']
+    put_file(c, pid, 'occupied.typ', b'keep')
+    url = f'/api/projects/{pid}/files-move'
+    assert c.post(url, json={'path': 'old.typ', 'target': 'occupied.typ', 'version': v}).status_code == 409
+    body = {'path': 'old.typ', 'target': 'new.typ'}
     preview = c.post(url + '-preview', json=body).json()
     assert c.post(url, json={**body, 'version': preview['version']}).status_code == 200
-    c.post(f'/api/docs/{did}/files', files={'f': ('a.png', b'image', 'image/png')})
-    body = {'name': 'a.png', 'target': 'nested/b.png', 'doc_id': did}
+    put_file(c, pid, 'a.png', b'image')
+    body = {'path': 'a.png', 'target': 'nested/b.png'}
     preview = c.post(url + '-preview', json=body).json()
     assert c.post(url, json={**body, 'version': preview['version']}).status_code == 200
-    assert c.get(f'/api/docs/{did}/files/nested/b.png').content == b'image'
+    assert c.get(f'/api/projects/{pid}/files/nested/b.png').content == b'image'
     register_user(c, 'bob')
     login(c, 'alice')
     c.post(f'/api/projects/{pid}/members', json={'username': 'bob', 'role': 'editor'})
@@ -61,7 +62,7 @@ def test_project_rename_entries_and_editor_delete(c):
     login(c, 'alice')
     c.post(f'/api/projects/{pid}/members', json={'username': 'bob', 'role': 'reviewer'})
     login(c, 'bob')
-    assert c.post(url, json={'name': 'new.typ', 'target': 'bad.typ'}).status_code == 403
+    assert c.post(url, json={'path': 'new.typ', 'target': 'bad.typ'}).status_code == 403
     assert c.post(f'/api/projects/{pid}/snapshots', json={}).status_code == 403
 
 
@@ -106,8 +107,8 @@ def test_changes_use_sidebar_paths_and_mark_binaries(c):
     did = c.post('/api/docs/create', json={'title': 'Thesis', 'content': 'one'}).json()['id']
     pid = c.get(f'/api/docs/{did}').json()['project_id']
     sid = c.post(f'/api/projects/{pid}/snapshots', json={'label': 'base'}).json()['id']
-    c.post(f'/api/projects/{pid}/resources', json={'name': 'lib/style.typ', 'content': '#let a = 1'})
-    c.post(f'/api/docs/{did}/files', files={'f': ('logo.png', b'\x89PNG\x00\xff', 'image/png')})
+    put_file(c, pid, 'lib/style.typ', b'#let a = 1')
+    put_file(c, pid, 'logo.png', b'\x89PNG\x00\xff')
     rows = c.get(f'/api/projects/{pid}/snapshots/{sid}').json()['changes']
     assert [(r['name'], r['status'], r['binary']) for r in rows] == [
         ('lib/style.typ', 'added', False), ('logo.png', 'added', True)]  # no project name, no main.typ

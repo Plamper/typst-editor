@@ -174,6 +174,34 @@ window.newProjectFromMenu = newProjectFromMenu // menubar proxy (classic ui-laye
 $('new').onclick = e => { e.stopPropagation(); openNewMenu($('new')) }
 let upBusy = false // double-click: no second doc
 $('upDoc').onclick = () => $('docPick').click()
+async function zipDocuments(f, project = '') { // every .typ of the ZIP with a checkbox: ticked ones become documents, the rest project files (null = cancelled)
+  const body = new FormData(); body.append('f', f)
+  const response = await fetch('/api/zip-preview', { method: 'POST', body })
+  if (!response.ok) throw new Error(expMsg(await response.text()))
+  const { entries, suggested, included_by: includedBy = {}, others = [] } = await response.json()
+  const box = el('div', 'mBody zipDocs')
+  box.append(el('p', 'mText', t(entries.length ? 'docs.zipDocsNote' : 'docs.zipNoTyp')))
+  const list = el('div', 'zipList')
+  const checks = entries.map(path => {
+    const label = el('label', 'mCheck'), check = document.createElement('input'), cut = path.lastIndexOf('/') + 1
+    check.type = 'checkbox'; check.value = path; check.checked = suggested.includes(path)
+    const name = el('span', 'zipName')
+    if (cut) name.append(el('span', 'zipDir', path.slice(0, cut)))
+    name.append(path.slice(cut))
+    label.append(check, name)
+    if (includedBy[path]) label.append(el('span', 'zipHint', t('docs.zipIncludedBy', { name: includedBy[path] })))
+    list.append(label)
+    return check
+  })
+  if (entries.length) box.append(list)
+  if (entries.length && others.length) {
+    const names = others.slice(0, 3).join(', ') + (others.length > 3 ? ', …' : '')
+    box.append(el('p', 'mNote', t(others.length === 1 ? 'docs.zipOtherOne' : 'docs.zipOtherMany', { n: others.length, names })))
+  }
+  const head = project ? t('docs.zipInto', { name: f.name, project }) : t('docs.zipNew', { name: f.name.replace(/\.zip$/i, '') })
+  if (!await ask(head, { noInput: true, body: box, ok: t('docs.zipImport') })) return null
+  return checks.filter(c => c.checked).map(c => c.value)
+}
 async function importUpload(f) {
   if (!f || upBusy) return
   if (f.size > (TEXT_EXT.test(f.name) ? 200 * 1024 : 10 * 1024 * 1024)) { toast(t(TEXT_EXT.test(f.name) ? 'docs.maxKb' : 'docs.maxBinary')); return }
@@ -181,22 +209,25 @@ async function importUpload(f) {
   try {
     if (!TEXT_EXT.test(f.name) && !/\.zip$/i.test(f.name)) { await uploadToProject([f]); return }
     if (/\.zip$/i.test(f.name)) {
-      const r = await askNewDoc(f.name.replace(/\.zip$/i, ''))
-      if (!r) return
-      const body = new FormData(); body.append('f', f); body.append('title', r.title.trim() || t('projects.new')); body.append('folder', '')
+      const documents = await zipDocuments(f)
+      if (documents == null) return
+      const body = new FormData(); body.append('f', f); body.append('name', f.name); body.append('documents', JSON.stringify(documents))
       const response = await fetch('/api/docs/import-zip', { method: 'POST', body })
       if (!response.ok) throw new Error(expMsg(await response.text()))
-      await openDoc((await response.json()).id); sidebar(); return
+      const result = await response.json()
+      shut.delete('project:' + result.project_id); saveShut()
+      if (result.id) await openDoc(result.id)
+      await sidebar(); return
     }
     const txt = await f.text(), isTyp = /\.typ$/i.test(f.name), doc = docId, epoch = openN
     const targets = []
     if (isTyp) targets.push(['doc', t('docs.pickDoc'), t('docs.pickDocSub')])
     targets.push(['resource', t('files.uploadResource'), t('files.uploadResourceD')])
-    if (docId && docRole !== 'reviewer' && !openedTrashed) targets.push(['file', t('files.uploadLocal'), t('files.uploadLocalD')])
+    if (docProject && !docResReadonly && !openedTrashed) targets.push(['file', t('files.uploadLocal'), t('files.uploadLocalD')])
     const i = await askPick(t('files.uploadTarget'), targets.map(x => [x[1], x[2]]))
     if (i == null || !targets[i]) return
     const target = targets[i][0]
-    if (target === 'file') { if (doc === docId && epoch === openN) await upText(f); return }
+    if (target === 'file') { if (doc === docId && epoch === openN) { const path = await upText(f); if (path) await switchTab(path) } return }
     if (target === 'resource') {
       const r = await askNewTpl(f.name)
       if (!r || !r.name.trim()) return
@@ -221,7 +252,7 @@ $('docPick').onchange = async () => {
 $('del').onclick = async () => {
   const doc = docId, resource = tplName, epoch = openN
   if (window.changeSession || window.suggestionDraft) {
-    if (activeFile) await deleteProjectEntry({ id: docProject }, tabName(activeFile), docId, isTplKey(activeFile))
+    if (activeFile) await deleteProjectEntry({ id: docProject }, activeFile)
     else await stageDocumentDelete(doc)
     return
   }
@@ -245,9 +276,9 @@ $('del').onclick = async () => {
 setInterval(() => {
   if (!docId) return
   loadComments().catch(e => console.warn('comments poll failed', e))
-  if ((docProject || docRole !== 'owner') && navigator.onLine !== false) {
-    const doc = docId, before = JSON.stringify(window.docTpl)
-    loadDocResources(true).then(ok => { if (ok && doc === docId && before !== JSON.stringify(window.docTpl)) queueRender() }).catch(() => {})
+  if (docProject && navigator.onLine !== false) {
+    const doc = docId, before = lastMedia
+    loadProjectFiles(true).then(ok => { if (ok && doc === docId && before !== lastMedia) queueRender() }).catch(() => {})
   }
 }, POLL_MS)
 const unsafeState = () => { // edits that may not have reached the server yet
@@ -257,7 +288,7 @@ const unsafeState = () => { // edits that may not have reached the server yet
   if (openedTrashed || docRole === 'reviewer') return false
   const dirtyMark = ['…', t('docs.offlineRetry'), t('docs.saveError', { msg: '' })]
   if (!dirtyMark.some(m => m && s.startsWith(m))) return false
-  return !(prov && prov.wsconnected && synced && !activeFile && !tplName) // live main.typ: Yjs already carried it
+  return !(prov && prov.wsconnected && synced && !activeFile && !tplName) // live the document text: Yjs already carried it
 }
 addEventListener('beforeunload', e => { if (unsafeState()) { e.preventDefault(); e.returnValue = '' } }) // offline/failed save: browser asks before closing
 addEventListener('pagehide', () => { // stash latest edits, 2s save may still be pending
@@ -273,8 +304,7 @@ addEventListener('pagehide', () => { // stash latest edits, 2s save may still be
     fetch('/api/templates', { method: 'POST', headers: head,
       body: JSON.stringify({ name: tplName, content: getT(), ...(tplVer ? { version: tplVer } : {}) }), keepalive: true })
   } else if (docId && activeFile && tabDirty && tabCanEdit(activeFile)) {
-    const rq = tabReq(activeFile, getT())
-    fetch(rq.url, { method: 'POST', headers: head, body: JSON.stringify(rq.body), keepalive: true })
+    fetch(tabReq(activeFile), { method: 'PUT', body: getT(), keepalive: true })
   }
   else if (docId && ytext && synced && docRole !== 'reviewer' && live)
     fetch(`/api/docs/${docId}/save`, { method: 'POST', headers: head,

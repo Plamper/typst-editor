@@ -15,16 +15,15 @@ test_ui_tabs_roving_focus_and_mobile: desktop roving tabindex + arrows/Enter,
 import re
 import time
 
-from helpers import create_doc, register, type_source
+from helpers import create_doc, put_file, register, type_source
 from playwright.sync_api import expect
 
 PREVIEW_TIMEOUT = 60_000
 
 
 def _new_file_tab(page, name):
-    # Local attachments still use the file save route; the plus menu now creates project modules.
-    did = next(d['id'] for d in page.request.get('/api/docs').json()['own'] if d['title'].startswith('UI '))
-    response = page.request.post(f'/api/docs/{did}/files/{name}.typ/text', data={'content': ''})
+    pid = next(d['project_id'] for d in page.request.get('/api/docs').json()['own'] if d['title'].startswith('UI '))
+    response = put_file(page.request, pid, name + '.typ', '')
     assert response.ok, response.text()
     page.locator('aside .doc.sub .t').filter(has_text=name + '.typ').click()  # tabs only list what was opened
     tab = page.locator('#tabs button.tab').filter(has_text=name + '.typ')
@@ -47,12 +46,12 @@ def test_ui_save_failure_blocks_switch_and_keeps_dirty(page):
     _wait_saved(page)
 
     def _fail(route):
-        if route.request.method == "POST":
+        if route.request.method == "PUT":
             route.fulfill(status=500, content_type="application/json", body='{"detail":"boom"}')
         else:
             route.continue_()
 
-    page.route("**/api/docs/**/files/**/text", _fail)
+    page.route("**/api/projects/**/files/**", _fail)
     try:
         type_source(page, "BBB two plus dirty")
         page.locator("#tabs button.tab", has_text="afile.typ").click()
@@ -63,7 +62,7 @@ def test_ui_save_failure_blocks_switch_and_keeps_dirty(page):
         expect(page.locator("#toast")).to_be_visible()
         expect(page.locator("#toast")).to_contain_text("bfile.typ")
     finally:
-        page.unroute("**/api/docs/**/files/**/text", _fail)
+        page.unroute("**/api/projects/**/files/**", _fail)
     # recovered: switch works and the dirty text survived the blocked attempt
     page.locator("#tabs button.tab", has_text="afile.typ").click()
     expect(page.locator("#cm .cm-content")).to_contain_text("AAA one")
@@ -88,7 +87,7 @@ def test_ui_rapid_tab_switch_keeps_newest(page):
             time.sleep(0.8)  # first fetch resolves after the second one
         route.continue_()
 
-    page.route("**/api/docs/**/files/**/text", _slow)
+    page.route("**/api/projects/**/files/**", _slow)
     try:
         page.locator("#tabs button.tab", has_text="afile.typ").click()
         page.locator("#tabs button.tab", has_text="bfile.typ").click()
@@ -98,7 +97,7 @@ def test_ui_rapid_tab_switch_keeps_newest(page):
         expect(page.locator("#cm .cm-content")).to_contain_text("BBB two")
         expect(page.locator("#cm .cm-content")).not_to_contain_text("AAA one")
     finally:
-        page.unroute("**/api/docs/**/files/**/text", _slow)
+        page.unroute("**/api/projects/**/files/**", _slow)
 
 
 def test_ui_presentation_enter_navigate_exit(page):

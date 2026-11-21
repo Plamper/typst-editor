@@ -73,9 +73,8 @@ def quota_cap() -> int:
 
 
 def user_bytes(user: str, con: sqlite3.Connection | None = None) -> int:
-    # File sizes come from the files table (1D), never from a filesystem
-    # walk. Write-through on every mutation keeps it exact; list_files()
-    # reconciles external writers (duplicate, MCP text edit) on next read.
+    # File sizes come from the project_files table, never from a filesystem
+    # walk (every write goes through services/project_files).
     # Signatures stay put: sync.py reads quota through these (short-lived
     # cache there, Interna here).
     from backend import db as _db
@@ -102,8 +101,8 @@ def user_bytes(user: str, con: sqlite3.Connection | None = None) -> int:
         ).fetchone()
         total += int(t["n"] or 0)
         pr = con.execute(
-            "SELECT COALESCE(SUM(LENGTH(CAST(r.content AS BLOB))),0) AS n "
-            "FROM project_resources r JOIN projects p ON p.id=r.project_id WHERE p.owner=?", (user,)
+            "SELECT COALESCE(SUM(f.size),0) AS n "
+            "FROM project_files f JOIN projects p ON p.id=f.project_id WHERE p.owner=?", (user,)
         ).fetchone()
         total += int(pr["n"] or 0)
         ps = con.execute("SELECT COALESCE(SUM(LENGTH(CAST(s.content AS BLOB))),0) AS n FROM project_snapshots s JOIN projects p ON p.id=s.project_id WHERE p.owner=?", (user,)).fetchone()
@@ -113,12 +112,6 @@ def user_bytes(user: str, con: sqlite3.Connection | None = None) -> int:
         a = con.execute("SELECT avatar FROM users WHERE name=?", (user,)).fetchone()
         if a and a["avatar"]:
             total += len(a["avatar"].encode("utf-8"))
-        f = con.execute(
-            "SELECT COALESCE(SUM(fl.size),0) AS n FROM files fl "
-            "JOIN docs d ON d.id=fl.doc_id WHERE d.owner=?",
-            (user,),
-        ).fetchone()
-        total += int(f["n"] or 0)
         c = con.execute("SELECT COALESCE(SUM(LENGTH(CAST(c.suggestion_old AS BLOB)) + "
                         "LENGTH(CAST(c.replacement AS BLOB))),0) AS n FROM comments c "
                         "JOIN docs d ON d.id=c.doc_id WHERE d.owner=?", (user,)).fetchone()

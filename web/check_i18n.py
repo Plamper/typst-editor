@@ -89,7 +89,11 @@ ALLOW_EXACT |= {
 }
 # Agent prompt: English instructions + URL for an AI agent, must stay English.
 ALLOW_EXACT |= {
-    "Install the Typst Editor skill from https://raw.githubusercontent.com/fl-grtg/typst-editor/main/skills/typst-editor/SKILL.md and follow its section 0 to connect to my Typst server. Ask me for server URL and API key if missing.",
+    "Connect yourself to my Typst Editor server:",
+    "1. Install the skill from https://raw.githubusercontent.com/fl-grtg/typst-editor/main/skills/typst-editor/SKILL.md",
+    "2. Ask me for the server address (as reachable from where you run) and an API key (Settings > API keys in the editor).",
+    "3. Register the MCP server in your own client: Streamable HTTP at <server>/mcp with the header \"Authorization: Bearer <key>\". Find out yourself how your client adds a remote MCP server; keep the key out of files that get committed.",
+    "4. Check the connection with ls(\"/\").",
 }
 ALLOW_RES = [
     re.compile(r"^[#=$/`+<@]"),  # Typst/HTML/code inserts ('#fig', '= x', '<p ..>', ...)

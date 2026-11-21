@@ -1,4 +1,4 @@
-"""Explicit document-file copies into a personal or project library."""
+"""Copy a personal template or a project text file, with the files it includes, into the templates or a project."""
 from __future__ import annotations
 
 import hashlib
@@ -12,8 +12,7 @@ from pydantic import BaseModel, Field
 
 from backend import db, deps
 from backend.constants import MAX_TXT
-from backend.services import projects, quota, resources
-from backend.services.docfiles import need_text, store
+from backend.services import project_files, projects, quota, resources
 from backend.services.sidebar import notify_sidebar
 
 router = APIRouter()
@@ -36,26 +35,20 @@ def source_library(con, user: str, b: Pull) -> dict[str, str]:
         return {r["name"]: r["content"] for r in con.execute("SELECT name,content FROM templates WHERE owner=?", (user,))}
     if b.source_scope != "project":
         raise HTTPException(400, "Choose a personal or project source")
-    try:
-        projects.require(con, b.source_project_id, user)
-    except HTTPException as e:
-        if e.status_code != 404:
-            raise
-        # A document guest may pull only sources already visible through that document.
-        visible: dict[str, str] = {}
-        for d in con.execute("SELECT id,owner,content FROM docs WHERE project_id=? AND trashed=0", (b.source_project_id,)).fetchall():
-            if not db.role_on(con, user, d["id"]):
-                continue
-            local = {f.path: store.get(d["id"], f.path).decode("utf-8", errors="replace")
-                     for f in store.list(d["id"]) if resources.kind_of(f.path)}
-            visible.update(resources.doc_effective(d["owner"], d["content"], local, d["id"])["resources"])
-        return visible
-    return {r["name"]: r["content"] for r in con.execute("SELECT name,content FROM project_resources WHERE project_id=?", (b.source_project_id,))}
+    # A document guest may pull only files already visible through that document.
+    allowed = project_files.visible(con, b.source_project_id, user)
+    texts = project_files.texts(con, b.source_project_id, tuple(resources.RESOURCE_EXTS))
+    return {n: c for n, c in texts.items() if allowed is None or n in allowed}
+
+
+def resource_name(name: str, *, new: bool = False) -> str:
+    n = project_files.clean(name, new=new)
+    if not resources.kind_of(n):
+        raise HTTPException(400, "Unsupported text resource extension")
+    return n
 
 
 def inspect_pull(con, user: str, b: Pull) -> dict:
-    from backend.routers.projects import resource_name
-
     source = resource_name(b.source)
     shelf = source_library(con, user, b)
     if source not in shelf:
@@ -68,7 +61,7 @@ def inspect_pull(con, user: str, b: Pull) -> dict:
             raise HTTPException(400, "Include the target folder in the module path")
         projects.require(con, b.project_id, user, edit=True)
         owner = con.execute("SELECT owner FROM projects WHERE id=?", (b.project_id,)).fetchone()[0]
-        existing = {r["name"]: r["updated_at"] for r in con.execute("SELECT name,updated_at FROM project_resources WHERE project_id=?", (b.project_id,))}
+        existing = {r["path"]: r["version"] for r in con.execute("SELECT path,version FROM project_files WHERE project_id=?", (b.project_id,))}
     else:
         raise HTTPException(400, "Choose a personal or project target")
     root = resource_name(b.name, new=True)
@@ -84,9 +77,9 @@ def inspect_pull(con, user: str, b: Pull) -> dict:
             raise HTTPException(413, "Too many module dependencies")
         found[n] = shelf[n]
         if n.lower().endswith(".typ"):
-            for ref in resources.refs_in_text(shelf[n]):
-                resolved = resources._resolve_ref(n, ref, {}, shelf)
-                if resolved and resolved not in found:
+            for m in resources.REF_RE.finditer(shelf[n]):
+                resolved = resources.resolve(posixpath.dirname(n), m.group(1))
+                if resolved in shelf and resolved not in found:
                     queue.append(resolved)
     names = {source: root}
     for n in found:
@@ -105,7 +98,7 @@ def inspect_pull(con, user: str, b: Pull) -> dict:
     copies = {}
     for old, content in found.items():
         def rewrite(match, old=old):
-            resolved = resources._resolve_ref(old, match.group(1), {}, shelf)
+            resolved = resources.resolve(posixpath.dirname(old), match.group(1))
             if resolved not in names:
                 return match.group(0)
             target = names[resolved]
@@ -151,12 +144,17 @@ def pull_module(b: Pull, req: Request, user: str = Depends(deps.me)) -> dict:
             raise HTTPException(409, "Source or target changed; review the pull again")
         quota.check_quota(p["owner"], sum(len(c.encode("utf-8")) for c in p["content"].values()), con)
         now = db.now_iso()
-        for name, content in p["content"].items():
-            if b.scope == "personal":
-                con.execute("INSERT INTO templates(owner,name,content,line,folder,updated_at) VALUES (?,?,?,?,?,?)",
-                            (user, name, content, resources.insert_line(name), b.folder, now))
-            else:
-                con.execute("INSERT INTO project_resources VALUES (?,?,?,?)", (b.project_id, name, content, now))
+        backups: project_files.Backups = {}
+        try:
+            for name, content in p["content"].items():
+                if b.scope == "personal":
+                    con.execute("INSERT INTO templates(owner,name,content,line,folder,updated_at) VALUES (?,?,?,?,?,?)",
+                                (user, name, content, resources.insert_line(name), b.folder, now))
+                else:
+                    project_files.put(con, b.project_id, name, content.encode(), backups)
+        except Exception:
+            project_files.undo(backups)
+            raise
         if b.scope == "personal":
             deps.ensure_folder(con, user, "tpl", b.folder)
     quota.invalidate_quota_cache(p["owner"])
@@ -165,99 +163,3 @@ def pull_module(b: Pull, req: Request, user: str = Depends(deps.me)) -> dict:
     else:
         notify_sidebar(user)
     return {"name": p["name"], "version": now, "files": p["files"]}
-
-
-class Copy(BaseModel):
-    source: str = Field(min_length=1, max_length=240)
-    scope: str
-    project_id: str = ""
-    name: str = Field(min_length=1, max_length=240)
-    folder: str = Field(default="", max_length=40)
-    preview: str = ""
-
-
-def inspect_copy(con, user: str, doc_id: str, b: Copy) -> dict:
-    from backend.routers.projects import resource_name
-
-    deps._tx_role(con, user, doc_id)  # Reading the source is sufficient; target permissions are checked below.
-    source = need_text(b.source)
-    try:
-        content = store.get(doc_id, source).decode("utf-8")
-    except FileNotFoundError:
-        raise HTTPException(404, "Source file gone") from None
-    except UnicodeDecodeError:
-        raise HTTPException(400, "Source must be UTF-8 text") from None
-    if len(content.encode("utf-8")) > MAX_TXT:
-        raise HTTPException(413, "Text resource exceeds 200 KB")
-    name = resource_name(b.name, new=True)
-    if PurePosixPath(name).suffix.lower() != PurePosixPath(source).suffix.lower():
-        raise HTTPException(400, "Keep the source file extension")
-    resource_clash = False  # case-variant module names would render as two rows (#7)
-    if b.scope == "personal":
-        if "/" in name or len(name) > 100 or resources.res_name(name) != name:
-            raise HTTPException(400, "Personal library: choose a filename and a separate library folder")
-        target = con.execute("SELECT updated_at FROM templates WHERE owner=? AND name=?", (user, name)).fetchone()
-        owner = user
-    elif b.scope == "project":
-        if b.folder:
-            raise HTTPException(400, "For project libraries, include the folder in the target name")
-        projects.require(con, b.project_id, user, edit=True)
-        target = con.execute("SELECT updated_at FROM project_resources WHERE project_id=? AND name=?", (b.project_id, name)).fetchone()
-        owner = con.execute("SELECT owner FROM projects WHERE id=?", (b.project_id,)).fetchone()[0]
-        resource_clash = name.lower() in {r["name"].lower() for r in con.execute(
-            "SELECT name FROM project_resources WHERE project_id=?",
-            (b.project_id,),
-        ).fetchall()}
-    else:
-        raise HTTPException(400, "Choose personal or project library")
-    dependencies = resources.refs_in_text(content) if source.lower().endswith(".typ") else []
-    warnings = []
-    if dependencies:
-        warnings.append("Dependencies are not copied. Relative references stay unchanged; ensure the target library contains them at the required paths.")
-    if source.lower().endswith(".typ"):
-        warnings.append("Dynamic references and binary dependencies cannot be completely detected.")
-    fingerprint = [source, content, b.scope, b.project_id, name, b.folder, list(target) if target else None]
-    collisions: list[str] = []
-    if target or resource_clash:
-        collisions.append(name)
-    return {"name": name, "content": content, "owner": owner, "dependencies": dependencies,
-            "warnings": warnings, "collisions": collisions,
-            "preview": hashlib.sha256(json.dumps(fingerprint).encode()).hexdigest()}
-
-
-@router.post("/api/docs/{doc_id}/library-copy-preview")
-def copy_preview(doc_id: str, b: Copy, req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.check_doc_id(doc_id)
-    deps.limited(req, "files_list")
-    con = db.connect()
-    try:
-        p = inspect_copy(con, user, doc_id, b)
-        return {k: v for k, v in p.items() if k not in ("content", "owner")}
-    finally:
-        con.close()
-
-
-@router.post("/api/docs/{doc_id}/library-copy")
-def copy_file(doc_id: str, b: Copy, req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.check_doc_id(doc_id)
-    deps.limited(req, "templates")
-    with db.tx() as con:
-        p = inspect_copy(con, user, doc_id, b)
-        if p["collisions"]:
-            raise HTTPException(409, "Name already exists; choose another name")
-        if b.preview != p["preview"]:
-            raise HTTPException(409, "Source or target changed; review the copy again")
-        quota.check_quota(p["owner"], len(p["content"].encode("utf-8")), con)
-        now = db.now_iso()
-        if b.scope == "personal":
-            con.execute("INSERT INTO templates(owner,name,content,line,folder,updated_at) VALUES (?,?,?,?,?,?)",
-                        (user, p["name"], p["content"], resources.insert_line(p["name"]), b.folder, now))
-            deps.ensure_folder(con, user, "tpl", b.folder)
-        else:
-            con.execute("INSERT INTO project_resources VALUES (?,?,?,?)", (b.project_id, p["name"], p["content"], now))
-    quota.invalidate_quota_cache(p["owner"])
-    if b.scope == "project":
-        projects.notify(b.project_id)
-    else:
-        notify_sidebar(user)
-    return {"name": p["name"], "version": now}

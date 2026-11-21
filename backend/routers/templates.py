@@ -11,13 +11,12 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from backend import db, deps, sync
+from backend import db, deps
 from backend.constants import FOLDER_MAX, MAX_TXT
 from backend.schemas import FolderRename, FolderSet, TplDuplicate, TplRename, TplSave
 from backend.services import quota as quota_svc
 from backend.services import resources as res
 from backend.services import trash
-from backend.services.docfiles import store
 from backend.services.sidebar import notify_sidebar
 
 router = APIRouter()
@@ -213,7 +212,7 @@ def rename_template(name: str, b: TplRename, req: Request, user: str = Depends(d
     deps.limited(req, "templates")
     old, new = _gone_404(name), res.res_name(b.name)
     if res.is_reserved(new) or res.kind_of(old) != res.kind_of(new):
-        raise HTTPException(400, "Rename keeps the file type and cannot use main.typ")
+        raise HTTPException(400, "Rename keeps the file type and cannot use a reserved name")
     try:
         with db.tx() as con:
             row = con.execute("SELECT updated_at FROM templates WHERE owner=? AND name=?", (user, old)).fetchone()
@@ -275,57 +274,29 @@ def move_template(name: str, b: FolderSet, req: Request, user: str = Depends(dep
 
 @router.get("/api/docs/{doc_id}/resources")
 def doc_resources(doc_id: str, req: Request, user: str = Depends(deps.me)) -> dict:
-    """Effective compile resources for one doc: owner's reachable set only.
+    """What one document compiles against: its project, its compile entry (`F/__doc__.typ`) and the
+    project files it reaches (`files`, with size and version). `readonly` = no project edit right."""
+    from backend.services import project_files, projects
 
-    Any role with doc access may read (reviewer incl.). `resources` holds
-    just the reachable names (never the whole owner library); `local`
-    lists doc-local text files (nested paths included), which win on exact
-    path collisions. `versions` carries updated_at per reachable resource
-    so owner tabs can show staleness. `readonly` tells the viewer the
-    shelf is not theirs. Project members may browse their whole shared library;
-    individual document guests still receive only reachable project resources.
-    """
     deps.limited(req, "files_list")
     deps.check_doc_id(doc_id)
-    role = deps.need_access(user, doc_id)
+    deps.need_access(user, doc_id)
     con = db.connect()
     try:
-        d = con.execute("SELECT owner, content FROM docs WHERE id=?", (doc_id,)).fetchone()
+        d = con.execute("SELECT project_id, folder, content FROM docs WHERE id=?", (doc_id,)).fetchone()
+        if not d:
+            raise HTTPException(404, "Doc gone")
+        rows = project_files.listing(con, d["project_id"]) if d["project_id"] else []
+        reached = res.reachable({r["path"] for r in rows}, project_files.texts(con, d["project_id"]) if rows else {},
+                                d["folder"], project_files.doc_text(doc_id, d["content"]))
+        try:
+            readonly = projects.role(con, d["project_id"], user) not in ("owner", "editor")
+        except HTTPException:
+            readonly = True
     finally:
         con.close()
-    if not d:
-        raise HTTPException(404, "Doc gone")
-    owner = d["owner"]
-    live = sync.room_text(doc_id)
-    main_text = live if live is not None else (d["content"] or "")
-    local: dict[str, str] = {}
-    try:
-        for e in store.list(doc_id):
-            if res.kind_of(e.path):
-                try:
-                    local[e.path] = store.get(doc_id, e.path).decode("utf-8", errors="replace")
-                except (OSError, ValueError):
-                    continue
-    except (OSError, ValueError):
-        pass
-    out = res.doc_effective(owner, main_text, local, doc_id)
-    out["readonly"] = role != "owner"
-    if out["project_id"]:
-        from backend.services import projects
-        con = db.connect()
-        try:
-            try:
-                project_role = projects.role(con, out["project_id"], user)
-            except HTTPException:
-                project_role = ""
-            if project_role:
-                rows = con.execute("SELECT name,content,updated_at FROM project_resources WHERE project_id=?", (out["project_id"],)).fetchall()
-                out["resources"] = {r["name"]: r["content"] for r in rows if r["name"] not in local}
-                out["versions"] = {r["name"]: r["updated_at"] for r in rows if r["name"] not in local}
-            out["readonly"] = project_role not in ("owner", "editor")
-        finally:
-            con.close()
-    return out
+    return {"project_id": d["project_id"], "folder": d["folder"], "entry": project_files.entry(d["folder"]),
+            "files": [{k: r[k] for k in ("path", "size", "version")} for r in rows if r["path"] in reached], "readonly": readonly}
 
 
 @router.get("/api/tplfolders")

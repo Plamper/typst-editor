@@ -10,44 +10,30 @@ function resLine(tpl) { // the one line a doc needs: compiler resolves it agains
   return tpl.line || `#include "${n}"`
 }
 function renderTpl() {
-  const shared = docId && (docProject || docRole !== 'owner')
   const p = $('tplPop'); p.replaceChildren()
   const tip = el('div', 'tip'); tip.textContent = t('templates.tip'); p.appendChild(tip)
-  const note = el('div', 'tip'); note.textContent = t('templates.sharedResNote'); p.appendChild(note)
-  const mkRow = tpl => {
+  const editable = !!docProject && !docResReadonly
+  lastFiles.filter(f => TEXT_EXT.test(f.path)).forEach(f => { // the project's text files: insert the line that reaches them
     const row = el('div', 'trow')
-    const b = el('button', 'go', tpl.name); b.title = t('templates.insertInto'); b.setAttribute('aria-label', b.title)
-    b.onclick = () => addTpl(resLine(tpl))
-    const x = icoBtn('x', ICO_X); x.title = t('templates.delRes'); x.setAttribute('aria-label', x.title)
-    x.onclick = async e => {
-      e.stopPropagation()
-      if (!await ask(t('templates.delResConfirm', { name: tpl.name }), { noInput: true, ok: t('docs.moveTrash'), danger: true })) return
-      const project = docProject, document = docId
-      try {
-        if (project) {
-          await api('DELETE', `/api/projects/${project}/resources/${encodeURIComponent(tpl.name)}?version=${encodeURIComponent(tpl.updated_at || '')}`)
-          if (docId !== document || docProject !== project) return
-          if (activeFile === TPLK + tpl.name) await switchTab('', true)
-          tabPins.delete(tpl.name); tabVersions.delete(TPLK + tpl.name)
-          await loadDocResources(true); tabSig = ''; paintTabs(); queueRender()
-        } else await api('DELETE', '/api/templates/' + encodeURIComponent(tpl.name))
-        await loadTpl(); renderTpl(); sidebar()
-      }
-      catch (err) { toast(err.message) }
+    const b = el('button', 'go', f.path); b.title = t('templates.insertInto'); b.setAttribute('aria-label', b.title)
+    b.onclick = () => addTpl(resLine({ name: refTo(f.path), content: cachedText(f.path) }))
+    const edit = icoBtn('x', ICO_EDIT); edit.title = t('projects.openModule'); edit.setAttribute('aria-label', edit.title); edit.onclick = () => { hidePops(); switchTab(f.path) }
+    row.append(b, edit)
+    if (editable) {
+      const x = icoBtn('x', ICO_X); x.title = t('templates.delRes'); x.setAttribute('aria-label', x.title)
+      x.onclick = e => { e.stopPropagation(); hidePops(); deleteProjectEntry(projects.find(x => x.id === docProject), f.path).catch(err => toast(err.message)) }
+      row.appendChild(x)
     }
-    row.appendChild(b)
-    if (docProject) { const edit = icoBtn('x', ICO_EDIT); edit.title = t('projects.openModule'); edit.setAttribute('aria-label', edit.title); edit.onclick = () => { tabPins.add(tpl.name); switchTab(TPLK + tpl.name); hidePops() }; row.appendChild(edit) }
-    if (!shared || (docProject && !docResReadonly)) row.appendChild(x); return row
-  }
-  projectResources().forEach(tpl => p.appendChild(mkRow(tpl)))
-  if (docProject && !docResReadonly) myTpl.forEach(tpl => {
+    p.appendChild(row)
+  })
+  if (editable) myTpl.forEach(tpl => {
     const row = el('div', 'trow')
     const b = el('button', 'go', tpl.name); b.title = t('projects.pullInsert'); b.setAttribute('aria-label', b.title)
     b.onclick = () => insertPersonalResource(tpl).catch(e => toast(e.message))
     row.appendChild(b); p.appendChild(row)
   })
-  if (docProject && !docResReadonly) { const create = el('button', null, t('projects.newResource')); create.onclick = () => newProjectResource(docProject).catch(e => toast(e.message)); p.appendChild(create) }
-  if (shared) return
+  if (editable) { const create = el('button', null, t('projects.newFile')); create.onclick = () => newProjectResource(docProject, docFolder).catch(e => toast(e.message)); p.appendChild(create) }
+  if (docId) return
   const nw = el('button')
   nw.append(el('span', 'use', t('templates.newTpl')), el('span', 'ins', t('templates.newTplSub')))
   nw.onclick = newTemplate
@@ -113,10 +99,11 @@ $('tplBtn').onclick = e => {
   button.onclick = async () => {
     if (!canCite()) return
     const doc = docId, resource = tplName, file = activeFile, epoch = openN
-    const options = projectResources().flatMap(lib => {
-      if (/\.bib$/i.test(lib.name)) return parseBib(lib.content || '').filter(e => e.key).map(e => ({ key: e.key, lib }))
+    const options = lastFiles.flatMap(f => {
+      const lib = { name: f.path, content: cachedText(f.path) }
+      if (/\.bib$/i.test(lib.name)) return parseBib(lib.content).filter(e => e.key).map(e => ({ key: e.key, lib }))
       if (/\.ya?ml$/i.test(lib.name)) {
-        try { const entries = CMV.parseYaml(lib.content || ''); return Object.entries(entries || {}).filter(([, v]) => v && typeof v === 'object' && typeof v.type === 'string').map(([key]) => ({ key, lib })) } catch (e) {}
+        try { const entries = CMV.parseYaml(lib.content); return Object.entries(entries || {}).filter(([, v]) => v && typeof v === 'object' && typeof v.type === 'string').map(([key]) => ({ key, lib })) } catch (e) {}
       }
       return []
     })
@@ -124,7 +111,8 @@ $('tplBtn').onclick = e => {
     const choice = await askPick(t('editor.citeLibrary'), options.map(x => [x.key, x.lib.name]))
     if (choice == null || !options[choice] || doc !== docId || resource !== tplName || file !== activeFile || epoch !== openN || !cm.state.facet(EditorView.editable)) return
     const { key, lib } = options[choice]
-    if (!(ytext?.toString() || shadow).includes('"' + lib.name + '"')) mainAppend(`#bibliography("${lib.name}")`)
+    const ref = refTo(lib.name, docFolder)
+    if (!(ytext?.toString() || shadow).includes('"' + ref + '"')) mainAppend(`#bibliography("${ref}")`)
     addTpl('@' + key)
   }
 }

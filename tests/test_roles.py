@@ -23,8 +23,9 @@ def test_reviewer_read_only(c):
 
 def test_reviewer_upload_403(c):
     did = _shared(c, "reviewer")
-    r = c.post(f"/api/docs/{did}/files", files={"f": ("a.png", b"x")})
-    assert r.status_code == 403
+    pid = c.get(f"/api/docs/{did}").json()["project_id"]
+    r = c.put(f"/api/projects/{pid}/files/a.png", content=b"x")
+    assert r.status_code == 404  # a document guest has no project write access (and does not learn more)
 
 
 def test_editor_save_200(c):

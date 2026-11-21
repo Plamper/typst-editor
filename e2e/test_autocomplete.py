@@ -2,7 +2,7 @@
 import re
 
 import pytest
-from helpers import create_doc, register, type_source
+from helpers import create_doc, doc_project, put_file, register, type_source
 from playwright.sync_api import expect
 
 
@@ -18,9 +18,7 @@ def test_completion_list_updates_while_typing(page, initial, suffix, wanted, sta
     if initial.startswith('#include'):
         doc_id = page.locator('.doc.cur').get_attribute('data-package-key').split(':')[1]
         for name in ('plot.typ', 'photo.typ'):
-            response = page.request.post(f'/api/docs/{doc_id}/files', multipart={
-                'f': {'name': name, 'mimeType': 'text/plain', 'buffer': b'Included text'},
-            })
+            response = put_file(page.request, doc_project(page.request, doc_id), name, 'Included text')
             assert response.ok, response.text()
         # Reopen to load the uploaded names through the normal document flow.
         page.locator('.doc.cur').click()
@@ -44,10 +42,7 @@ def test_bibliography_keys_complete_refs_and_cites(page):
     register(page, 'autocomplete_bib')
     create_doc(page, 'Citations')
     doc_id = page.locator('.doc.cur').get_attribute('data-package-key').split(':')[1]
-    response = page.request.post(
-        f'/api/docs/{doc_id}/files/bibliography.bib/text',
-        data={'content': '@book{smith2020, title={Test}, year={2020}}'},
-    )
+    response = put_file(page.request, doc_project(page.request, doc_id), 'bibliography.bib', '@book{smith2020, title={Test}, year={2020}}')
     assert response.ok, response.text()
     page.locator('.doc.cur').click()  # reopen to pick up the new .bib in the file list
     type_source(page, '#bibliography("bibliography.bib")\n\n')

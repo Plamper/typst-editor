@@ -1,9 +1,27 @@
-// --- Images: upload per doc, #image() at cursor, preview knows files ---
-let mediaOpen = false, lastMedia = '', lastFiles = [], mediaNames = []
-let activeFile = '', fileT = 0, bibKeys = [] // '' = main.typ (Yjs sync), else text file (.typ/.bib/.csv) from manager
-const refPath = name => activeFile && tabName(activeFile).includes('/') ? '/' + name : name // Typst resolves relative to the file: inside a folder use the project root
+// --- Project files: one tree per project, every document compiles against it; #image() at cursor ---
+let mediaOpen = false, lastMedia = '', lastFiles = [] // lastFiles: [{path, size, version}] of the open document's project
+let activeFile = '', fileT = 0, bibKeys = [] // '' = the document text (Yjs sync), else the project path of the open file
+let docFolder = '' // the open document compiles as <folder>/__doc__.typ: its relative paths start in its folder
+const docMain = () => '/' + (docFolder ? docFolder + '/' : '') + '__doc__.typ'
+const fileUrl = (path, project = docProject) => `/api/projects/${project}/files/` + path.split('/').map(encodeURIComponent).join('/')
+function refTo(path, dir = activeFile ? activeFile.split('/').slice(0, -1).join('/') : docFolder) { // quoted reference from the text in the editor: relative inside its folder, else from the project root
+  return !dir ? path : path.startsWith(dir + '/') ? path.slice(dir.length + 1) : '/' + path
+}
+const cachedText = path => { const c = fileCache.get(path); return c ? new TextDecoder().decode(c.bytes) : '' } // text the preview already holds
+async function fileText(path) { // UTF-8 text of a project file
+  const r = await fetch(fileUrl(path))
+  if (!r.ok) throw Object.assign(new Error(expMsg(await r.text())), { status: r.status })
+  return r.text()
+}
+async function putFile(url, body) { // raw PUT of a project file (?version= guards an overwrite); errors carry .status like api()
+  filesDirty = true
+  const r = await fetch(url, { method: 'PUT', body })
+  const j = await r.json().catch(() => null)
+  if (!r.ok) throw Object.assign(new Error((j && (j.detail?.message || j.detail)) || r.statusText), { status: r.status })
+  return j
+}
 function mediaInsert(name) { // manager chip: loader matches kind (csv is data, never an image)
-  name = refPath(name)
+  name = refTo(name)
   if (/\.typ$/i.test(name)) return `#include "${name}"`
   if (/\.bib$/i.test(name)) return `#bibliography("${name}")`
   if (/\.csv$/i.test(name)) return `#csv("${name}")`
@@ -19,7 +37,7 @@ function renderMediaChips(files) {
   if (openedTrashed) { bar.style.display = 'none'; return } // trash: no manager at all
   bar.style.display = mediaOpen ? '' : 'none'
   if (!mediaOpen) return
-  const reviewer = docRole === 'reviewer' // #8: reviewers browse + copy to library (backend allows any reader role), no upload/delete/insert
+  const reviewer = docRole === 'reviewer' || docResReadonly // #8: readers browse + copy to library, no upload/delete/insert
   if (!reviewer) {
     const add = el('button', null, t('files.upload'))
     add.onclick = () => $('imgPick').click()
@@ -27,95 +45,65 @@ function renderMediaChips(files) {
   }
   files.forEach(f => {
     const c = el('span', 'chip')
-    const n = el(reviewer ? 'span' : 'button', 'name', f.name)
-    if (!reviewer) { n.title = t('files.insertAt'); n.setAttribute('aria-label', t('files.insertName', { name: f.name })) }
+    const n = el(reviewer ? 'span' : 'button', 'name', f.path)
+    if (!reviewer) { n.title = t('files.insertAt'); n.setAttribute('aria-label', t('files.insertName', { name: f.path })) }
     if (!reviewer) n.onclick = () => {
       if (!cm.state.facet(EditorView.editable)) { toast(t('projects.readonly')); return }
       const m = cm.state.selection.main
-      const ins = mediaInsert(f.name)
+      const ins = mediaInsert(f.path)
       cm.dispatch({ changes: { from: m.from, to: m.to, insert: ins }, selection: { anchor: m.from + ins.length } })
       cm.focus()
     }
     c.appendChild(n)
     c.appendChild(el('span', 'sz', t('files.sizeKb', { kb: Math.round(f.size / 1024) })))
     if (!reviewer) {
-      const x = icoBtn(null, ICO_X); x.title = t('files.del'); x.setAttribute('aria-label', t('files.delName', { name: f.name }))
-      x.onclick = () => deleteFile(f.name)
+      const x = icoBtn(null, ICO_X); x.title = t('files.del'); x.setAttribute('aria-label', t('files.delName', { name: f.path }))
+      x.onclick = () => deleteFile(f.path)
       c.appendChild(x)
-      if (window.changeSession && !window.changeSession.original && !TEXT_EXT.test(f.name)) { // Round5 #4: swap an existing image's content inside the package (add would stumble over nameExists)
-        const r = icoBtn(null, ICO_DUP); r.title = t('files.replaceName', { name: f.name }); r.setAttribute('aria-label', r.title)
-        r.onclick = () => { pendingReplace = f.name; $('imgPick').click() }
+      if (window.changeSession && !window.changeSession.original && !TEXT_EXT.test(f.path)) { // Round5 #4: swap an existing image's content inside the package (add would stumble over nameExists)
+        const r = icoBtn(null, ICO_DUP); r.title = t('files.replaceName', { name: f.path }); r.setAttribute('aria-label', r.title)
+        r.onclick = () => { pendingReplace = f.path; $('imgPick').click() }
         c.appendChild(r)
       }
     }
-    if (TEXT_EXT.test(f.name)) { const copy = icoBtn(null, ICO_DUP); copy.title = t('projects.copy'); copy.setAttribute('aria-label', copy.title); copy.onclick = () => copyToLibrary(f.name); c.appendChild(copy) }
+    if (TEXT_EXT.test(f.path)) { const copy = icoBtn(null, ICO_DUP); copy.title = t('projects.copy'); copy.setAttribute('aria-label', copy.title); copy.onclick = () => copyFileToPersonal(docProject, f.path).catch(e => toast(e.message)); c.appendChild(copy) }
     bar.appendChild(c)
   })
 }
 $('mediaBtn').onclick = () => { mediaOpen = !mediaOpen; renderMediaChips(lastFiles) }
-// --- Tabs: everything that belongs to the open document in one bar: main.typ, its text files, the templates it uses ---
-const TPLK = '@tpl/' // @ cannot occur in sanitized local file names; '' = main.typ
-const isTplKey = k => !!k && k.startsWith(TPLK)
-let tabName = k => (isTplKey(k) ? k.slice(TPLK.length) : k) || 'main.typ'
-const tabKind = k => !k ? 'typ' : isTplKey(k) && /\.typ$/i.test(k) ? 'tpl' : ((/\.([a-z]+)$/i.exec(k) || [])[1] || 'typ').toLowerCase()
-const tabPath = k => '/' + tabName(k) // compiler path of the tab's text (diagnostics carry it)
+// --- Tabs: the document text and the project files opened next to it ('' = the document text, else a project path) ---
+let tabName = k => k || '__doc__.typ'
+const tabKind = k => !k ? 'typ' : ((/\.([a-z]+)$/i.exec(k) || [])[1] || 'typ').toLowerCase()
+const tabPath = k => k ? '/' + tabName(k) : docMain() // compiler path of the tab's text (diagnostics carry it)
 const TEXT_EXT = /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i
-const effTpl = projectResources
-const tabCanEdit = k => (!k || isTplKey(k) || k.startsWith('@doc/') || TEXT_EXT.test(k)) && !openedTrashed && docRole !== 'reviewer' && (!isTplKey(k) || (typeof docProject !== 'undefined' && docProject ? !docResReadonly : docRole === 'owner'))
+const tabCanEdit = k => (!k || k.startsWith('@doc/') || TEXT_EXT.test(k)) && !openedTrashed && docRole !== 'reviewer' && (!k || k.startsWith('@doc/') || !docResReadonly)
 const fileStashKey = (d, k) => 'typst-filestash-' + d + '-' + encodeURIComponent(k) // pagehide stash per file tab (keepalive may fail)
 let tabSeq = 0 // switch generation: a slow fetch must not write into a newer tab
 const tabVersions = new Map()
 let tabSaveFlight = null
-let tabPins = new Set(), tabSig = '', tabT = 0, tabDirty = false // pins: templates opened by hand stay even when unreferenced
+let tabSig = '', tabT = 0, tabDirty = false
 const tabState = new Map() // key -> {a, h, top}: cursor + scroll per tab
-function usedTpls(preview = false) { // templates this document reaches: quoted names in main.typ + text files, followed through templates
-  const src = effTpl()
-  if (!src.length) return []
-  const byName = new Map(src.map(x => [x.name, x])), out = [], seen = new Set(), dec = new TextDecoder()
-  const local = new Map([...fileCache].map(([name, c]) => [name, /\.typ$/i.test(name) && c.bytes ? dec.decode(c.bytes) : '']))
-  if (activeFile && !isTplKey(activeFile)) local.set(activeFile, getT())
-  const texts = [{ path: 'main.typ', text: activeFile || (window.suggestionDraft && !preview) ? shadow : getT() }, ...[...local].filter(([n]) => /\.typ$/i.test(n)).map(([path, text]) => ({ path, text }))]
-  const normalize = p => { const parts = []; for (const s of p.split('/')) { if (s === '..') parts.pop(); else if (s && s !== '.') parts.push(s) } return parts.join('/') }
-  for (let i = 0; i < texts.length && i < 500; i++) {
-    const { path, text } = texts[i], parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : ''
-    for (const m of text.matchAll(/"([^"\n]{1,240})"/g)) {
-      const raw = m[1].replace(/\\/g, '/'), base = raw.split('/').pop()
-      if ([normalize(parent + raw), normalize(raw), ...(/\s/.test(raw) ? [] : [base])].some(n => local.has(n))) continue
-      const tp = [normalize(parent + raw), normalize(raw), ...(/\s/.test(raw) ? [] : [base])].map(n => byName.get(n)).find(Boolean)
-      if (tp && !seen.has(tp.name)) {
-        seen.add(tp.name); out.push(tp.name)
-        if (/\.typ$/i.test(tp.name)) texts.push({ path: tp.name, text: tp.content || '' })
-      }
-    }
-  }
-  return out
-}
 function projectTabEntry(key) {
   const added = [...(window.changeSession?.files.values() || [])].find(f => f.kind === 'document' && f.action === 'add' && key === sessionDocumentTab(f))
-  if (added) return { document: added.doc_id, name: '', resource: false }
-  if (key.startsWith('@doc/')) return { document: key.slice(5), name: '', resource: false }
-  if (key.startsWith('@file/')) { const parts = key.slice(6).split('/'); return { document: parts.shift(), name: parts.join('/'), resource: false } }
-  return { document: docId, name: key && !isTplKey(key) ? key : isTplKey(key) ? tabName(key) : '', resource: isTplKey(key) }
+  if (added) return { document: added.doc_id, name: '' }
+  if (key.startsWith('@doc/')) return { document: key.slice(5), name: '' }
+  return { document: docId, name: key }
 }
 // Open tabs (VS Code style): the bar lists only what was opened; closing a tab never deletes anything.
-// Entries are stored with stable keys ('d:<doc>', 'f:<doc>/<path>', 'r:<module>') per project, in this browser only.
+// Entries are stored with stable keys ('d:<doc>', 'f:<path>') per project, in this browser only.
 const OPEN_TABS_KEY = 'typst-open-tabs'
 let openTabs = [], openTabsScope = '', tabPrev = ''
 const tabScope = () => docProject || (docId ? 'doc:' + docId : '')
 function tabAbs(k) { // key relative to the open document -> stable key
   if (!k) return 'd:' + docId
   if (k.startsWith('@doc/')) return 'd:' + k.slice(5)
-  if (k.startsWith('@file/')) return 'f:' + k.slice(6)
   if (k.startsWith('@proposal-doc/')) return 'x:' + k
-  return isTplKey(k) ? 'r:' + tabName(k) : 'f:' + docId + '/' + k
+  return 'f:' + k
 }
 function tabRel(a) {
   const v = a.slice(2)
-  if (a.startsWith('x:')) return v
   if (a.startsWith('d:')) return v === docId ? '' : '@doc/' + v
-  if (a.startsWith('r:')) return TPLK + v
-  const i = v.indexOf('/')
-  return v.slice(0, i) === docId ? v.slice(i + 1) : '@file/' + v
+  return v
 }
 function tabStoreRead() { try { const o = JSON.parse(localStorage.getItem(OPEN_TABS_KEY) || '{}'); return o && typeof o === 'object' ? o : {} } catch (e) { return {} } }
 function tabStoreSave() {
@@ -153,26 +141,20 @@ function tabRemap(scope, fn) { // renamed or moved entries keep their tab: rewri
 const tabRemapEntry = (scope, from, to) => tabRemap(scope, a => a === from ? to : a)
 function tabRemapPrefix(scope, from, to) { // folder rename: every tab below it follows
   tabRemap(scope, a => {
-    if (a.startsWith('r:')) return a.slice(2) === from || a.slice(2).startsWith(from + '/') ? 'r:' + to + a.slice(2 + from.length) : a
-    if (a.startsWith('f:')) { const v = a.slice(2), i = v.indexOf('/'), n = v.slice(i + 1); return n === from || n.startsWith(from + '/') ? 'f:' + v.slice(0, i + 1) + to + n.slice(from.length) : a }
-    return a
+    const v = a.slice(2)
+    return a.startsWith('f:') && (v === from || v.startsWith(from + '/')) ? 'f:' + to + v.slice(from.length) : a
   })
 }
 function tabExists(a, entries) {
   if (a.startsWith('x:')) return !!window.changeSession
   const v = a.slice(2)
-  if (!entries) return true
-  if (a.startsWith('d:')) return entries.documents.some(d => d.id === v)
-  if (a.startsWith('r:')) return entries.resources.some(r => r.name === v)
-  const i = v.indexOf('/'), doc = v.slice(0, i), name = v.slice(i + 1)
-  return entries.files.some(f => f.doc_id === doc && f.name === name) || (doc === docId && lastFiles.some(f => f.name === name))
+  if (a.startsWith('d:')) return !entries || entries.documents.some(d => d.id === v)
+  return a.startsWith('f:') && [...(entries?.files || []), ...lastFiles].some(f => f.path === v)
 }
 function tabItems() {
   const project = typeof projects !== 'undefined' && projects.find(p => p.id === docProject)
   const entries = project ? projectEntries(project) : null
-  const open = openTabs.filter(a => tabExists(a, entries)).map(tabRel)
-  if (!entries) return open.filter(k => !k || isTplKey(k) ? (!k || effTpl().some(r => r.name === tabName(k))) : lastFiles.some(f => f.name === k))
-  return [...new Set(open)]
+  return [...new Set(openTabs.filter(a => tabExists(a, entries)).map(tabRel))]
 }
 async function closeTab(k) { // closing only hides the tab; the file stays in the project
   const a = tabAbs(k), items = tabItems()
@@ -207,11 +189,10 @@ function tabMenuItems(k, name) {
       if (projectEditable(p)) items.push({ label: t('docs.renameDoc'), run: tabRun(() => renameProjectDocument(doc)) })
       items.push({ label: t('projects.transfer'), run: tabRun(() => projectEntryMenu(p, { kind: 'document', doc_id: doc.id, name: doc.title })) })
       if (projectEditable(p) || canStageProjectDelete(p.id)) items.push({ label: t('docs.moveTrash'), danger: true, run: tabRun(() => moveDocToTrash(doc)) })
-    } else if (entry.name) { // file or module tab
-      const target = { kind: entry.resource ? 'resource' : 'file', doc_id: entry.document, name: entry.name }
-      if (projectEditable(p)) items.push({ label: t('files.renameHead'), run: tabRun(() => renameProjectEntry(p, entry.name, entry.document, entry.resource)) })
-      items.push({ label: t('projects.transfer'), run: tabRun(() => projectEntryMenu(p, target)) })
-      if (projectEditable(p) || canStageProjectDelete(p.id)) items.push({ label: t('docs.moveTrash'), danger: true, run: tabRun(() => deleteProjectEntry(p, entry.name, entry.document, entry.resource)) })
+    } else if (entry.name) { // project file tab
+      if (projectEditable(p)) items.push({ label: t('files.renameHead'), run: tabRun(() => renameProjectEntry(p, entry.name)) })
+      items.push({ label: t('projects.transfer'), run: tabRun(() => projectEntryMenu(p, { kind: 'file', name: entry.name })) })
+      if (projectEditable(p) || canStageProjectDelete(p.id)) items.push({ label: t('docs.moveTrash'), danger: true, run: tabRun(() => deleteProjectEntry(p, entry.name)) })
     }
   }
   if (items.length) items.push({ sep: true })
@@ -236,14 +217,9 @@ function scrollTabIntoView(button) { // keep the active tab fully visible withou
   else if (r.right > br.right - pad) bar.scrollLeft += r.right - br.right + pad
 }
 function queueTabs() { clearTimeout(tabT); tabT = setTimeout(paintTabs, 350) } // cheap: repaints only when the set or state changed
-function tabReq(key, text) { // save request for a tab's text (file of this doc, or global template)
-  const version = tabVersions.get(key)
-  const guard = version !== undefined ? { version } : {}
-  return isTplKey(key) ? { url: docProject ? `/api/projects/${docProject}/resources` : '/api/templates', body: { name: tabName(key), content: text, ...guard } }
-    : { url: `/api/docs/${docId}/files/${encodeURIComponent(key)}/text`, body: { content: text, ...guard } }
-}
+const tabReq = key => fileUrl(key) + (tabVersions.has(key) ? '?version=' + encodeURIComponent(tabVersions.get(key)) : '') // PUT target of a file tab: the known version guards the overwrite
 function paintTabs() {
-  updateFileView() // main.typ + text files + used templates as tabs, preview stays main
+  updateFileView() // the document text + text files + used templates as tabs, preview stays main
   const bar = $('tabs')
   if (!docId || tplName || openedTrashed) { bar.style.display = 'none'; tabSig = ''; return }
   tabEnsureOpen()
@@ -262,23 +238,23 @@ function paintTabs() {
   for (const k of items) {
     const entry = projectTabEntry(k), main = !entry.name
     const document = typeof projects !== 'undefined' && projects.find(p => p.id === docProject)?.documents?.find(d => d.id === entry.document)
-    const proposed = window.changeSession?.files.get(['document', entry.document, 'main.typ'].join(':'))
+    const proposed = window.changeSession?.files.get(['document', entry.document, ''].join(':'))
     const title = (!window.changeSession?.original && proposed?.target) || document?.title || (typeof docTitle !== 'undefined' && docTitle) || $('title').textContent
     const on = k === activeFile, nm = main ? title.replace(/\.typ$/i, '') + '.typ' : entry.name
-    const staged = window.changeSession?.files.get([main ? 'document' : entry.resource ? 'resource' : 'file', entry.resource ? '' : entry.document, main ? 'main.typ' : entry.name].join(':'))
+    const staged = window.changeSession?.files.get(main ? ['document', entry.document, ''].join(':') : ['file', '', entry.name].join(':'))
     const deleted = staged?.action === 'delete'
     const w = el('span', 'tabw' + (on ? ' on' : ''))
     w.classList.toggle('package-deleted', deleted)
     const b = el('button', 'tab')
     b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', on ? 'true' : 'false'); b.tabIndex = on ? 0 : -1; b.dataset.k = k
-    const ic = el('span', 'ti'); ic.dataset.kind = tabKind(k); if (ic.dataset.kind === 'tpl') ic.dataset.ext = (k.match(/\.([a-z0-9]+)$/i)?.[1] || 'typ').toUpperCase(); ic.setAttribute('aria-hidden', 'true')
+    const ic = el('span', 'ti'); ic.dataset.kind = tabKind(k); ic.setAttribute('aria-hidden', 'true')
     b.title = '/' + nm + (tabCanEdit(k) ? '' : ' · ' + t('projects.readonly'))
     b.append(ic, el('span', 'tn', nm.split('/').pop()))
     const ec = tabErrs(k)
     if (ec) { const e = el('span', 'te', String(ec)); e.title = t('files.tabErrors', { n: ec }); b.appendChild(e) }
-    b.setAttribute('aria-label', !k ? t('files.editMain') : isTplKey(k) ? t('files.tplTab', { name: nm }) : t('files.editTab', { name: nm }))
+    b.setAttribute('aria-label', !k ? t('files.editMain') : t('files.editTab', { name: nm }))
     b.onclick = () => switchTab(k)
-    b.ondblclick = () => { if (canEdit) { const p = projects.find(p => p.id === docProject); if (main) renameProjectDocument({ id: entry.document, title }); else if (p) renameProjectEntry(p, entry.name, entry.document, entry.resource); else toast(t('projects.contextGone')) } }
+    b.ondblclick = () => { if (canEdit) { const p = projects.find(p => p.id === docProject); if (main) renameProjectDocument({ id: entry.document, title }); else if (p) renameProjectEntry(p, entry.name); else toast(t('projects.contextGone')) } }
     w.appendChild(b)
     b.onauxclick = e => { if (e.button === 1) { e.preventDefault(); closeTab(k) } }
     b.oncontextmenu = e => { e.preventDefault(); tabMenu(k, nm, b) }
@@ -324,7 +300,7 @@ function tabRestoreState(k) {
 }
 async function switchTab(name, nosave, preserveView = false) { // true = switched, false = blocked/stale (caller keeps focus where it is)
   if (window.suggestionDraft && !await leaveSuggestionDraft()) return false
-  if (name?.startsWith('@doc/') || name?.startsWith('@file/')) {
+  if (name?.startsWith('@doc/')) {
     const entry = projectTabEntry(name), p = docProject
     if (entry.document !== docId) await openDoc(entry.document)
     if (docId !== entry.document || docProject !== p) return false
@@ -337,45 +313,34 @@ async function switchTab(name, nosave, preserveView = false) { // true = switche
   clearTimeout(fileT) // old tab's pending timer must not fire into the new tab
   if (nosave) tabDirty = false // delete path: old text is gone by design
   tabSaveState(activeFile)
-  if (!activeFile) saveDocScroll() // leaving main.typ: keep its spot before the file buffer replaces it
-  if (name && !isTplKey(name) && !lastFiles.some(f => f.name === name)) { try { lastFiles = (await api('GET', `/api/docs/${docId}/files`)).files } catch (e) {} } // fresh list: new upload must not be dropped as 'deleted'
+  if (!activeFile) saveDocScroll() // leaving the document text: keep its spot before the file buffer replaces it
+  if (name && TEXT_EXT.test(name) || name && !lastFiles.some(f => f.path === name)) { try { await loadProjectFiles(true) } catch (e) {} } // fresh list: a new upload must not be dropped as 'deleted', a text tab starts from the current version
   if (my !== tabSeq || dk !== docId) return false
   if (!name) { activeFile = ''; setT(shadow); cm.dispatch({ effects: editableComp.reconfigure(editMode(tabCanEdit(''))) }); $('cNew').style.display = openedTrashed ? 'none' : ''; $('save').title = ''; paintTabs(); paintOwn(); paintShared(lastShared); gutter(); closePop(); paintOutline(); reanchor(); refreshHl(); tabRestoreState(''); scrollApplyEditor(); paintErr(); queueRender(); return true }
   let text
-  if (isTplKey(name)) {
-    let tp = effTpl().find(x => x.name === tabName(name))
-    if (!tp && !window.changeSession) { await loadDocResources(true); tp = effTpl().find(x => x.name === tabName(name)) } // tab restored before the module list arrived
-    if (my !== tabSeq || dk !== docId) return false
-    if (!tp) { toast(t('files.tplGone')); return false }
-    tabPins.add(tp.name); text = tp.content || ''
-    if (tp.updated_at && (tabVersions.get(name) || '') < tp.updated_at) tabVersions.set(name, tp.updated_at) // late snapshot: never rewind a save
-  } else if (!TEXT_EXT.test(name)) {
-    const file = lastFiles.find(f => f.name === name)
-    text = t('files.binaryInfo', { name, kb: Math.round((file?.size || 0) / 1024) })
-  } else {
-    let txt
-    try { txt = await api('GET', `/api/docs/${dk}/files/${encodeURIComponent(name)}/text`) }
+  const file = lastFiles.find(f => f.path === name)
+  if (!TEXT_EXT.test(name)) text = t('files.binaryInfo', { name, kb: Math.round((file?.size || 0) / 1024) })
+  else {
+    try { text = await fileText(name) }
     catch (e) { if (my === tabSeq && dk === docId) toast(e.message); return false }
     if (my !== tabSeq || dk !== docId) return false // late response: must not write into the newer tab
-    text = txt.content
-    if (txt.version) tabVersions.set(name, txt.version)
+    if (file) tabVersions.set(name, file.version)
   }
   if (my !== tabSeq || dk !== docId || epoch !== openN || tabDirty) return false
   activeFile = name; tabDirty = false; setT(text, preserveView)
   cm.dispatch({ effects: editableComp.reconfigure(editMode(tabCanEdit(name))) })
   $('cNew').style.display = 'none'
-  const readonly = isTplKey(name) ? t('files.tplSharedNote') : t('common.roleReader')
   $('save').textContent = tabCanEdit(name) ? t('docs.saved') : ''
-  $('save').title = tabCanEdit(name) ? '' : readonly
+  $('save').title = tabCanEdit(name) ? '' : t('common.roleReader')
   tabSig = ''; paintTabs(); paintOwn(); paintShared(lastShared); gutter(); closePop(); paintOutline()
   cm.dispatch({ effects: setHl.of(RangeSet.of([])) }) // file tab: no main highlights as ghosts
   if (!preserveView) tabRestoreState(activeFile)
-  if (name && (isTplKey(name) || TEXT_EXT.test(name))) offerFileStash(dk, name) // pagehide stash differs from server: opt-in restore, never silent
+  if (TEXT_EXT.test(name)) offerFileStash(dk, name) // pagehide stash differs from server: opt-in restore, never silent
   paintErr()
   queueRender()
   return true
 }
-function offerFileStash(dk, name) { // unsent pagehide copy vs fresh server text: user decides (mirror of the main.typ stash flow)
+function offerFileStash(dk, name) { // unsent pagehide copy vs fresh server text: user decides (mirror of the the document text stash flow)
   let o = null
   try {
     const raw = localStorage.getItem(fileStashKey(dk, name))
@@ -415,16 +380,16 @@ async function flushTab(allowStash = false) {
   const dk = docId, key = activeFile, text = getT(), epoch = openN
   tabSaveFlight = (async () => {
   try {
-    const rq = tabReq(key, text)
-    const result = await api('POST', rq.url, rq.body)
+    const result = await putFile(tabReq(key), text)
     if (docId !== dk) return true // doc switched meanwhile: cache is gone with it
-    if (result?.version) tabVersions.set(key, result.version)
-    if (isTplKey(key)) { const tp = effTpl().find(x => x.name === tabName(key)); if (tp) { tp.content = text; if (result?.version) tp.updated_at = result.version } }
+    const bytes = new TextEncoder().encode(text), row = lastFiles.find(f => f.path === key)
+    tabVersions.set(key, result.version)
+    if (row) { row.version = result.version; row.size = bytes.length }
     if (epoch !== openN) return false
     if (activeFile === key && getT() === text) {
       try { localStorage.removeItem(fileStashKey(dk, key)) } catch (e) {}
       tabDirty = false
-      if (!isTplKey(key)) fileCache.delete(key) // bytes stale: next render refetches
+      fileCache.set(key, { version: result.version, bytes }) // the saved text is the server state: no refetch
       $('save').textContent = t('docs.saved')
     } else if (activeFile === key && tabDirty) { queueFileSave(); return false }
     return true
@@ -443,28 +408,19 @@ async function flushTab(allowStash = false) {
 }
 async function loadTabTheirs(dk, key) { // 409 escape: take the server text into the editor (mirror of loadTheirs)
   try {
-    if (isTplKey(key)) {
-      await loadTpl(); await loadDocResources(true)
-      if (docId !== dk || activeFile !== key) return
-      const tp = effTpl().find(x => x.name === tabName(key))
-      if (!tp) { toast(t('files.tplGone')); return }
-      if (tp.updated_at) tabVersions.set(key, tp.updated_at)
-      tabDirty = false; setT(tp.content || '')
-    } else {
-      const txt = await api('GET', `/api/docs/${dk}/files/${encodeURIComponent(key)}/text`)
-      if (docId !== dk || activeFile !== key) return
-      if (txt.version) tabVersions.set(key, txt.version)
-      tabDirty = false; setT(txt.content)
-    }
+    await loadProjectFiles(true)
+    const text = await fileText(key), row = lastFiles.find(f => f.path === key)
+    if (docId !== dk || activeFile !== key) return
+    if (!row) { toast(t('files.tplGone')); return }
+    tabVersions.set(key, row.version)
+    tabDirty = false; setT(text)
     try { localStorage.removeItem(fileStashKey(dk, key)) } catch (e) {}
     $('save').textContent = t('docs.saved')
     gutter(); paintOutline(); paintErr(); queueRender()
   } catch (e) { toast(e.message) }
 }
 function tabLive() { // compiler copy follows typing: the preview updates before the save lands
-  const txt = getT()
-  if (isTplKey(activeFile)) { const tp = effTpl().find(x => x.name === tabName(activeFile)); if (tp) tp.content = txt }
-  else { const c = fileCache.get(activeFile); fileCache.set(activeFile, { mtime: c?.mtime ?? lastFiles.find(f => f.name === activeFile)?.mtime ?? 0, bytes: new TextEncoder().encode(txt) }) }
+  fileCache.set(activeFile, { version: fileCache.get(activeFile)?.version ?? '', bytes: new TextEncoder().encode(getT()) })
   queueRender(); queueTabs()
 }
 function queueFileSave() { // file/template tab: only that text + preview, no Yjs
@@ -478,14 +434,7 @@ function queueFileSave() { // file/template tab: only that text + preview, no Yj
     if (await flushTab()) queueRender()
   }, SAVE_MS)
 }
-const fileNameOk = (raw, ext) => { // clean name, forced text extension; '' = unusable
-  let n = String(raw || '').trim().replace(/[^A-Za-z0-9._-]+/g, '_')
-  if (!n) return ''
-  if (!TEXT_EXT.test(n)) n += '.' + ext
-  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,59}$/.test(n) && n.toLowerCase() !== 'main.typ' ? n : ''
-}
-async function refreshFiles() { try { lastFiles = (await api('GET', `/api/docs/${docId}/files`)).files; filesAt = Date.now(); filesDirty = false } catch (e) {} }
-function mainAppend(line) { // add a line at the end of main.typ through Yjs (editor, preview and peers follow)
+function mainAppend(line) { // add a line at the end of the document text through Yjs (editor, preview and peers follow)
   if (window.suggestionDraft) {
     const s = getT()
     cm.dispatch({ changes: { from: s.length, insert: (s && !s.endsWith('\n') ? '\n' : '') + line + '\n' } })
@@ -507,51 +456,27 @@ async function chooseFileType() {
   const i = await askPick(t('files.chooseType'), FILE_TYPES.map((ext, i) => ['.' + ext, labels[i]]))
   return Number.isInteger(i) && i >= 0 && i < FILE_TYPES.length ? '.' + FILE_TYPES[i] : null
 }
-async function deleteFile(name) { // undo toast keeps a way back (text: content restored; binary: from cache)
-  const cached = fileCache.get(name)
-  let txt = null
-  if (TEXT_EXT.test(name)) { try { txt = (name === activeFile ? getT() : (await api('GET', `/api/docs/${docId}/files/${encodeURIComponent(name)}/text`)).content) } catch (e) {} }
-  try {
-    await api('DELETE', `/api/docs/${docId}/files/${encodeURIComponent(name)}`)
-    if (name === activeFile) await switchTab('', true)
-    tabSig = ''; queueRender()
-    toast(t('files.deleted'), async () => {
-      try {
-        if (txt !== null) await api('POST', `/api/docs/${docId}/files/${encodeURIComponent(name)}/text`, { content: txt })
-        else if (cached && cached.bytes) {
-          const fd = new FormData(); fd.append('f', new Blob([cached.bytes]), name)
-          await fetch(`/api/docs/${docId}/files`, { method: 'POST', body: fd }); filesDirty = true
-        }
-        tabSig = ''; queueRender()
-      } catch (e) { toast(e.message) }
-    }, t('files.undo'))
-  } catch (e) { toast(e.message) }
-}
-async function askDeleteFile(name) {
-  if (await ask(t('files.delConfirm', { name }), { noInput: true, ok: t('common.delete'), danger: true })) deleteFile(name)
+async function deleteFile(name) { // manager chip: same trash path as the sidebar row
+  return deleteProjectEntry(projects.find(p => p.id === docProject) || { id: docProject }, name)
 }
 let imgIns = false // only via image button, not via manager upload
 let pendingReplace = '' // Round5 #4: one-shot chip target - the next picked file replaces this file's content inside the change session
 function insImage(name) { // #image() at cursor
   if (!cm.state.facet(EditorView.editable)) { toast(t('projects.readonly')); return }
-  const m = cm.state.selection.main, ins = `#image("${refPath(name)}", width: 80%)`
+  const m = cm.state.selection.main, ins = `#image("${refTo(name)}", width: 80%)`
   cm.dispatch({ changes: { from: m.from, to: m.to, insert: ins }, selection: { anchor: m.from + ins.length } })
   cm.focus()
 }
-async function upFile(f) { // upload, returns name ('' on error)
-  const fd = new FormData(); fd.append('f', f)
-  const r = await fetch(`/api/docs/${docId}/files`, { method: 'POST', body: fd })
-  filesDirty = true
-  if (!r.ok) { const d = ((await r.json().catch(() => ({}))).detail || r.statusText); toast(t('files.uploadFail', { msg: d }), () => upFile(f), t('common.retry')); return '' }
-  return (await r.json()).name
+const uploadName = n => n.replace(/[^A-Za-z0-9._ ()-]+/g, '_').replace(/^\.+/, '') // what the server accepts as a path segment
+async function upFile(f) { // upload into the document's folder, returns the project path ('' on error)
+  const path = (docFolder ? docFolder + '/' : '') + uploadName(f.name)
+  try { return (await putFile(fileUrl(path), f)).path }
+  catch (e) { toast(t('files.uploadFail', { msg: e.message }), () => upFile(f), t('common.retry')); return '' }
 }
 const TEXT_UP = /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i // text file: save + open as tab (no #image)
-async function upText(f) { // .typ/.bib/.csv as file text (backend creates, max 200 KB)
-  const txt = await f.text()
-  if (txt.length > 200 * 1024) { toast(t('files.maxText')); return '' }
-  const name = f.name.replace(/[^A-Za-z0-9._-]+/g, '_')
-  await api('POST', `/api/docs/${docId}/files/${encodeURIComponent(name)}/text`, { content: txt })
-  return name
+async function upText(f) { // text file (max 200 KB) next to the document
+  if (f.size > 200 * 1024) { toast(t('files.maxText')); return '' }
+  return upFile(f)
 }
 $('imgBtn').onclick = () => { imgIns = true; $('imgPick').click() }
 $('imgPick').addEventListener('cancel', () => { pendingReplace = '' }) // picker dismissed: the one-shot swap must not leak into the next upload
@@ -615,7 +540,7 @@ function updateFileView() {
   const pvFor = $('pvFor')
   pvFor.classList.toggle('on', tab); pvFor.setAttribute('aria-hidden', String(!tab))
   if (tab) pvFor.textContent = t('preview.forDoc', { title: (docTitle || $('title').textContent).replace(/\.typ$/i, '') + '.typ' })
-  const filename = tplName || (activeFile ? tabName(activeFile) : 'main.typ')
+  const filename = tplName || (activeFile ? tabName(activeFile) : (docTitle || 'document').replace(/\.typ$/i, '') + '.typ')
   const extension = filename.split('.').pop().toLowerCase()
   paintImageFile(filename)
   $('dlTyp').dataset.extension = extension

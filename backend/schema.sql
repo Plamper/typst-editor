@@ -103,11 +103,23 @@ CREATE TABLE IF NOT EXISTS api_keys (
     prefix TEXT NOT NULL DEFAULT '',
     key_hash TEXT NOT NULL UNIQUE,
     role TEXT NOT NULL DEFAULT 'editor',
+    mode TEXT NOT NULL DEFAULT 'auto', -- auto: propose in shared projects, else direct
     expires_at TEXT NOT NULL DEFAULT '',
     last_used TEXT NOT NULL DEFAULT '',
     revoked INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
+
+-- agent_log: what a key did (newest 500 per key), shown next to the key in Settings.
+CREATE TABLE IF NOT EXISTS agent_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    path TEXT NOT NULL DEFAULT '',
+    ok INTEGER NOT NULL DEFAULT 1,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_log_key ON agent_log(key_id, id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(username);
 
@@ -139,19 +151,6 @@ CREATE TRIGGER IF NOT EXISTS docs_fts_au AFTER UPDATE ON docs
   DELETE FROM docs_fts WHERE rowid=old.rowid;
   INSERT INTO docs_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
 END;
-
--- files: one row per on-disk attachment (doc_id, relative path, size,
--- mtime, type). Quota and search read this table, never the filesystem.
--- FK CASCADE: hard doc delete drops the rows (docs.py owns that path).
-CREATE TABLE IF NOT EXISTS files (
-    doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
-    path TEXT NOT NULL,
-    size INTEGER NOT NULL DEFAULT 0,
-    mtime REAL NOT NULL DEFAULT 0,
-    type TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (doc_id, path)
-);
-CREATE INDEX IF NOT EXISTS idx_files_doc ON files(doc_id);
 
 -- notifications: minimal backend write path (services/notifications.py),
 -- inbox UI follows in Wave 3D (owns routers/notifications.py). No FK to
@@ -192,11 +191,15 @@ CREATE TABLE IF NOT EXISTS project_members (
  role TEXT NOT NULL CHECK(role IN ('editor','reviewer')),
  PRIMARY KEY(project_id, username)
 );
-CREATE TABLE IF NOT EXISTS project_resources (
+-- project_files: one file tree per project, bytes on disk at <files>/<project_id>/<path>.
+-- Quota and listings read this table, never the filesystem. version = sha256(bytes)[:16].
+CREATE TABLE IF NOT EXISTS project_files (
  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
- name TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
- PRIMARY KEY(project_id, name)
+ path TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, mtime REAL NOT NULL DEFAULT 0,
+ type TEXT NOT NULL DEFAULT '', version TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+ PRIMARY KEY(project_id, path)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_project_files_nocase ON project_files(project_id, path COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS project_folders (
  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

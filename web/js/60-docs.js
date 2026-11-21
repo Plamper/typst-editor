@@ -176,7 +176,7 @@ function watchSidebar() { // live sidebar: external list changes (MCP, other tab
     sideESErr = 0
     const es = sideES = new EventSource('/api/events')
     es.onopen = () => { sideESErr = 0; sideESRearms = 0; if (user) loadInbox().catch(() => {}) } // (re)connect resets counters
-    es.addEventListener('sidebar', () => { if (!user) { if (sideES === es) sideES = null; return es.close() } sideResourcesDirty = true; queueSidebar() })
+    es.addEventListener('sidebar', () => { if (!user) { if (sideES === es) sideES = null; return es.close() } sideResourcesDirty = true; filesDirty = true; queueSidebar() })
     es.addEventListener('comment', e => { if (e.data === docId) loadComments().catch(() => {}) })
     es.addEventListener('notification', () => { if (user) loadInbox().catch(() => {}) })
     es.addEventListener('member', e => { if (e.data === docId) { loadMembers(); sidebar() } })
@@ -222,6 +222,8 @@ async function refreshSidebar() {
     const pr = await api('GET', '/api/projects')
     if (id !== sideN) return
     projects = pr.projects
+    const folder = projects.find(p => p.id === docProject)?.documents?.find(x => x.id === docId)?.folder
+    if (folder != null && folder !== docFolder) { docFolder = folder; shadowSig = ''; queueRender() } // moved: relative paths start in the new folder
     paintSuggestionControls()
     if (id !== sideN) return
   }
@@ -432,7 +434,7 @@ function paintTrash(trash) { // click peeks in (trash view), restore, delete per
     div.setAttribute('role', 'button')
     div.appendChild(searchTextEl('t', x.title))
     div.title = x.title + t('docs.trashViewSuffix')
-    const isEntry = x.kind === 'personal' || x.kind === 'resource' || x.kind === 'file'
+    const isEntry = x.kind === 'personal' || x.kind === 'file'
     const hitKey = (isEntry ? 'tr:' : 'td:') + x.id
     sidebarDrag(div, { trashed: true, trashId: isEntry ? x.id : '', project: x.project_id || '', entry: { kind: x.kind || 'document', doc_id: x.doc_id || x.id, name: x.title } }, 'move')
     if (!isEntry) {
@@ -474,8 +476,7 @@ function searchEntryKey(e) {
   const doc = e.doc_id || ''
   if (e.kind === 'doc') return 'd:' + doc
   if (e.kind === 'trash_doc') return 'td:' + doc
-  if (e.kind === 'file') return 'f:' + doc + '/' + e.name
-  if (e.kind === 'resource') return 'r:' + (e.project_id || '') + '/' + e.name
+  if (e.kind === 'file') return 'f:' + (e.project_id || '') + '/' + e.name
   if (e.kind === 'template') return 't:' + e.name
   if (e.kind === 'trash') return 'tr:' + e.id
   return ''
@@ -717,7 +718,7 @@ async function loadTheirs(key) { // conflict escape: take the server text into t
   } catch (e) { toast(e.message) }
 }
 async function resSync() { // SSE follow-up: fresh list first, open resource follows only when clean (dirty editors never wiped)
-  try { await loadTpl(); if (docProject) await loadDocResources(true) } catch (e) {}
+  try { await loadTpl() } catch (e) {}
   if (!tplName) return
   const cc = tplCached(tplName)
   if (!cc) return
@@ -735,23 +736,21 @@ function leaveDoc() { // reset sync/peers/threads/media (openTpl/openDoc/del)
   ++renderN; ++tabSeq; clearTimeout(renderT); clearTimeout(syncT); syncT = 0
   pvObs?.disconnect(); pvObs = null; pvSlots = []; pvTexts = []; pvTextDone = []; pvPageSize = null; pvLinks = []; pvOutline = []; pvOutlineGen = -1 // old PDF layer must never badge/link the next doc
   if (window.Present?.isOn()) window.Present.exit()
-  window.docTpl = []; docResAt = 0
   openedTrashed = false
   clearTimeout(saveT); clearTimeout(tplT); clearTimeout(anchorT); anchorDirty.clear() // no zombie save into next doc
   clearTimeout(connT); connT = 0 // stale disconnect paint must not fire in the next doc
   if (activeFile && docId && tabDirty) { // pending file/template save: take along silently (keepalive)
     clearTimeout(fileT)
-    const rq = tabReq(activeFile, getT())
-    fetch(rq.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rq.body), keepalive: true }).catch(() => {})
+    fetch(tabReq(activeFile), { method: 'PUT', body: getT(), keepalive: true }).catch(() => {})
   }
-  cmpWarns = []; cmpDiags = []; errKey = ''; errLines = []; tabDirty = false; tabPins = new Set(); tabState.clear(); tabVersions.clear(); tabSig = ''; clearTimeout(tabT)
+  cmpWarns = []; cmpDiags = []; errKey = ''; errLines = []; tabDirty = false; tabState.clear(); tabVersions.clear(); tabSig = ''; clearTimeout(tabT)
   prov?.destroy(); ydoc?.destroy(); prov = ydoc = ytext = null
   const wd = $('wsDot'); if (wd) { wd.style.background = '#8e8e93'; wd.title = t('docs.offline') }; const wt0 = $('wsTxt'); if (wt0) wt0.textContent = t('docs.offline')
   threads = []; members = []; lastC = ''; marks = new Set(); syncPage = 0; syncEdOff = 0; syncEdX = -1; syncEdMiss = false // do not carry click page/reading point into next doc
-  docProject = ''; docResReadonly = true
+  docProject = ''; docFolder = ''; docResReadonly = true
   activeFile = ''; clearTimeout(fileT); bibKeys = [] // tabs closed (see paintTabs)
   $('tabs').style.display = 'none'
-  fileCache.clear(); mediaNames = []; lastMedia = ''; lastFiles = []; mediaOpen = false
+  fileCache.clear(); lastMedia = ''; lastFiles = []; mediaOpen = false
   filesDirty = true; filesAt = 0; shadowSig = ''; lastPres = ''; lastErrToast = '' // next doc: fresh list + full shadow remap + presence
   $('media').style.display = 'none'; closePop()
   cm.dispatch({ effects: setPeer.of(RangeSet.of([])) })
@@ -821,7 +820,7 @@ function queueTplSave() {
 }
 addEventListener('online', () => { if (tplName && tplDirty) flushTpl() })
 let openN = 0, synced = false // sync state ready? Else no empty save to DB (Fix #2)
-function wsLive() { return !!(prov && prov.wsconnected) } // Yjs carries main.typ; REST autosave would only 409
+function wsLive() { return !!(prov && prov.wsconnected) } // Yjs carries the document text; REST autosave would only 409
 let connT = 0 // debounced disconnect paint: brief flaps stay invisible, no flicker
 function paintConn() { // one status: Live / Offline (browser) / Getrennt (WS down); #save stays with queueSave/saveNow
   connT = 0
@@ -884,7 +883,7 @@ async function openDoc(id) {
   leaveDoc()
   if (tplName) setView('split')
   hidePops()
-  docId = id; docRole = d.role; tplName = ''; docProject = d.project_id || ''
+  docId = id; docRole = d.role; tplName = ''; docProject = d.project_id || ''; docFolder = d.folder || ''
   scrollRestore = scrollRead(id)
   if (scrollRestore) scrollRestore.epoch = n
   openedTrashed = !!d.trashed
@@ -968,20 +967,10 @@ async function openDoc(id) {
   queueRender()
   paintOutline(); paintTabs()
   const fileDoc = docId
-  api('GET', `/api/docs/${id}/files`).then(r => { if (fileDoc === docId && n === openN) { lastFiles = r.files; paintTabs() } }).catch(console.warn)
+  loadProjectFiles(true).then(() => { if (fileDoc === docId && n === openN) paintTabs() }).catch(console.warn)
   sidebar(); loadComments().catch(e => console.warn('comments failed', e)); loadMembers()
-  if (!d.project_id && d.role !== 'owner') noteSharedRes(id)
 }
-let sharedNoted = new Set() // disclosure once per doc per session: shared compiles use the owner's copies
-function noteSharedRes(id) {
-  if (sharedNoted.has(id)) return
-  api('GET', `/api/docs/${id}/resources`).then(r => {
-    if (!r || !r.resources || !Object.keys(r.resources).length || id !== docId) return
-    sharedNoted.add(id)
-    toast(t('templates.sharedResNote'), null, '', 8000) // paths unchanged: owner's copies compile in
-  }).catch(() => {})
-}
-function queueSave() { // main.typ: Yjs carries every keystroke (offline too: syncs on reconnect); REST would 409 or fork the text, so never autosave main
+function queueSave() { // the document text: Yjs carries every keystroke (offline too: syncs on reconnect); REST would 409 or fork the text, so never autosave main
   if (window.suggestionDraft) return // draft: an unsent suggestion is no saved doc — no autosave status while editing one
   clearTimeout(saveT)
   if (!tplName && !activeFile) {
@@ -1004,7 +993,7 @@ async function saveNow(force, auto) {
     return
   }
   if (!docId || docRole === 'reviewer' || !ytext) return
-  if (!wsLive() || navigator.onLine === false) { $('save').textContent = t('docs.offlineRetry'); return } // Yjs owns main.typ: no REST off the sync path (forked text doubled on reconnect), quiet even when explicit
+  if (!wsLive() || navigator.onLine === false) { $('save').textContent = t('docs.offlineRetry'); return } // Yjs owns the document text: no REST off the sync path (forked text doubled on reconnect), quiet even when explicit
   if (auto) { if (!window.suggestionDraft) $('save').textContent = t('docs.saved'); paintConn(); return } // reconnect won the race: Yjs has it, no REST (2E); draft must not claim 'saved'
   try { await api('POST', `/api/docs/${docId}/save`, { content: ytext.toString(), ...(force ? { force: true } : {}) }); $('save').textContent = t('docs.saved') }
   catch (e) {

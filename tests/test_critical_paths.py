@@ -24,10 +24,11 @@ def test_rename_duplicate_400(c):
 def test_delete_me_clears_db_and_files(c):
     register_user(c, "alice")
     did = make_doc(c, "Weg")
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("bild.png", b"abc")}).status_code == 200
-    assert (deps.get_files_dir() / did).is_dir()
+    pid = c.get(f"/api/docs/{did}").json()["project_id"]
+    assert c.put(f"/api/projects/{pid}/files/bild.png", content=b"abc").status_code == 200
+    assert (deps.get_files_dir() / pid).is_dir()
     assert c.post("/api/me/delete", json={"password": "pass1234"}).status_code == 200
-    assert not (deps.get_files_dir() / did).exists()
+    assert not (deps.get_files_dir() / pid).exists()
     con = db.connect()
     try:
         assert con.execute("SELECT 1 FROM users WHERE name='alice'").fetchone() is None

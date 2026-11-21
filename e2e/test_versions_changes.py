@@ -1,7 +1,7 @@
 """Named checkpoints and the change screen (green/red diff in a blurred overlay)."""
 from playwright.sync_api import expect
 
-from e2e.helpers import register
+from e2e.helpers import put_file, register
 
 
 def _setup(page, name):
@@ -9,7 +9,7 @@ def _setup(page, name):
     page.request.post("/api/docs/create", data={"title": "Main", "content": "\n".join(f"line {i} of the document" for i in range(1, 21))})
     doc = page.request.get("/api/docs").json()["own"][0]
     pid = doc["project_id"]
-    assert page.request.post(f"/api/projects/{pid}/resources", data={"name": "lib.typ", "content": "#let a = 1"}).ok
+    assert put_file(page.request, pid, "lib.typ", "#let a = 1").ok
     page.reload()
     page.wait_for_function("window.__booted === true")
     page.locator("aside .doc.sub", has_text="Main").first.click()

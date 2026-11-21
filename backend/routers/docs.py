@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import sqlite3
 
@@ -11,9 +10,8 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 from backend import config, db, deps, search, sync
 from backend.constants import FOLDER_MAX, MAX_TXT, TITLE_MAX, UPLOAD_MAX
 from backend.schemas import DocCreate, DocSave, FolderRename, FolderSet, TitleSet
-from backend.services import projects
+from backend.services import project_files, projects
 from backend.services import quota as quota_svc
-from backend.services.docfiles import file_type, store, sync_doc_files
 from backend.services.locks import _drop_doc_locks, _named_lock
 from backend.services.sidebar import doc_users, notify_sidebar
 from backend.services.snapshots import auto_snap
@@ -83,6 +81,10 @@ def create_doc(b: DocCreate, req: Request, user: str = Depends(deps.me)) -> dict
         max_docs = config.load().MAX_DOCS_PER_USER
     except Exception:
         max_docs = 100
+    try:
+        folder = project_files.doc_folder(b.folder[:FOLDER_MAX])
+    except ValueError:
+        raise HTTPException(400, "Bad folder name") from None
     did, now = db.new_id("d_"), db.now_iso()
     try:
         with db.tx() as con:
@@ -91,7 +93,7 @@ def create_doc(b: DocCreate, req: Request, user: str = Depends(deps.me)) -> dict
             con.execute("INSERT INTO docs (id, owner, title, content, folder, created_at, updated_at) "
                         "VALUES (?,?,?,?,?,?,?)",
                         (did, user, t, b.content,
-                         b.folder.strip()[:FOLDER_MAX], now, now))
+                         folder, now, now))
             projects.attach_doc(con, did)
     except sqlite3.IntegrityError as e:
         raise HTTPException(400, "Title already exists") from e
@@ -106,11 +108,20 @@ def create_doc(b: DocCreate, req: Request, user: str = Depends(deps.me)) -> dict
 
 
 @router.post("/api/docs/import-zip")
-def import_zip(req: Request, f: UploadFile, title: str = Form(...), folder: str = Form(""), user: str = Depends(deps.me)) -> dict:
-    from backend.services.projectzip import import_project_zip
+def import_zip(req: Request, f: UploadFile, name: str = Form(""), documents: str = Form("[]"), user: str = Depends(deps.me)) -> dict:
+    """A new project named like the ZIP file (`name`, the frontend sends the file name)."""
+    from backend.services.projectzip import import_project_zip, listed
 
     deps.limited(req, "create")
-    return import_project_zip(user, title, folder, f.file.read(UPLOAD_MAX + 1))
+    return import_project_zip(user, f.file.read(UPLOAD_MAX + 1), listed(documents), name=name or f.filename or "")
+
+
+@router.post("/api/zip-preview")
+def zip_preview(req: Request, f: UploadFile, user: str = Depends(deps.me)) -> dict:
+    from backend.services.projectzip import zip_preview as preview
+
+    deps.limited(req, "create")
+    return preview(f.file.read(UPLOAD_MAX + 1))
 
 
 @router.get("/api/docs/{doc_id}")
@@ -242,6 +253,7 @@ async def _delete_doc(doc_id: str, req: Request, user: str, trash_only: bool = F
     deps.limited(req, "delete")
     deps.need_access(user, doc_id, allow_trashed=True)
     audience = doc_users(doc_id)
+    gone = ""
     with db.tx() as con:
         row = con.execute("SELECT trashed,project_id,owner FROM docs WHERE id=?", (doc_id,)).fetchone()
         if not row:
@@ -261,25 +273,20 @@ async def _delete_doc(doc_id: str, req: Request, user: str, trash_only: bool = F
         if not trashed:
             con.execute("UPDATE docs SET trashed=1,updated_at=? WHERE id=?", (db.now_iso(), doc_id))
         else:
-            # Permanent delete: files/comments go with the doc (FK
-            # cascade), but trash_entries references docs only by id —
-            # purge its copies, otherwise every restore attempt dead-ends
-            # on "Restore the original document first".
+            # Permanent delete: comments go with the doc (FK cascade); the
+            # project and its files go once no document is left.
             con.execute("DELETE FROM docs WHERE id=?", (doc_id,))
             con.execute("DELETE FROM trash_entries WHERE doc_id=?", (doc_id,))
-            if row["project_id"]:
-                con.execute("DELETE FROM projects WHERE id=? AND archived=1 AND NOT EXISTS (SELECT 1 FROM docs WHERE project_id=?)",
-                            (row["project_id"], row["project_id"]))
+            if row["project_id"] and con.execute("DELETE FROM projects WHERE id=? AND archived=1 AND NOT EXISTS (SELECT 1 FROM docs WHERE project_id=?)",
+                                                 (row["project_id"], row["project_id"])).rowcount:
+                gone = row["project_id"]
     await sync.drop(doc_id)
     quota_svc.invalidate_quota_cache(row["owner"])
     _drop_doc_locks(doc_id)
     for recipient in audience:
         notify_sidebar(recipient)
-    if trashed:
-        try:
-            shutil.rmtree(deps.get_files_dir() / doc_id, ignore_errors=True)
-        except OSError:
-            log.warning("delete_doc %s: rmtree failed", doc_id)
+    if gone:
+        shutil.rmtree(deps.get_files_dir() / gone, ignore_errors=True)
     return {"trashed": not trashed}
 
 
@@ -334,7 +341,7 @@ def duplicate_doc(doc_id: str, req: Request, user: str = Depends(deps.me)) -> di
     except Exception:
         max_docs = 100
     nid, now = db.new_id("d_"), db.now_iso()
-    src = deps.get_files_dir() / doc_id
+    backups: project_files.Backups = {}
     with _named_lock(f"dup:{user}"):
         try:
             with db.tx() as con:
@@ -348,170 +355,52 @@ def duplicate_doc(doc_id: str, req: Request, user: str = Depends(deps.me)) -> di
                     raise HTTPException(404, "Doc gone")
                 if d["trashed"]:
                     raise HTTPException(410, "In trash - restore first")
-                target_owner = user
-                guest_copy = not d["project_id"] and d["owner"] != user
+                target_owner = d["owner"]
+                guest_copy = not d["project_id"]
                 if d["project_id"]:
                     try:
                         projects.require(con, d["project_id"], user, edit=True)
-                        target_owner = d["owner"]
                     except HTTPException as e:
                         if e.status_code != 404:
                             raise
                         guest_copy = True
+                if guest_copy:
+                    target_owner = user
                 if con.execute("SELECT COUNT(*) FROM docs WHERE owner=?", (target_owner,)).fetchone()[0] >= max_docs:
                     raise HTTPException(400, "Too many docs")
                 base = d["title"] + (" (Kopie)" if lang == "de" else " (copy)")
                 title, i = base, 2
                 pid = d["project_id"]
-                while True:
-                    if pid is None:
-                        dup = con.execute("SELECT 1 FROM docs WHERE owner=? AND project_id IS NULL AND title=? COLLATE NOCASE AND trashed=0",
-                                          (target_owner, title)).fetchone()
-                    else:
-                        dup = con.execute("SELECT 1 FROM docs WHERE project_id=? AND folder=? AND title=? COLLATE NOCASE AND trashed=0",
-                                          (pid, d["folder"] or "", title)).fetchone()
-                    if not dup:
-                        break
+                while not guest_copy and con.execute("SELECT 1 FROM docs WHERE project_id=? AND folder=? AND title=? COLLATE NOCASE AND trashed=0",
+                                                     (pid, d["folder"] or "", title)).fetchone():
                     title, i = f"{base} {i}", i + 1
                     if i > 99:
                         raise HTTPException(400, "Too many copies")
-                live = sync.room_text(doc_id)
-                text = live if live is not None else d["content"]
-                try:
-                    max_files = config.load().MAX_FILES_PER_DOC
-                except Exception:
-                    max_files = 200
-                try:
-                    # Recursive live count (subpaths included), same filter
-                    # as sync_doc_files: hidden/tmp entries never counted.
-                    # Symlink targets count here, like _tree_count for the
-                    # sibling writers (fail-closed vs the table, which never
-                    # holds links). store.list only guards OSError, hence
-                    # ValueError is caught here as well.
-                    entries = store.list(doc_id)
-                except (OSError, ValueError):
-                    entries = []
-                if len(entries) > max_files:
-                    raise HTTPException(400, "Too many files")
-                fbytes = sum(e.size for e in entries)
-                quota_svc.check_quota(target_owner, len(text.encode("utf-8")) + fbytes, con)
-                source_project = d["project_id"]
-                new_project = guest_copy or not source_project
-                if new_project:
-                    from backend.services import resources
-                    if source_project:
-                        shelf = {r[0]: r[1] for r in con.execute("SELECT name,content FROM project_resources WHERE project_id=?", (source_project,))}
-                    else:
-                        shelf = {r[0]: r[1] for r in con.execute("SELECT name,content FROM templates WHERE owner=?", (d['owner'],))}
-                    local = projects.local_texts(doc_id)
-                    copied = {n: c for n, c in resources.reachable_closure(shelf, local, text).items() if n not in local}
-                    quota_svc.check_quota(target_owner, len(text.encode("utf-8")) + fbytes + sum(len(c.encode("utf-8")) for c in copied.values()), con)
-                    source_project = projects.create(con, target_owner, title)
-                    con.executemany("INSERT INTO project_resources VALUES (?,?,?,?)", [(source_project, n, c, now) for n, c in copied.items()])
+                text = project_files.doc_text(doc_id, d["content"])
+                if guest_copy and pid:
+                    # A guest's copy lands in a project of their own with the files the document reaches.
+                    reached = project_files.visible(con, pid, user) or set()
+                    new_pid = projects.create(con, target_owner, title)
+                    for path in sorted(reached):
+                        project_files.put(con, new_pid, path, project_files.read(pid, path), backups)
+                    pid = new_pid
                 con.execute("INSERT INTO docs (id, owner, title, content, folder, project_id, created_at, updated_at) "
                             "VALUES (?,?,?,?,?,?,?,?)",
-                            (nid, target_owner, title, text, d["folder"], source_project, now, now))
-                # Account for attachments with the doc row, even if the later
-                # disk reconciliation hits a transient database lock.
-                con.executemany("INSERT INTO files (doc_id, path, size, mtime, type) VALUES (?,?,?,?,?)",
-                                [(nid, e.path, e.size, e.mtime, file_type(e.path)) for e in entries])
-        except sqlite3.IntegrityError as e:
-            raise HTTPException(400, "Title already exists") from e
-        except sqlite3.OperationalError as e:
-            raise deps.busy_503("duplicate_doc", e) from e
-    # B9: publish the file tree atomically. copytree straight into the final
-    # dir leaves a partial tree visible on crash/failure (and dirs_exist_ok
-    # would merge into a pre-existing dir); stage into a hidden tmp sibling
-    # (skipped by every files walk via the ".tmp." rule, never quota-counted)
-    # and publish with one atomic os.replace.
-    if src.is_dir():
-        dst = deps.get_files_dir() / nid
-        tmpd = deps.get_files_dir() / f".tmp.dup-{nid}"
-
-        def _drop_tmp() -> None:
-            # rmtree is a no-op on a file; unlink it instead (practically
-            # unreachable with random nids, but cleanup must be total).
-            try:
-                if tmpd.is_dir() and not tmpd.is_symlink():
-                    shutil.rmtree(tmpd, ignore_errors=True)
-                else:
-                    tmpd.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-        try:
-            if dst.exists():
-                raise OSError(f"duplicate target exists: {nid}")
-            _drop_tmp()
-            shutil.copytree(src, tmpd, ignore=shutil.ignore_patterns(".*", "*.tmp.*"))
-            os.replace(tmpd, dst)
-        except (OSError, shutil.Error) as e:
-            log.warning("duplicate %s -> %s: copy failed: %s", doc_id, nid, e)
-            _drop_tmp()
-            _rb = db.connect()
-            try:
-                _rb.execute("DELETE FROM docs WHERE id=?", (nid,))
-                if new_project:
-                    _rb.execute("DELETE FROM projects WHERE id=? AND NOT EXISTS (SELECT 1 FROM docs WHERE project_id=?)", (source_project, source_project))
-                _rb.commit()
-                quota_svc.invalidate_quota_cache(target_owner)
-            except Exception as e:
-                log.warning("duplicate rollback %s failed: %s", nid, e)
-            finally:
-                _rb.close()
-            raise HTTPException(500, "Copy failed") from None
-    # Files-table rows for the copied tree (quota/search read the table,
-    # never the filesystem). Best-effort: the doc + tree are committed, so
-    # even a transient lock must not turn success into a 503 (a failed
-    # request would read as "retry" and mint a second copy; the next
-    # list_files heals via sync_doc_files anyway).
-    try:
-        sync_doc_files(nid)
-    except HTTPException as e:
-        log.warning("duplicate files sync %s failed: %s", nid, e)
-    # G4: the copy is committed (doc row + tree + files rows) before the
-    # quota verdict is final: a concurrent writer may have filled the quota
-    # in the gap since the pre-check. Re-check now and roll the copy back
-    # (row via FK-cascade incl. files rows, plus the tree) when over quota,
-    # so no orphan doc survives. quota_guard cannot do this: its pre-check
-    # raises without rollback once the copy is already counted, hence the
-    # explicit post-commit verdict with the same rollback pattern as the
-    # other writers (docfiles quota_guard callers). A transient lock anywhere
-    # leaves the copy in place (fail-open: the next write re-checks). The
-    # Attachment rows were inserted with the doc, so a reconciliation failure
-    # still leaves the copied bytes accounted for.
-    try:
-        _over = quota_svc.is_over_quota(target_owner)
-    except sqlite3.Error as e:
-        log.warning("duplicate quota post-check %s inconclusive: %s", nid, e)
-        _over = False
-    if _over:
-        try:
-            # db.tx gates the rest: deleting the tree while the row survives
-            # (transient lock on the DELETE) would orphan exactly the doc
-            # this guards against, so a stuck row keeps the copy (fail-open).
-            with db.tx() as _con:
-                _con.execute("DELETE FROM docs WHERE id=?", (nid,))
-                if new_project:
-                    _con.execute("DELETE FROM projects WHERE id=? AND NOT EXISTS (SELECT 1 FROM docs WHERE project_id=?)", (source_project, source_project))
-        except sqlite3.OperationalError as e:
-            log.warning("duplicate quota rollback %s failed: %s", nid, e)
-        else:
-            try:
-                _dst = deps.get_files_dir() / nid
-                if _dst.is_dir() and not _dst.is_symlink():
-                    shutil.rmtree(_dst, ignore_errors=True)
-                else:
-                    _dst.unlink(missing_ok=True)
-            except OSError:
-                pass
-            quota_svc.invalidate_quota_cache(target_owner)
-            raise HTTPException(413, "Quota exceeded")
+                            (nid, target_owner, title, text, d["folder"], pid, now, now))
+                if not pid:  # a document from before projects: its copy gets one, with the templates it uses
+                    pid = projects.attach_doc(con, nid)
+                quota_svc.check_quota(target_owner, 0, con)
+        except Exception as e:
+            project_files.undo(backups)
+            if isinstance(e, sqlite3.IntegrityError):
+                raise HTTPException(400, "Title already exists") from e
+            if isinstance(e, sqlite3.OperationalError):
+                raise deps.busy_503("duplicate_doc", e) from e
+            raise
     quota_svc.invalidate_quota_cache(target_owner)
-    if d["project_id"]:
-        projects.notify(d["project_id"])
-    else:
-        notify_sidebar(user)
+    if pid:
+        projects.notify(pid)
+    notify_sidebar(user)
     return {"id": nid}
 
 
@@ -557,18 +446,16 @@ async def empty_trash(req: Request, user: str = Depends(deps.me)) -> dict:
         con.execute("DELETE FROM trash_entries WHERE owner=? OR doc_id IN (SELECT id FROM docs WHERE owner=? AND trashed=1)",
                     (user, user))
         con.execute("DELETE FROM docs WHERE owner=? AND trashed=1", (user,))
-        for project in {d["project_id"] for d in documents if d["project_id"]}:
-            con.execute("DELETE FROM projects WHERE id=? AND archived=1 AND NOT EXISTS (SELECT 1 FROM docs WHERE project_id=?)",
-                        (project, project))
+        gone = [project for project in {d["project_id"] for d in documents if d["project_id"]}
+                if con.execute("DELETE FROM projects WHERE id=? AND archived=1 AND NOT EXISTS (SELECT 1 FROM docs WHERE project_id=?)",
+                               (project, project)).rowcount]
     quota_svc.invalidate_quota_cache(user)
     for document in documents:
         doc_id = document["id"]
         await sync.drop(doc_id)
         _drop_doc_locks(doc_id)
-        try:
-            shutil.rmtree(deps.get_files_dir() / doc_id, ignore_errors=True)
-        except OSError:
-            log.warning("empty_trash %s: rmtree failed", doc_id)
+    for project in gone:
+        shutil.rmtree(deps.get_files_dir() / project, ignore_errors=True)
     for recipient in audience:
         notify_sidebar(recipient)
     return {"documents": [d["id"] for d in documents]}

@@ -198,13 +198,14 @@ body.settings-open #modal { z-index: 302; }
 #setPop .storageMeter { height: 8px; overflow: hidden; border-radius: 999px; background: var(--hover); }
 #setPop .storageMeterFill { display: block; height: 100%; border-radius: inherit; background: var(--acc); transition: width .2s ease; }
 #setPop .storageMeterFill.over { background: var(--danger); }
-#setPop .storageMeta { color: var(--sub); font-size: 11.5px; line-height: 1.45; }
+#setPop .storageMeta, #setPop .keyHelp { color: var(--sub); font-size: 11.5px; line-height: 1.45; }
+#setPop .keyHelp { margin: 8px 0 0; }
 #setPop .setView .row { flex-wrap: wrap; }
 #setPop .keyCreateSec { overflow-x: auto; }
-#setPop .keyCreateRow { display: grid; grid-template-columns: minmax(110px, 1.2fr) minmax(95px, .9fr) minmax(90px, .8fr) auto; align-items: center; gap: 6px; }
+#setPop .keyCreateRow { display: grid; grid-template-columns: minmax(110px, 1.2fr) minmax(95px, .9fr) minmax(95px, .9fr) minmax(90px, .8fr) auto; align-items: center; gap: 6px; }
 #setPop .keyCreateRow > input, #setPop .keyCreateRow > select { box-sizing: border-box; width: 100%; min-width: 0; max-width: none; }
 #setPop .keyCreateRow > button { white-space: nowrap; }
-#setPop .setView .row select.keyRoleSel { flex: none; width: auto; max-width: 140px; min-height: 26px; padding: 2px 24px 2px 7px; font-size: 12px; line-height: 1.2; }
+#setPop .setView .row select.keyRoleSel, #setPop .setView .row select.keyModeSel { flex: none; width: auto; max-width: 140px; min-height: 26px; padding: 2px 24px 2px 7px; font-size: 12px; line-height: 1.2; }
 #setPop .setView .settingRow { min-height: 32px; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 14px; } /* switches are 20px: keep every row on the same 32px rhythm as steppers and selects */
 #setPop .setView .settingRow > label { flex: 1; min-width: 0; }
 #setPop .setView .settingRow > select { flex: 0 1 220px; width: 220px; max-width: 220px; }

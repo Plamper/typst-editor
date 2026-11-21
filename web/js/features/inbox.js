@@ -71,6 +71,11 @@ async function goInbox(it) {
     return
   }
   if (it.type === 'changes') return openProjectChanges(it.project_id, it.project_title)
+  if (it.type === 'reviewed' && docProject !== it.project_id) { // verdict on your proposal: the package is usually gone, the project is where it landed
+    const row = [...(lastOwn || []), ...(lastShared || [])].find(x => x.project_id === it.project_id)
+    if (!row) { toast(t('projects.openLinkedDoc')); return }
+    if (await inboxLeaveSession()) await openDoc(row.id)
+  }
 }
 async function openProjectChanges(pid, name = '') { // everything that changed since the user last looked
   if (docProject !== pid) { // show the project behind the dialog

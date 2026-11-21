@@ -1,7 +1,12 @@
-"""Project inheritance, isolated libraries and explicit resource copying."""
-from conftest import login, register_user
+"""Project inheritance, template snapshots into the project tree, isolation and quota."""
+from conftest import login, put_file, register_user
 
 from backend import db
+from backend.services import project_files
+
+
+def _paths(c, pid):
+    return [f["path"] for f in c.get(f"/api/projects/{pid}/files").json()["files"]]
 
 
 def setup_project(c):
@@ -12,7 +17,7 @@ def setup_project(c):
     assert r.status_code == 200, r.text
     did = r.json()["id"]
     pid = c.get(f"/api/docs/{did}").json()["project_id"]
-    assert c.get(f"/api/projects/{pid}/resources").json()["resources"][0]["name"] == "layout.typ"
+    assert _paths(c, pid) == ["layout.typ"]  # the used template is snapshotted as a project file
     return pid, did
 
 
@@ -29,28 +34,35 @@ def test_project_inherits_new_documents_and_revokes(c):
     assert new.status_code == 200, new.text
     nid = new.json()["id"]
     assert db.doc_role("bob", nid) == "editor"
-    assert c.post(f"/api/projects/{pid}/resources", json={"name": "nested/new.typ", "content": "Shared"}).status_code == 200
+    assert put_file(c, pid, "nested/new.typ", b"Shared").status_code == 200
     login(c, "alice")
     assert c.post(f"/api/projects/{pid}/members", json={"username": "bob", "role": "reviewer"}).status_code == 200
     login(c, "bob")
     assert c.post(f"/api/projects/{pid}/docs", json={"title": "Forbidden"}).status_code == 403
-    assert c.post(f"/api/projects/{pid}/resources", json={"name": "bad.typ", "content": "No"}).status_code == 403
+    assert put_file(c, pid, "bad.typ", b"No").status_code == 403
     login(c, "alice")
     assert c.delete(f"/api/projects/{pid}/members/bob").status_code == 200
     login(c, "bob")
     assert c.get(f"/api/docs/{did}").status_code == 404
-    assert c.get(f"/api/projects/{pid}/resources").status_code == 404
+    assert c.get(f"/api/projects/{pid}/files").status_code == 404
 
 
-def test_project_library_is_independent_and_local_wins(c):
+def test_project_snapshot_is_independent_of_the_private_template(c):
     pid, did = setup_project(c)
     c.post("/api/templates", json={"name": "layout.typ", "content": "Changed private"})
     out = c.get(f"/api/docs/{did}/resources").json()
-    assert out["project_id"] == pid
-    assert out["resources"] == {"layout.typ": "Owner layout"}
-    c.post(f"/api/docs/{did}/files/layout.typ/text", json={"content": "Local"})
-    assert "layout.typ" not in c.get(f"/api/docs/{did}/resources").json()["resources"]
+    assert out["project_id"] == pid and out["entry"] == "__doc__.typ"
+    assert [f["path"] for f in out["files"]] == ["layout.typ"]
+    assert c.get(f"/api/projects/{pid}/files/layout.typ").content == b"Owner layout"
     assert c.get("/api/templates/private.typ").status_code == 200
+    assert "private.typ" not in _paths(c, pid)
+
+
+def test_template_snapshot_lands_where_a_folder_document_reaches_it(c):
+    pid, _ = setup_project(c)
+    r = c.post(f"/api/projects/{pid}/docs", json={"title": "Sub", "folder": "Ch", "content": '#include "layout.typ"\n#include "/private.typ"'})
+    assert r.status_code == 200, r.text
+    assert sorted(_paths(c, pid)) == ["Ch/layout.typ", "layout.typ", "private.typ"]
 
 
 def test_project_editor_document_creation_invalidates_owner_quota(c):
@@ -88,37 +100,17 @@ def test_automatic_project_creation_keeps_individual_shares_limited(c):
     assert [d["id"] for d in project["documents"]] == [did]
 
 
-def test_copy_preserves_original_checks_conflicts_and_stale_source(c):
-    pid, did = setup_project(c)
-    c.post(f"/api/docs/{did}/files/sub/piece.typ/text", json={"content": '#include "leaf.typ"'})
-    body = {"source": "sub/piece.typ", "scope": "project", "project_id": pid, "name": "sub/piece.typ"}
-    p = c.post(f"/api/docs/{did}/library-copy-preview", json=body)
-    assert p.status_code == 200, p.text
-    assert p.json()["dependencies"] == ["leaf.typ"]
-    r = c.post(f"/api/docs/{did}/library-copy", json={**body, "preview": p.json()["preview"]})
-    assert r.status_code == 200, r.text
-    assert c.get(f"/api/docs/{did}/files/sub/piece.typ/text").status_code == 200
-    assert c.post(f"/api/docs/{did}/library-copy", json={**body, "preview": p.json()["preview"]}).status_code == 409
-    for name in ("sources.bib", "table.csv"):
-        c.post(f"/api/docs/{did}/files/{name}/text", json={"content": "original"})
-        b = {"source": name, "scope": "personal", "name": name, "folder": "Copied"}
-        pv = c.post(f"/api/docs/{did}/library-copy-preview", json=b).json()
-        assert c.post(f"/api/docs/{did}/library-copy", json={**b, "preview": pv["preview"]}).status_code == 200
-        assert c.get(f"/api/templates/{name}").json()["content"] == "original"
-
-
 def test_project_paths_resolve_relative_dependencies(c):
-    from backend.services.resources import doc_effective
-
     pid, did = setup_project(c)
-    for name, content in [("sub/a.typ", '#include "leaf.typ"'), ("sub/leaf.typ", "Nested")]:
-        assert c.post(f"/api/projects/{pid}/resources", json={"name": name, "content": content}).status_code == 200
-    out = doc_effective("alice", '#include "sub/a.typ"', {}, did)
-    assert out["resources"] == {"sub/a.typ": '#include "leaf.typ"', "sub/leaf.typ": "Nested"}
+    for name, content in [("sub/a.typ", b'#include "leaf.typ"'), ("sub/leaf.typ", b"Nested"), ("leaf.typ", b"Root")]:
+        assert put_file(c, pid, name, content).status_code == 200
+    c.post(f"/api/docs/{did}/save", json={"content": '#include "sub/a.typ"', "force": True})
+    out = c.get(f"/api/docs/{did}/resources").json()
+    assert sorted(f["path"] for f in out["files"]) == ["sub/a.typ", "sub/leaf.typ"]
 
 
-def test_project_export_and_duplicate_use_shared_library(c):
-    from backend.mcp_tools import _collect_export_source
+def test_project_export_and_duplicate_use_the_project_tree(c):
+    from backend.render import _collect_export_source
 
     pid, did = setup_project(c)
     c.post("/api/templates", json={"name": "layout.typ", "content": "Private changed"})
@@ -128,7 +120,20 @@ def test_project_export_and_duplicate_use_shared_library(c):
     assert duplicate.status_code == 200, duplicate.text
     new = duplicate.json()["id"]
     assert c.get(f"/api/docs/{new}").json()["project_id"] == pid
-    assert c.get(f"/api/docs/{new}/resources").json()["resources"]["layout.typ"] == "Owner layout"
+    assert [f["path"] for f in c.get(f"/api/docs/{new}/resources").json()["files"]] == ["layout.typ"]
+
+
+def test_guest_duplicate_takes_the_reached_files_into_an_own_project(c):
+    pid, did = setup_project(c)
+    put_file(c, pid, "other.png", b"x")
+    register_user(c, "bob")
+    login(c, "alice")
+    c.post(f"/api/docs/{did}/share", json={"username": "bob", "role": "editor"})
+    login(c, "bob")
+    new = c.post(f"/api/docs/{did}/duplicate").json()["id"]
+    target = c.get(f"/api/docs/{new}").json()["project_id"]
+    assert target != pid
+    assert _paths(c, target) == ["layout.typ"]
 
 
 def test_project_duplicate_uses_owner_document_limit(c, monkeypatch):
@@ -165,7 +170,7 @@ def test_project_trash_restore_and_final_delete(c):
     assert c.get(f"/api/docs/{did}").status_code == 410
     assert c.post(f"/api/docs/{did}/restore").status_code == 200
     assert c.get("/api/projects").json()["projects"][0]["id"] == pid
-    assert c.get(f"/api/docs/{did}/resources").json()["resources"]["layout.typ"] == "Owner layout"
+    assert _paths(c, pid) == ["layout.typ"]
     c.delete(f"/api/projects/{pid}")
     assert c.delete(f"/api/docs/{did}").status_code == 200
     assert c.get(f"/api/projects/{pid}").status_code == 404
@@ -177,32 +182,34 @@ def test_project_quota_failure_is_atomic(c, monkeypatch):
     pid, did = setup_project(c)
     before = quota.user_bytes("alice")
     monkeypatch.setattr(quota, "quota_cap", lambda: before)
-    assert c.post(f"/api/projects/{pid}/resources", json={"name": "over.typ", "content": "x"}).status_code == 413
-    assert "over.typ" not in [r["name"] for r in c.get(f"/api/projects/{pid}/resources").json()["resources"]]
-    assert c.get(f"/api/docs/{did}/resources").json()["resources"]["layout.typ"] == "Owner layout"
+    assert put_file(c, pid, "over.typ", b"x").status_code == 413
+    assert _paths(c, pid) == ["layout.typ"]
+    assert c.get(f"/api/projects/{pid}/files/over.typ").status_code == 404
 
 
-def test_project_resource_delete_guards_version(c):
+def test_project_file_delete_guards_version(c):
     pid, _ = setup_project(c)
-    row = c.get(f"/api/projects/{pid}/resources").json()["resources"][0]
-    url = f"/api/projects/{pid}/resources/layout.typ"
+    row = c.get(f"/api/projects/{pid}/files").json()["files"][0]
+    url = f"/api/projects/{pid}/files/layout.typ"
     assert c.delete(url, params={"version": "stale"}).status_code == 409
-    assert c.delete(url, params={"version": row["updated_at"]}).status_code == 200
-    assert c.get(f"/api/projects/{pid}/resources").json()["resources"] == []
+    assert c.delete(url, params={"version": row["version"]}).status_code == 200
+    assert _paths(c, pid) == []
 
 
-def test_project_members_read_whole_library_but_document_guests_only_reachable(c):
+def test_project_members_see_every_file_but_document_guests_only_reachable(c):
     pid, did = setup_project(c)
-    c.post(f"/api/projects/{pid}/resources", json={"name": "unused.typ", "content": "Project-only"})
+    put_file(c, pid, "unused.typ", b"Project-only")
     register_user(c, "member")
     register_user(c, "guest")
     login(c, "alice")
     c.post(f"/api/projects/{pid}/members", json={"username": "member", "role": "reviewer"})
     c.post(f"/api/docs/{did}/share", json={"username": "guest", "role": "reviewer"})
     login(c, "member")
-    assert "unused.typ" in c.get(f"/api/docs/{did}/resources").json()["resources"]
+    assert "unused.typ" in _paths(c, pid)
     login(c, "guest")
-    assert c.get(f"/api/docs/{did}/resources").json()["resources"] == {"layout.typ": "Owner layout"}
+    assert _paths(c, pid) == ["layout.typ"]
+    project = next(p for p in c.get("/api/projects").json()["projects"] if p["id"] == pid)
+    assert [f["path"] for f in project["files"]] == ["layout.typ"]
 
 
 def test_quota_check_observes_uncommitted_project_bytes(c, monkeypatch):
@@ -214,17 +221,22 @@ def test_quota_check_observes_uncommitted_project_bytes(c, monkeypatch):
     pid, _ = setup_project(c)
     before = quota.user_bytes("alice")
     monkeypatch.setattr(quota, "quota_cap", lambda: before)
-    with db.tx() as con:
-        con.execute("INSERT INTO project_resources VALUES (?,?,?,?)", (pid, "pending.typ", "one", db.now_iso()))
-        with pytest.raises(HTTPException) as e:
-            quota.check_quota("alice", 0, con)
-        assert e.value.status_code == 413
+    backups: project_files.Backups = {}
+    try:
+        with db.tx() as con:
+            project_files.put(con, pid, "pending.typ", b"one", backups)
+            with pytest.raises(HTTPException) as e:
+                quota.check_quota("alice", 0, con)
+            assert e.value.status_code == 413
+            raise RuntimeError("roll back")
+    except RuntimeError:
+        project_files.undo(backups)
 
 
-def test_project_resource_returns_normalized_unicode_name(c):
+def test_project_file_returns_normalized_name(c):
     register_user(c, "unicode_module")
     project = c.post("/api/projects", json={"title": "Normalization"}).json()["id"]
-    response = c.post(f"/api/projects/{project}/resources", json={"name": "\u00c4nderungen.typ", "content": "Text"})
+    response = put_file(c, project, "\u00c4nderungen.typ", b"Text")
     assert response.status_code == 200, response.text
-    assert response.json()["name"] == "_nderungen.typ"
-    assert c.get(f"/api/projects/{project}/resources").json()["resources"][0]["name"] == "_nderungen.typ"
+    assert response.json()["path"] == "_nderungen.typ"
+    assert _paths(c, project) == ["_nderungen.typ"]

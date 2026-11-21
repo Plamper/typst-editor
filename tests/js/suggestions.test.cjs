@@ -213,16 +213,6 @@ test('comment navigation uses mapped draft positions', async () => {
   assert.equal(opened, 1)
 })
 
-test('draft preview resolves new template references without adding them to source tabs', () => {
-  const source = fs.readFileSync('web/js/80-files-images.js', 'utf8')
-  const c = vm.createContext({ window: { suggestionDraft: {} }, activeFile: '', shadow: '',
-    getT: () => '#include "new.typ"', effTpl: () => [{ name: 'new.typ', content: 'Hello' }],
-    fileCache: new Map(), TextDecoder })
-  vm.runInContext(source.slice(source.indexOf('function usedTpls'), source.indexOf('function projectTabEntry')), c)
-  assert.deepEqual(plain(c.usedTpls()), [])
-  assert.deepEqual(plain(c.usedTpls(true)), ['new.typ'])
-})
-
 test('multiline deletions retain the entire old text and open the shared popup directly', () => {
   let opened
   const c = vm.createContext({ WidgetType: class {}, el: (tag, cls, text) => ({ className: cls, textContent: text, dataset: {}, setAttribute() {} }),

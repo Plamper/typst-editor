@@ -23,8 +23,8 @@ function context(extra = {}) {
     docId: 'document-a', docRole: 'owner', activeFile: 'chapter.typ', openN: 1,
     tplName: '', tplDirty: false, tabDirty: true, tabSaveFlight: null,
     tabVersions: new Map(), fileCache: new Map(), text: 'Draft', navigator: { onLine: true },
-    TPLK: '@tpl/', tabCanEdit: () => true, isTplKey: k => k.startsWith('@tpl/'), tabName: k => k.replace(/^@tpl\//, ''),
-    tabReq: (key, text) => ({ url: key, body: { content: text } }),
+    tabCanEdit: () => true, tabName: k => k, tabReq: key => key, lastFiles: [], TextEncoder,
+    putFile: (url, body) => c.api('PUT', url, body),
     toast: () => {}, t: (key, args) => key + (args?.msg || ''), wc: () => '',
     clearTimeout, fileT: null, myTpl: [], localStorage: { removeItem: () => {} }, saveDocScroll() {},
     fileStashKey: (doc, key) => doc + key, queueFileSave: () => { c.rearmed++ }, rearmed: 0,
@@ -36,7 +36,7 @@ function context(extra = {}) {
 }
 const saveSource = part('web/js/80-files-images.js', 'async function flushTab(', 'function tabLive()')
 
-test('failed attachment save preserves the dirty buffer and blocks leaving it', async () => {
+test('failed file save preserves the dirty buffer and blocks leaving it', async () => {
   const c = context({ api: async () => { throw new Error('conflict') } })
   vm.runInContext(saveSource, c)
   assert.equal(await c.flushTab(), false)
@@ -89,7 +89,7 @@ test('an old document save cannot clear a new document draft', async () => {
 test('a file read does not change the active buffer before it finishes', async () => {
   const pending = deferred()
   const c = context({ activeFile: '', tabDirty: false, tabSeq: 0, TEXT_EXT: /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i,
-    lastFiles: [{ name: 'chapter.typ' }], api: () => pending.promise,
+    lastFiles: [{ path: 'chapter.typ', version: 'v1' }], loadProjectFiles: async () => true, fileText: () => pending.promise,
     flushTab: async () => true, tabSaveState: () => {}, setT: () => { throw new Error('must not replace dirty text') },
   })
   vm.runInContext(part('web/js/80-files-images.js', 'async function switchTab(', 'function offerFileStash('), c)
@@ -97,7 +97,7 @@ test('a file read does not change the active buffer before it finishes', async (
   await Promise.resolve()
   assert.equal(c.activeFile, '')
   c.text = 'Typed into main while the file loads'; c.tabDirty = true
-  pending.resolve({ content: 'File text', version: 'v1' })
+  pending.resolve('File text')
   assert.equal(await switching, false)
   assert.equal(c.activeFile, '')
   assert.equal(c.text, 'Typed into main while the file loads')
@@ -116,15 +116,18 @@ test('a delayed formatter does not format a different document', async () => {
   assert.equal(c.text, 'New document')
 })
 
-test('shared resources stay read-only even when the viewer owns a same-named template', () => {
-  const c = context({ docRole: 'editor', openedTrashed: false, TEXT_EXT: /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i, myTpl: [{ name: 'shared.typ' }] })
+test('project files are editable only with the project edit right, the document text follows the document role', () => {
+  const c = context({ docRole: 'editor', openedTrashed: false, docResReadonly: true, TEXT_EXT: /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i })
   const source = readFileSync(resolve(root, 'web/js/80-files-images.js'), 'utf8')
   const line = source.split('\n').find(s => s.startsWith('const tabCanEdit ='))
   vm.runInContext(line + '\nthis.canEdit = tabCanEdit', c)
-  assert.equal(c.canEdit('@tpl/shared.typ'), false)
-  assert.equal(c.canEdit('attachment.typ'), true)
+  assert.equal(c.canEdit('Chapters/part.typ'), false) // a guest of one shared document reads the files it reaches
+  assert.equal(c.canEdit(''), true)
+  c.docResReadonly = false
+  assert.equal(c.canEdit('Chapters/part.typ'), true)
+  assert.equal(c.canEdit('img/logo.png'), false)
   c.docRole = 'reviewer'
-  assert.equal(c.canEdit('attachment.typ'), false)
+  assert.equal(c.canEdit('Chapters/part.typ'), false)
 })
 
 test('template saves cannot mark input typed during the request as saved', async () => {
@@ -180,7 +183,7 @@ test('an awaited resource list waits for the load that superseded it', async () 
     },
     paintTpls: () => { c.painted++ }, queueRender: () => {},
   })
-  vm.runInContext(part('web/js/20-completions.js', 'async function loadTpl(', 'async function loadDocResources('), c)
+  vm.runInContext(part('web/js/20-completions.js', 'async function loadTpl(', 'const fileRefs'), c)
   const stale = c.loadTpl()
   const fresh = c.loadTpl()
   let staleDone = false
@@ -198,9 +201,9 @@ test('an awaited resource list waits for the load that superseded it', async () 
 
 test('same-length source edits produce different compiler shadow signatures', () => {
   const c = context()
-  vm.runInContext(part('web/js/50-preview.js', 'const PV_HASH_MAX', 'function pvResTpl()') + '\nthis.signature = pvFileSig', c)
-  assert.notEqual(c.signature('part.typ', { mtime: 1, bytes: Buffer.from('Body') }),
-                  c.signature('part.typ', { mtime: 1, bytes: Buffer.from('#ody') }))
+  vm.runInContext(part('web/js/50-preview.js', 'const PV_HASH_MAX', 'const pvJobs') + '\nthis.signature = pvFileSig', c)
+  assert.notEqual(c.signature('part.typ', { version: 'v1', bytes: Buffer.from('Body') }),
+                  c.signature('part.typ', { version: 'v1', bytes: Buffer.from('#ody') }))
 })
 
 test('nested sidebar buttons keep their native keyboard action', () => {
@@ -216,25 +219,15 @@ test('nested sidebar buttons keep their native keyboard action', () => {
   assert.equal(opened, true)
 })
 
-test('nested includes resolve global dependencies while local names win', () => {
-  const shelf = [{ name: 'library.typ', content: '#include "base.typ"' },
-                 { name: 'base.typ', content: 'Global base' },
-                 { name: 'part.typ', content: '#include "unrelated.typ"' },
-                 { name: 'unrelated.typ', content: 'Must not be pulled' }]
-  const c = context({ activeFile: '', text: '#include "sub/part.typ"', TextDecoder,
-    fileCache: new Map([['sub/part.typ', { bytes: Buffer.from('#include "../library.typ"') }]]),
-    effTpl: () => shelf,
-  })
-  vm.runInContext(part('web/js/80-files-images.js', 'function usedTpls(', 'function tabItems()'), c)
-  assert.deepEqual(Array.from(c.usedTpls()), ['library.typ', 'base.typ'])
-})
-
-test('CSV data is a resource leaf and cannot pull a phantom dependency', () => {
-  const c = context({ activeFile: '', text: '#csv("data.csv")', TextDecoder,
-    effTpl: () => [{ name: 'data.csv', content: '"hidden.typ",42' }, { name: 'hidden.typ', content: 'Hidden' }],
-  })
-  vm.runInContext(part('web/js/80-files-images.js', 'function usedTpls(', 'function tabItems()'), c)
-  assert.deepEqual(Array.from(c.usedTpls()), ['data.csv'])
+test('inserted references are relative inside the folder of the open text, else from the project root', () => {
+  const c = context({ activeFile: '', docFolder: 'Chapters' })
+  vm.runInContext(part('web/js/80-files-images.js', 'function refTo(', 'const cachedText'), c)
+  assert.equal(c.refTo('Chapters/part.typ'), 'part.typ')
+  assert.equal(c.refTo('img/logo.png'), '/img/logo.png')
+  c.activeFile = 'Chapters/Sub/notes.typ'
+  assert.equal(c.refTo('Chapters/Sub/x.csv'), 'x.csv')
+  c.activeFile = ''; c.docFolder = ''
+  assert.equal(c.refTo('img/logo.png'), 'img/logo.png')
 })
 
 test('the Typst formatter is unavailable for bibliography and CSV buffers', () => {
@@ -292,64 +285,29 @@ test('rights downgrade blocks dirty tab saves without discarding the draft', asy
   }
 })
 
-test('nested tpl local files and module tabs have distinct identities and save routes', () => {
-  const c = context({ docProject: 'project-a', openedTrashed: false })
-  vm.runInContext(part('web/js/80-files-images.js', 'const TPLK =', 'const tabKind =') +
-    part('web/js/80-files-images.js', 'function tabReq(', 'function paintTabs('), c)
-  assert.equal(c.isTplKey('tpl/foo.typ'), false)
-  assert.equal(c.isTplKey('@tpl/foo.typ'), true)
-  assert.equal(c.tabReq('tpl/foo.typ', 'local').url, '/api/docs/document-a/files/tpl%2Ffoo.typ/text')
-  assert.equal(c.tabReq('@tpl/foo.typ', 'module').url, '/api/projects/project-a/resources')
+test('file tabs save to their project path with the version they were loaded at', () => {
+  const c = context({ docProject: 'project-a' })
+  vm.runInContext(part('web/js/80-files-images.js', 'const fileUrl', 'function refTo(') +
+    part('web/js/80-files-images.js', 'const tabReq', 'function paintTabs(') + ';this.req = tabReq', c)
+  assert.equal(c.req('Chapters/part one.typ'), '/api/projects/project-a/files/Chapters/part%20one.typ')
+  c.tabVersions.set('Chapters/part one.typ', 'abc')
+  assert.equal(c.req('Chapters/part one.typ'), '/api/projects/project-a/files/Chapters/part%20one.typ?version=abc')
 })
 
-test('resource refresh updates only a clean idle active module and its base version', async () => {
-  for (const state of ['clean', 'dirty', 'saving']) {
-    const c = context({ activeFile: '@tpl/layout.typ', docProject: 'project-a', docResN: 0,
-      tabDirty: state === 'dirty', tabSaveFlight: state === 'saving' ? Promise.resolve() : null,
-      shadow: '', window: {}, tabSig: '',
-      api: async () => ({ resources: { 'layout.typ': 'Remote' }, versions: { 'layout.typ': 'v2' }, readonly: false }),
-      cm: { dispatch: () => {} }, editableComp: { reconfigure: x => x }, editMode: x => x,
-      queueTabs: () => {}, gutter: () => {}, refreshHl: () => {}, paintOutline: () => {},
-    })
-    c.setT = text => { c.text = text }
-    c.tabVersions.set(c.activeFile, 'v1')
-    vm.runInContext(part('web/js/20-completions.js', 'async function loadDocResources(', 'const projectResources'), c)
-    await c.loadDocResources(true)
-    assert.equal(c.text, state === 'clean' ? 'Remote' : 'Draft')
-    assert.equal(c.tabVersions.get(c.activeFile), state === 'clean' ? 'v2' : 'v1')
-    assert.equal(c.window.docTpl[0].content, state === 'clean' ? 'Remote' : 'Draft')
-  }
-})
-
-test('a late resource snapshot cannot rewind the saved base version or text', async () => {
-  const c = context({ activeFile: '@tpl/layout.typ', docProject: 'project-a', docResN: 0, tabDirty: false,
-    shadow: '', window: {}, tabSig: '',
-    api: async () => ({ resources: { 'layout.typ': 'Old remote' }, versions: { 'layout.typ': '2026-01-01T00:00:00+00:00' }, readonly: false }),
-    cm: { dispatch: () => {} }, editableComp: { reconfigure: x => x }, editMode: x => x,
-    queueTabs: () => {}, gutter: () => {}, refreshHl: () => {}, paintOutline: () => {},
-  })
-  c.setT = text => { c.text = text }
-  c.tabVersions.set(c.activeFile, '2026-01-01T00:00:01+00:00')
-  vm.runInContext(part('web/js/20-completions.js', 'async function loadDocResources(', 'const projectResources'), c)
-  await c.loadDocResources(true)
-  assert.equal(c.tabVersions.get(c.activeFile), '2026-01-01T00:00:01+00:00')
-  assert.equal(c.text, 'Draft')
-})
-
-test('a late resource snapshot cannot replace the saved row a tab switch would reload', async () => {
-  const c = context({ activeFile: '', docProject: 'project-a', docResN: 0,
-    shadow: '', tabSig: '',
-    window: { docTpl: [{ name: 'layout.typ', content: 'Saved', updated_at: '2026-01-01T00:00:01+00:00' }] },
-    api: async () => ({ resources: { 'layout.typ': 'Old remote' }, versions: { 'layout.typ': '2026-01-01T00:00:00+00:00' }, readonly: false }),
-    cm: { dispatch: () => {} }, editableComp: { reconfigure: x => x }, editMode: x => x,
-    queueTabs: () => {}, gutter: () => {}, refreshHl: () => {}, paintOutline: () => {},
-  })
-  c.setT = text => { c.text = text }
-  c.tabVersions.set('@tpl/layout.typ', '2026-01-01T00:00:01+00:00')
-  vm.runInContext(part('web/js/20-completions.js', 'async function loadDocResources(', 'const projectResources'), c)
-  await c.loadDocResources(true)
-  assert.equal(c.window.docTpl[0].content, 'Saved')
-  assert.equal(c.window.docTpl[0].updated_at, '2026-01-01T00:00:01+00:00')
+test('a superseded project file list is dropped, the newest one sets the list and the edit right', async () => {
+  const lists = [deferred(), deferred()]
+  let calls = 0
+  const c = context({ docProject: 'project-a', filesDirty: true, filesAt: 0, FILES_TTL: 15000, lastMedia: '', docResReadonly: true,
+    api: () => lists[calls++].promise, renderMediaChips: () => {}, queueTabs: () => {}, console })
+  vm.runInContext(part('web/js/50-preview.js', 'async function loadProjectFiles(', 'async function pvFilesOnce('), c)
+  const old = c.loadProjectFiles(true), fresh = c.loadProjectFiles(true)
+  lists[1].resolve({ files: [{ path: 'b.png', version: 'v2' }], readonly: false })
+  assert.equal(await fresh, true)
+  lists[0].resolve({ files: [{ path: 'a.png', version: 'v1' }], readonly: true })
+  assert.equal(await old, false)
+  assert.deepEqual(c.lastFiles.map(f => f.path), ['b.png'])
+  assert.equal(c.docResReadonly, false)
+  assert.equal(c.filesDirty, false)
 })
 
 test('sidebar role changes disable the main editor in place and preserve drafts and Yjs', () => {

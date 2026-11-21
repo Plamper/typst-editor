@@ -1,6 +1,7 @@
-from conftest import make_doc, register_user
+from conftest import make_doc, project_of, put_file, register_user
 
-from backend import ratelimit
+from backend import db, ratelimit
+from backend.services import project_files
 
 
 def test_allow_window():
@@ -43,11 +44,11 @@ def test_search_ratelimit_429(c):
 
 def test_files_ratelimit_429(c):
     register_user(c, "alice")
-    did = make_doc(c, "F")
+    pid = project_of(c, make_doc(c, "F"))
     ratelimit.clear()
     codes = set()
     for _ in range(121): # list scope is 120/min (preview polls per render)
-        codes.add(c.get(f"/api/docs/{did}/files").status_code)
+        codes.add(c.get(f"/api/projects/{pid}/files").status_code)
     assert 429 in codes
 
 
@@ -63,11 +64,11 @@ def test_save_ratelimit_429(c):
 
 def test_file_text_save_ratelimit_429(c):
     register_user(c, "alice")
-    did = make_doc(c, "T", content="hi")
+    pid = project_of(c, make_doc(c, "T", content="hi"))
     ratelimit.clear()
     codes = set()
     for _ in range(31): # same save scope as doc save (autosave cadence fits 30/min)
-        codes.add(c.post(f"/api/docs/{did}/files/n.typ/text", json={"content": "hi"}).status_code)
+        codes.add(put_file(c, pid, "n.typ", b"hi", force=1).status_code)
     assert 429 in codes
 
 
@@ -162,27 +163,24 @@ def test_templates_isolated_from_save(c):
 
 
 def test_preview_download_burst_does_not_exhaust_uploads(c):
-    from backend.services.docfiles import store
-
     register_user(c, 'alice')
-    did = make_doc(c, 'Images')
+    pid = project_of(c, make_doc(c, 'Images'))
+    with db.tx() as con:
+        for i in range(51):
+            project_files.put(con, pid, f'image-{i}.png', b'image', {})
     for i in range(51):
-        store.put(did, f'image-{i}.png', b'image')
-    for i in range(51):
-        response = c.get(f'/api/docs/{did}/files/image-{i}.png')
+        response = c.get(f'/api/projects/{pid}/files/image-{i}.png')
         assert response.status_code == 200
         assert response.content == b'image'
-    assert c.post(f'/api/docs/{did}/files', files={'f': ('extra.png', b'new', 'image/png')}).status_code == 200
+    assert put_file(c, pid, 'extra.png', b'new').status_code == 200
 
 
 def test_file_reads_have_a_configurable_separate_limit(c, monkeypatch):
-    from backend.services.docfiles import store
-
     register_user(c, 'alice')
-    did = make_doc(c, 'Read limit')
-    store.put(did, 'image.png', b'image')
+    pid = project_of(c, make_doc(c, 'Read limit'))
+    put_file(c, pid, 'image.png', b'image')
     monkeypatch.setenv('RATE_FILE_READ_PER_MIN', '2')
     for _ in range(2):
-        assert c.get(f'/api/docs/{did}/files/image.png').status_code == 200
-    assert c.get(f'/api/docs/{did}/files/image.png').status_code == 429
-    assert c.post(f'/api/docs/{did}/files', files={'f': ('extra.png', b'new', 'image/png')}).status_code == 200
+        assert c.get(f'/api/projects/{pid}/files/image.png').status_code == 200
+    assert c.get(f'/api/projects/{pid}/files/image.png').status_code == 429
+    assert put_file(c, pid, 'extra.png', b'new').status_code == 200

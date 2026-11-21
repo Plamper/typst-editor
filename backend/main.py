@@ -25,11 +25,11 @@ from backend.routers import (
     docs,
     events,
     export,
-    files,
     frontend,
     library_copy,
     notifications,
     oidc,
+    project_files,
     project_folders,
     projects,
     readmode,
@@ -37,6 +37,7 @@ from backend.routers import (
     snapshots,
     system,
     templates,
+    transfer,
     ws,
 )
 from backend.routers.auth import _cookie_secure  # noqa: F401
@@ -238,10 +239,11 @@ app.include_router(change_packages.router)
 app.include_router(library_copy.router)
 app.include_router(share.router)
 app.include_router(comments.router)
-app.include_router(files.router)
+app.include_router(project_files.router)
 app.include_router(snapshots.router)
 app.include_router(notifications.router)
 app.include_router(export.router)
+app.include_router(transfer.router)
 app.include_router(events.router)
 app.include_router(readmode.router)
 app.include_router(system.router)

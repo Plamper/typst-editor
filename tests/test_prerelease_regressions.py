@@ -1,13 +1,12 @@
 """Project regression cases that gate the first project release candidate."""
 import asyncio
-import hashlib
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from conftest import login, make_doc, register_user
+from conftest import login, make_doc, put_file, register_user
 from fastapi import HTTPException
 
-from backend import db, mcp_tools, ratelimit, sync
+from backend import db, ratelimit, sync
 from backend.services import project_history, quota
 
 
@@ -41,37 +40,42 @@ def test_document_guest_cannot_list_project_roster(c):
     assert 'member' in c.get(f'/api/docs/{did}/members').json()['members']
 
 
-@pytest.mark.parametrize('action,bucket', [('create', 'create'), ('save', 'templates'), ('delete', 'delete')])
+@pytest.mark.parametrize('action,bucket', [('create', 'create'), ('save', 'save'), ('upload', 'files'), ('delete', 'files')])
 def test_project_writes_enforce_rate_limits(c, monkeypatch, action, bucket):
     pid, _ = project(c)
-    c.post(f'/api/projects/{pid}/resources', json={'name': 'a.typ', 'content': 'a'})
+    put_file(c, pid, 'a.typ', b'a')
     real = ratelimit.allow
     monkeypatch.setattr(ratelimit, 'allow', lambda key, *args, **kwargs: False if key.startswith(bucket + ':') else real(key, *args, **kwargs))
     if action == 'create':
         response = c.post(f'/api/projects/{pid}/docs', json={'title': 'Limited'})
     elif action == 'save':
-        response = c.post(f'/api/projects/{pid}/resources', json={'name': 'b.typ', 'content': 'b'})
+        response = put_file(c, pid, 'b.typ', b'b')
+    elif action == 'upload':
+        response = put_file(c, pid, 'b.png', b'b')
     else:
-        response = c.delete(f'/api/projects/{pid}/resources/a.typ?version=stale')
+        response = c.delete(f'/api/projects/{pid}/files/a.typ?version=stale')
     assert response.status_code == 429, response.text
 
 
-def test_rename_preview_and_stale_version(c):
+def test_move_preview_and_stale_version(c):
+    from backend.services import project_files
+
     pid, did = project(c)
-    c.post(f'/api/projects/{pid}/resources', json={'name': 'layout.typ', 'content': 'before'})
-    url = f'/api/projects/{pid}/rename-entry'
-    body = {'name': 'layout.typ', 'target': 'renamed.typ'}
+    put_file(c, pid, 'layout.typ', b'before')
+    url = f'/api/projects/{pid}/files-move'
+    body = {'path': 'layout.typ', 'target': 'renamed.typ'}
     preview = c.post(url + '-preview', json=body).json()
-    assert preview['references'] == ['First/main.typ: layout.typ']
-    c.post(f'/api/projects/{pid}/resources', json={'name': 'layout.typ', 'content': 'new', 'version': preview['version']})
+    assert preview['references'] == ['First: layout.typ']
+    put_file(c, pid, 'layout.typ', b'new', version=preview['version'])
     assert c.post(url, json={**body, 'version': preview['version']}).status_code == 409
     preview = c.post(url + '-preview', json=body).json()
     assert c.post(url, json={**body, 'version': preview['version']}).status_code == 200
-    c.post(f'/api/docs/{did}/files', files={'f': ('a.png', b'picture', 'image/png')})
-    body = {'name': 'a.png', 'target': 'b.png', 'doc_id': did}
+    assert c.get(f'/api/docs/{did}').json()['content'] == '#include "renamed.typ"'
+    put_file(c, pid, 'a.png', b'picture')
+    body = {'path': 'a.png', 'target': 'b.png'}
     preview = c.post(url + '-preview', json=body).json()
-    assert preview['version'] == hashlib.sha256(b'picture').hexdigest()
-    assert c.post(url, json={**body, 'version': preview['version']}).status_code == 200
+    assert preview['version'] == project_files.version(b'picture')
+    assert c.post(url, json={**body, 'version': preview['version'], 'fix_refs': False}).status_code == 200
 
 
 def test_checkpoint_capture_does_not_reserve_sqlite_writer(c, monkeypatch):
@@ -107,19 +111,20 @@ def test_checkpoint_rejects_changes_during_capture(c, monkeypatch):
 def test_failed_restore_retains_sources_files_and_history(c, monkeypatch):
     pid, did = project(c)
     sid = c.post(f'/api/projects/{pid}/snapshots', json={}).json()['id']
-    c.post(f'/api/docs/{did}/files', files={'f': ('a.png', b'keep', 'image/png')})
+    put_file(c, pid, 'a.png', b'keep')
     before = quota.user_bytes('alice')
     history = c.get(f'/api/projects/{pid}/snapshots').json()
     monkeypatch.setattr(quota, 'quota_cap', lambda: before)
     assert c.post(f'/api/projects/{pid}/snapshots/{sid}/restore', json={}).status_code == 413
-    assert c.get(f'/api/docs/{did}/files/a.png').content == b'keep'
+    assert c.get(f'/api/projects/{pid}/files/a.png').content == b'keep'
     assert c.get(f'/api/projects/{pid}/snapshots').json() == history
 
 
 def test_migration_allowance_and_case_collisions(c):
     pid, _ = project(c)
-    c.post(f'/api/projects/{pid}/resources', json={'name': 'a.typ', 'content': 'copied'})
     with db.tx() as con:
+        con.execute("CREATE TABLE project_resources (project_id TEXT NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)")
+        con.execute("INSERT INTO project_resources VALUES (?,?,?,?)", (pid, 'a.typ', 'copied', db.now_iso()))
         con.execute('DROP INDEX idx_projects_owner_title_nocase')
         con.execute('ALTER TABLE users DROP COLUMN migration_bytes')
         con.execute("INSERT INTO projects VALUES ('legacy','alice','first','now',0)")
@@ -127,6 +132,7 @@ def test_migration_allowance_and_case_collisions(c):
         assert con.execute("SELECT migration_bytes FROM users WHERE name='alice'").fetchone()[0] == 6
         names = [r[0] for r in con.execute("SELECT title FROM projects WHERE owner='alice'")]
         assert len({n.lower() for n in names}) == len(names)
+        con.execute('DROP TABLE project_resources')
     info = c.get('/api/me').json()['storage']
     assert info['limit'] == quota.quota_cap() + 6
     assert info['migration_allowance'] == 6
@@ -137,9 +143,13 @@ def test_mcp_shared_listing_uses_project_role_without_per_doc_queries(c, monkeyp
     register_user(c, 'bob')
     login(c, 'alice')
     c.post(f'/api/projects/{pid}/members', json={'username': 'bob', 'role': 'reviewer'})
+    assert c.put(f'/api/projects/{pid}/files/img/a.png', content=b'x').status_code == 200
     monkeypatch.setattr(db, 'role_on', lambda *args: pytest.fail('per-document role query'))
-    shared = mcp_tools.op_ls('bob', 'editor')['shared']
-    assert [(d['id'], d['role']) for d in shared] == [(did, 'reviewer')]
+    from backend import mcp_fs
+    ctx = mcp_fs.Ctx('bob', 'editor')
+    assert mcp_fs.ls(ctx, '/')['entries'][0] == {'path': '/First@alice', 'kind': 'project', 'role': 'reviewer'}
+    assert [e['path'] for e in mcp_fs.ls(ctx, '/First@alice')['entries'] if e['kind'] == 'doc']
+    assert '/First@alice/img/a.png' in {e['path'] for e in mcp_fs.ls(ctx, '/First@alice', depth=0)['entries']}
 
 
 def test_hard_delete_invalidates_quota_cache(c):
@@ -193,7 +203,7 @@ def test_unicode_limits_measure_utf8_bytes(c):
     text = '\U0001f600' * 50001
     assert c.post(f'/api/projects/{pid}/docs', json={'title': 'Large', 'content': text}).status_code == 400
     assert c.post(f'/api/docs/{did}/save', json={'content': text}).status_code == 400
-    assert c.post(f'/api/projects/{pid}/resources', json={'name': 'large.typ', 'content': text}).status_code == 413
+    assert put_file(c, pid, 'large.typ', text.encode()).status_code == 413
 
 
 def test_legacy_duplicate_copies_dependencies_without_mutating_source(c):
@@ -205,8 +215,8 @@ def test_legacy_duplicate_copies_dependencies_without_mutating_source(c):
     assert response.status_code == 200, response.text
     with db.tx() as con:
         assert con.execute('SELECT project_id FROM docs WHERE id=?', (did,)).fetchone()[0] is None
-    copied = response.json()['id']
-    assert c.get(f'/api/docs/{copied}/resources').json()['resources']['layout.typ'] == 'keep dependency'
+    copied = c.get(f"/api/docs/{response.json()['id']}").json()['project_id']
+    assert c.get(f'/api/projects/{copied}/files/layout.typ').content == b'keep dependency'
 
 
 def test_project_suffix_keeps_title_length_limit(c):
@@ -218,36 +228,20 @@ def test_project_suffix_keeps_title_length_limit(c):
     assert c.get(f'/api/projects/{second}').json()['title'] == 'A' * 96 + ' (2)'
 
 
-@pytest.mark.parametrize('failure', ['copy', 'quota'])
-def test_failed_legacy_duplicate_removes_new_project(c, monkeypatch, failure):
+def test_failed_legacy_duplicate_removes_new_project(c, monkeypatch):
     _, did = project(c)
     c.post('/api/templates', json={'name': 'layout.typ', 'content': 'dependency'})
-    c.post(f'/api/docs/{did}/files', files={'f': ('a.png', b'keep', 'image/png')})
     with db.tx() as con:
         con.execute('UPDATE docs SET project_id=NULL WHERE id=?', (did,))
     before = quota.user_bytes('alice')
     projects = {p['id'] for p in c.get('/api/projects').json()['projects']}
-    if failure == 'copy':
-        def broken(*args, **kwargs):
-            raise OSError('copy failed')
-        monkeypatch.setattr('shutil.copytree', broken)
-    else:
-        monkeypatch.setattr(quota, 'is_over_quota', lambda user: True)
+    monkeypatch.setattr(quota, 'quota_cap', lambda: before)
     result = c.post(f'/api/docs/{did}/duplicate')
-    assert result.status_code == (500 if failure == 'copy' else 413), result.text
+    assert result.status_code == 413, result.text
     assert quota.user_bytes('alice') == before
     assert {p['id'] for p in c.get('/api/projects').json()['projects']} == projects
 
 
-def test_rename_preview_file_race_returns_conflict(c, monkeypatch):
-    from backend.services import projects
-
+def test_move_preview_of_a_vanished_file_is_404(c):
     pid, did = project(c)
-    c.post(f'/api/projects/{pid}/resources', json={'name': 'layout.typ', 'content': 'a'})
-
-    def disappeared(*args):
-        raise FileNotFoundError('concurrent delete')
-
-    monkeypatch.setattr(projects, 'local_texts', disappeared)
-    result = c.post(f'/api/projects/{pid}/rename-entry-preview', json={'name': 'layout.typ', 'target': 'new.typ'})
-    assert result.status_code == 409
+    assert c.post(f'/api/projects/{pid}/files-move-preview', json={'path': 'layout.typ', 'target': 'new.typ'}).status_code == 404

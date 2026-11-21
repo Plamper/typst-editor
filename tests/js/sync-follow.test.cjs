@@ -24,7 +24,6 @@ function edCtx({ text, items, owned, active = '', secAt = {} }) {
     const slot = { getBoundingClientRect: () => ({ top: 0, height: 1684 }) }
     const pv = { clientHeight: 800, getBoundingClientRect: () => ({ top: 0 }), querySelectorAll: () => [slot] }
     function $() { return pv }
-    function isTplKey(k) { return String(k).startsWith('tpl:') }
     function pvViewPage() { return 0 }
     function getT() { return text }
     const cm = { state: { doc: { lines: text.split('\\n').length, lineAt: p => ({ number: text.slice(0, p).split('\\n').length }) } }, scrollDOM: {} }
@@ -63,9 +62,6 @@ test('an open chapter tab follows its own text and leaves main-document text alo
   const c2 = edCtx({ text: chap, items: [item('Main preface words.', 141, 400, 300)], owned: {}, active: 'chap.typ' })
   c2.syncToEd()
   assert.deepEqual(c2.log, []) // no section of this file at the reading point: no ratio jump inside the chapter
-  const c3 = edCtx({ text: chap, items, owned: { 'Chapter words on the page.': 10 }, active: 'tpl:letter.typ' })
-  c3.syncToEd()
-  assert.deepEqual(c3.log, []) // templates are not on the page
 })
 
 test('a generated marker keeps the gap it stands in, so a back-link lands beside its call', () => {
