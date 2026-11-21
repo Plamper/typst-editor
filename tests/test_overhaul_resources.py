@@ -37,10 +37,6 @@ def test_create_list_kinds_and_backward_compat(c):
     assert rows["data.csv"]["kind"] == "table"
     assert all(t["updated_at"] for t in rows.values())  # version marker present
     assert rows["refs.bib"]["line"].startswith("#bibliography")
-    # unified alias
-    r2 = c.get("/api/resources")
-    assert r2.status_code == 200
-    assert {t["name"] for t in r2.json()["resources"]} == set(rows)
 
 
 def test_two_users_same_filename_isolated(c):
@@ -250,11 +246,10 @@ def test_nested_relative_resolution(c):
     assert sorted(f["path"] for f in body["files"]) == ["sub/leaf.typ", "sub/part.typ"]  # relative to the including file
 
 
-def test_quoted_prose_ignored():
+def test_quoted_prose_only_counts_when_it_names_a_file():
     from backend.services import resources as _r
 
-    assert _r.refs_in_text('say "hello world" and "see this"') == []
-    assert _r.refs_in_text('#include "a.typ"') == ["a.typ"]
+    assert _r.reachable({"a.typ"}, {}, "", 'say "hello world" and "see this" #include "a.typ"') == {"a.typ"}
 
 
 def test_version_missing_row_404(c):

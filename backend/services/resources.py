@@ -61,29 +61,6 @@ def insert_line(name: str) -> str:
     return ""
 
 
-def _is_plausible_ref(raw: str) -> bool:
-    """Quoted paths may contain spaces, including generated copy names."""
-    n = (raw or "").strip()
-    if not n or len(n) > 240:
-        return False
-    if kind_of(n) == "" and kind_of(Path(n).name) == "":
-        return False
-    return True
-
-
-def refs_in_text(text: str) -> list[str]:
-    out, seen = [], set()
-    for m in REF_RE.finditer(text or ""):
-        n = m.group(1).strip()
-        if not n or n in seen or not _is_plausible_ref(n):
-            continue
-        seen.add(n)
-        out.append(n)
-        if len(out) >= REF_MAX_PER_TEXT:
-            break
-    return out
-
-
 def resolve(base: str, ref: str) -> str | None:
     """Project path a quoted reference from a text in folder `base` points at: relative to
     that folder, "/x" from the project root, None when it would leave the root (Typst refuses)."""

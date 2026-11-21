@@ -263,22 +263,6 @@ def room(doc_id: str) -> dict:
         rooms[doc_id] = r
     return r
 
-
-def cached_role(r: dict, user: str, doc_id: str) -> str | None:
-    now = time.monotonic()
-    hit = r.get("role_cache", {}).get(user)
-    if hit and now - hit[1] < CACHE_TTL:
-        return hit[0]
-    try:
-        role = db.doc_role(user, doc_id)
-    except Exception as e:
-        log.warning("cached_role %s/%s failed: %s", doc_id, user, e)
-        # Serve stale on transient DB failure when possible.
-        return hit[0] if hit else None
-    r.setdefault("role_cache", {})[user] = (role, now)
-    return role
-
-
 async def _role_async(r: dict, user: str, doc_id: str) -> str | None:
     """Cached role without blocking the loop (1C: to_thread on miss)."""
     now = time.monotonic()
@@ -292,23 +276,6 @@ async def _role_async(r: dict, user: str, doc_id: str) -> str | None:
         return hit[0] if hit else None
     r.setdefault("role_cache", {})[user] = (role, now)
     return role
-
-
-def session_ok(token: str, user: str) -> str | None:
-    now = time.monotonic()
-    hit = _sess_cache.get(token)
-    if hit and now - hit[1] < SESSION_RECHECK_TTL:
-        return hit[0]
-    try:
-        current = auth.verify_session(token)
-    except Exception as e:
-        log.warning("session_ok verify failed: %s", e)
-        return None
-    _sess_cache[token] = (current, now)
-    if len(_sess_cache) > 5000:
-        _sess_cache.clear()
-    return current
-
 
 async def _session_async(token: str) -> str | None:
     """Cached session check without blocking the loop (1C).
@@ -398,23 +365,6 @@ def drop_sess_token(token: str) -> str | None:
         drop_sess_cache(hit[0])
         return hit[0]
     return hit[0] if hit else None
-
-
-def invalidate_doc(doc_id: str) -> None:
-    """Drop all cached WS state for a doc (1C: share/unshare/delete/trash).
-
-    Track 1D: call this after share/unshare/delete/trash so rooms re-read
-    role + trash status instead of serving stale caches. Current callers
-    (share/unshare via drop_role_cache + kick_user, delete via drop) already
-    invalidate through those paths; this is the explicit hook for new 1D
-    writers that bypass them.
-    """
-    r = rooms.get(doc_id)
-    if r is not None:
-        r.get("role_cache", {}).clear()
-        r.pop("trashed", None)
-        r["trashed_at"] = 0.0
-
 
 def invalidate_quota_cache(owner: str = "") -> None:
     """Drop quota cache entries (1C interface for track 1D).

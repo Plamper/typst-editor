@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import shutil
 import sqlite3
 from typing import Literal
@@ -20,36 +18,10 @@ from backend.services.sidebar import notify_sidebar
 
 router = APIRouter()
 
-
-class Convert(BaseModel):
-    folder: str = Field(min_length=1, max_length=40)
-    preview: str = ""
-
-
 class ProjectDoc(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     folder: str = Field(default="", max_length=240)
     content: str = Field(default="", max_length=200001)
-
-
-def preview(con: sqlite3.Connection, user: str, folder: str) -> dict:
-    existing = con.execute("SELECT project_id FROM legacy_project_folders WHERE owner=? AND folder=?", (user, folder.split("/")[0])).fetchone()
-    if existing:
-        p = projects.payload(con, existing[0], user)
-        return {"id": existing[0], "documents": p["documents"], "preview": existing[0]}
-    docs = [dict(d) for d in con.execute("SELECT id, title, content, folder, updated_at, project_id FROM docs "
-                                       "WHERE owner=? AND trashed=0 AND project_id IS NULL ORDER BY id", (user,))
-            if d["folder"] == folder or d["folder"].startswith(folder + "/")]
-    if not docs and not con.execute("SELECT 1 FROM folders WHERE owner=? AND kind='doc' AND name=?",
-                                    (user, folder)).fetchone():
-        raise HTTPException(404, "Folder not found")
-    for d in docs:
-        text = sync.room_text(d["id"])
-        d["content"] = text if text is not None else d["content"]
-    token = hashlib.sha256(json.dumps(docs, sort_keys=True).encode()).hexdigest()
-    return {"documents": docs, "preview": token,
-            "warning": "Only statically detectable template references are copied. Check dynamic file paths manually."}
-
 
 @router.get("/api/projects")
 def list_projects(req: Request, user: str = Depends(deps.me)) -> dict:
@@ -60,42 +32,6 @@ def list_projects(req: Request, user: str = Depends(deps.me)) -> dict:
         return {"projects": [projects.payload(con, r[0], user) for r in ids]}
     finally:
         con.close()
-
-
-@router.post("/api/projects/preview")
-def conversion_preview(b: Convert, req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.limited(req, "files_list")
-    con = db.connect()
-    try:
-        return preview(con, user, b.folder)
-    finally:
-        con.close()
-
-
-@router.post("/api/projects/convert")
-def convert_folder(b: Convert, req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.limited(req, "create")
-    pid = db.new_id("p_")
-    with db.tx() as con:
-        p = preview(con, user, b.folder)
-        if p.get("id"):
-            return {"id": p["id"]}
-        if b.preview != p["preview"]:
-            raise HTTPException(409, "Folder changed; review the conversion preview again")
-        if con.execute("SELECT 1 FROM projects WHERE owner=? AND title=? COLLATE NOCASE", (user, b.folder)).fetchone():
-            raise HTTPException(409, "Project name already exists")
-        con.execute("INSERT INTO projects(id,owner,title,created_at) VALUES (?,?,?,?)", (pid, user, b.folder, db.now_iso()))
-        con.execute("INSERT INTO legacy_project_folders VALUES (?,?,?)", (user, b.folder.split("/")[0], pid))
-        for d in p["documents"]:
-            con.execute("UPDATE docs SET folder=? WHERE id=?", (d["folder"][len(b.folder):].lstrip("/"), d["id"]))
-            projects.attach_doc(con, d["id"], pid)
-        for f in con.execute("SELECT name FROM folders WHERE owner=? AND kind='doc'", (user,)).fetchall():
-            if f[0] == b.folder or f[0].startswith(b.folder + "/"):
-                con.execute("DELETE FROM folders WHERE owner=? AND kind='doc' AND name=?", (user, f[0]))
-    quota.invalidate_quota_cache(user)
-    projects.notify(pid)
-    return {"id": pid}
-
 
 @router.get("/api/projects/{project_id}")
 def get_project(project_id: str, user: str = Depends(deps.me)) -> dict:

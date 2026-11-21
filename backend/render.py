@@ -86,17 +86,6 @@ def _expand_pages(pages: str) -> list[int]:
         raise _bad(f"pages 1-20 only, max {VIEW_MAX_PAGES} per call (e.g. 1-5, 6-10 or 2)")
     return sorted(seen)
 
-
-def _pages_ok(pages: str) -> bool:
-    if not pages or not isinstance(pages, str):
-        return False
-    try:
-        _expand_pages(pages)
-    except HTTPException:
-        return False
-    return True
-
-
 def _parse_typst_diagnostics(stderr: str, level: str = "error") -> list[dict]:
     """Parse typst CLI stderr into [{file, line, col, message}] for errors (or warnings)."""
     diags: list[dict] = []
@@ -520,14 +509,6 @@ def _total_pages_exact(doc_id: str, main_text: str,
             _VIEW_TOTALS.pop(next(iter(_VIEW_TOTALS)), None)
         _VIEW_TOTALS[key] = n
     return n
-
-
-def _total_pages_cached(doc_id: str, main_text: str,
-                        files: list[tuple[str, bytes]], fallback: int) -> int:
-    """Total doc pages via cached page count, fallback = max requested page."""
-    n = _total_pages_exact(doc_id, main_text, files)
-    return fallback if n is None else n
-
 
 def _view_result(pngs: list[bytes], cache_hit: bool, last_seen: str,
                  total_pages: int, pages: str = "1-5", scale: float = 1.0) -> ToolResult:

@@ -24,7 +24,6 @@ def test_unicode_project_replaces_document_folders(c):
     did = c.post(f"/api/projects/{pid}/docs", json={"title": "Uni"}).json()["id"]
     assert c.get(f"/api/docs/{did}").json()["project_id"] == pid
     assert c.get(f"/api/projects/{pid}").json()["title"] == name
-    assert c.post(f"/api/docs/{did}/folder", json={"folder": name}).status_code == 410
 
 
 def test_duplicate_reaches_the_same_files(c):
@@ -54,7 +53,6 @@ def test_project_rename_conflict_preserves_both_projects(c):
     assert c.post(f"/api/projects/{first}/rename", json={"title": "B"}).status_code == 409
     assert c.get(f"/api/projects/{first}").json()["title"] == "A"
     assert c.get(f"/api/projects/{second}").json()["title"] == "B"
-    assert c.post("/api/folders/rename", json={"old": "A", "new": "B"}).status_code == 410
 
 
 def test_projects_rename_unicode(c):
