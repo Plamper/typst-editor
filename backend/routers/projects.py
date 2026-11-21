@@ -230,7 +230,6 @@ class TransferEntry(BaseModel):
     kind: Literal['document', 'file']  # file: name = project path
     doc_id: str = ''
     name: str = ''
-    target_doc_id: str = ''
     target_name: str = Field(default='', max_length=240)
     target_folder: str | None = None
     move: bool = False
@@ -246,7 +245,7 @@ async def transfer_entry(project_id: str, b: TransferEntry, req: Request, user: 
     if b.duplicate and (b.move or b.target_project_id != project_id):
         raise HTTPException(400, 'Duplicate stays in the source project')
     audience = doc_users(b.doc_id) if b.kind == 'document' else []
-    result = await asyncio.to_thread(transfer, project_id, b.target_project_id, b.kind, b.doc_id, b.name, b.target_doc_id, b.target_name, b.move, user, b.duplicate, b.target_folder, deps.req_lang(req))
+    result = await asyncio.to_thread(transfer, project_id, b.target_project_id, b.kind, b.doc_id, b.name, b.target_name, b.move, user, b.duplicate, b.target_folder, deps.req_lang(req))
     if b.move and b.kind == 'document':
         for username in audience:
             sync.drop_role_cache(username)

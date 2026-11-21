@@ -11,11 +11,11 @@ from backend.services.docfiles import safe_name
 
 
 def transfer(source: str, target: str, kind: str, doc_id: str, name: str,
-             target_doc: str, target_name: str, move: bool, user: str, duplicate: bool = False,
+             target_name: str, move: bool, user: str, duplicate: bool = False,
              target_folder: str | None = None, lang: str = "en") -> dict:
     """kind 'document': doc_id (target_name = title, target_folder); the project files it reaches come along
     into another project unless the same bytes are already there. kind 'file': name = project path, target_name
-    = path in the target project. target_doc is unused (kept for older callers)."""
+    = path in the target project."""
     new_id = db.new_id('d_') if kind == 'document' and not move else doc_id
     folder: str | None = None
     if target_folder is not None:
