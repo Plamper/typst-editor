@@ -311,6 +311,7 @@ async function acceptSessionSelection(fileId = '', changeId = '', cell = null, f
     s.busy = true; cm.dispatch({ effects: editableComp.reconfigure(editMode(false)) }); paintFileExtras(); paintSuggestionControls()
     const proposal = await api('POST', sessionUrl(s) + '/accept', { revision: s.package.revision, file_id: fileId, change_id: changeId, cell, field_edit: fieldEdit, include_dependencies: includeDependencies })
     if (window.changeSession !== s) return
+    if (fileId && proposal.files.some(f => f.id === fileId && f.stale)) toast(t('packages.staleChange'), null, null, 6000, 'error') // the text moved on: nothing was applied
     const activeRename = [...s.files.values()].find(f => f.kind !== 'document' && f.action === 'rename' && sessionKey(f) === sessionKey(sessionCurrent()) && !proposal.files.some(p => p.id === f.id && p.action === 'rename'))
     if (activeRename) {
       activeFile = activeRename.kind === 'resource' ? TPLK + activeRename.target : activeRename.target

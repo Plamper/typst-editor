@@ -198,7 +198,8 @@ body.settings-open #modal { z-index: 302; }
 #setPop .storageMeter { height: 8px; overflow: hidden; border-radius: 999px; background: var(--hover); }
 #setPop .storageMeterFill { display: block; height: 100%; border-radius: inherit; background: var(--acc); transition: width .2s ease; }
 #setPop .storageMeterFill.over { background: var(--danger); }
-#setPop .storageMeta { color: var(--sub); font-size: 11.5px; line-height: 1.45; }
+#setPop .storageMeta, #setPop .keyHelp { color: var(--sub); font-size: 11.5px; line-height: 1.45; }
+#setPop .keyHelp { margin: 8px 0 0; }
 #setPop .setView .row { flex-wrap: wrap; }
 #setPop .keyCreateSec { overflow-x: auto; }
 #setPop .keyCreateRow { display: grid; grid-template-columns: minmax(110px, 1.2fr) minmax(95px, .9fr) minmax(95px, .9fr) minmax(90px, .8fr) auto; align-items: center; gap: 6px; }

@@ -196,7 +196,19 @@ def _notify_changes(project_id: str, skip: set[str] | frozenset[str] = frozenset
 
 
 def _notify_reviewed(project_id: str, reviewer: str, author: str, package_id: str, title: str, verdict: str) -> None:
-    """The author hears what became of the package: verdict is "accepted" or "discarded"."""
+    """The author hears what became of the package: verdict is "accepted" or "discarded".
+
+    Somebody dealt with it, so nobody's "new proposal" item stays unread.
+    """
+    con = db.connect()
+    try:
+        users = [r[0] for r in con.execute("SELECT DISTINCT recipient FROM notifications WHERE type='proposal' AND ref=? AND is_read=0", (package_id,))]
+        con.execute("UPDATE notifications SET is_read=1 WHERE type='proposal' AND ref=?", (package_id,))
+        con.commit()
+    finally:
+        con.close()
+    for user in users:
+        emit(user, "notification", "")
     if author != reviewer:
         create_notification(author, "reviewed", "", f"{verdict}: {title}"[:140], project_id, package_id, reviewer, True)
 

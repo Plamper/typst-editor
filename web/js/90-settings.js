@@ -12,7 +12,13 @@ const SETTINGS_CATS = [
   ['sessions', 'settings.navSessions'], ['api', 'settings.navApi'], ['storage', 'settings.navStorage']
 ]
 const settingsError = message => toast(message || t('common.requestFailed'), null, null, 5000, 'error')
-const AGENT_PROMPT = 'Install the Typst Editor skill from https://raw.githubusercontent.com/fl-grtg/typst-editor/main/skills/typst-editor/SKILL.md and connect to my Typst server over MCP at ' + location.origin + '/mcp. Ask me for the API key if missing.'
+const AGENT_PROMPT = [ // no server address: the browser only knows its own, the agent may run elsewhere
+  'Connect yourself to my Typst Editor server:',
+  '1. Install the skill from https://raw.githubusercontent.com/fl-grtg/typst-editor/main/skills/typst-editor/SKILL.md',
+  '2. Ask me for the server address (as reachable from where you run) and an API key (Settings > API keys in the editor).',
+  '3. Register the MCP server in your own client: Streamable HTTP at <server>/mcp with the header "Authorization: Bearer <key>". Find out yourself how your client adds a remote MCP server; keep the key out of files that get committed.',
+  '4. Check the connection with ls("/").'
+].join('\n')
 // 2D: language without reload (same module as 05-i18n: shadow t, keep ?lang helper)
 const LANG_KEY = 'typst_lang'
 function curLangInit() {
@@ -140,17 +146,15 @@ function showKeySecret() {
   const close = icoBtn('keySecretClose', ICO_X); close.type = 'button'; close.title = t('common.close'); close.setAttribute('aria-label', t('common.close'))
   const value = el('input', 'keySecretValue'); value.readOnly = true; value.value = lastKeySecret; value.setAttribute('aria-label', t('settings.keyOnceAria'))
   const copy = el('button', 'keySecretCopy', t('common.copy')); copy.type = 'button'; copy.onclick = () => copyTxt(lastKeySecret, value)
-  const cmd = `claude mcp add --transport http typst-editor ${location.origin}/mcp --header "Authorization: Bearer ${lastKeySecret}"`
-  const copyCmd = el('button', 'keySecretCopy', t('settings.connectCopy')); copyCmd.type = 'button'; copyCmd.onclick = () => copyTxt(cmd)
   top.append(title, close)
-  card.append(top, el('p', 'keySecretHint', t('settings.keyOnceHint')), value, copy, copyCmd)
+  card.append(top, el('p', 'keySecretHint', t('settings.keyOnceHint')), value, copy)
   overlay.appendChild(card); document.body.appendChild(overlay); modalInert(true)
   const done = () => { lastKeySecret = ''; modalInert(false); overlay.remove(); if (prev && document.contains(prev)) prev.focus() }
   close.onclick = done
   overlay.addEventListener('keydown', e => {
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); return }
     if (e.key !== 'Tab') return
-    const focusable = [close, value, copy, copyCmd], i = focusable.indexOf(document.activeElement)
+    const focusable = [close, value, copy], i = focusable.indexOf(document.activeElement)
     if (e.shiftKey && i <= 0) { e.preventDefault(); focusable[focusable.length - 1].focus() }
     else if (!e.shiftKey && (i < 0 || i === focusable.length - 1)) { e.preventDefault(); focusable[0].focus() }
   })
@@ -354,7 +358,7 @@ function renderSettings() {
       .catch(e => settingsError(e.message)).finally(() => { renderSettings(); showKeySecret() })
   }
   const cr = el('div', 'row keyCreateRow'); cr.append(kn, rs, ms, es, cb)
-  const createSec = ksec(cr); createSec.classList.add('keyCreateSec'); keySecs.push(createSec)
+  const createSec = ksec(cr, el('p', 'keyHelp', t('settings.keyHelp'))); createSec.classList.add('keyCreateSec'); keySecs.push(createSec)
   if (apiKeys === null) {
     keySecs.push(ksec(el('div', null, apiKeysLoading ? t('settings.loading') : '')))
     if (!apiKeysLoading) loadKeys()

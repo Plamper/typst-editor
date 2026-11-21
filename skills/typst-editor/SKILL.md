@@ -6,7 +6,11 @@ description: Work on the user's self-hosted Typst projects through MCP (ls, read
 # Typst Editor (MCP)
 
 The server describes its tools itself; this file only holds the workflow and the rules.
-Connect: `<server>/mcp`, header `Authorization: Bearer tpe_...` (the user creates the key under Settings → Agent). Tool errors are JSON `{code, message, hint, ...}`; a 200 does not mean success.
+Tool errors are JSON `{code, message, hint, ...}`; a 200 does not mean success.
+
+## Setup
+
+If the server is not connected yet: ask the user for the server address (as reachable from where you run) and an API key (Settings → API keys), then register `<server>/mcp` as a Streamable HTTP MCP server in your own client with the header `Authorization: Bearer tpe_...`. Find out how your client does that; keep the key out of committed files. Check with `ls("/")`.
 
 ## Model
 

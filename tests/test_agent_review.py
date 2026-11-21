@@ -251,3 +251,15 @@ def test_doc_guests_do_not_find_module_names(c):
     assert c.post(f"/api/docs/{did}/share", json={"username": "bob", "role": "editor"}).status_code == 200
     login(c, "bob")
     assert make_agent(c, name="bobbot")("search", query="secretplan")["hits"] == []
+
+
+def test_handled_proposals_leave_no_unread_notification(shared):
+    c, pid = shared
+    doc(c, pid, "Plan", "x\n")
+    login(c, "bob")
+    pkg = make_agent(c, name="bobbot")("edit", path="/Report@alice/Plan", edits=[{"old": "x", "new": "X"}])["proposal"]
+    login(c, "alice")
+    assert [n for n in c.get("/api/notifications").json()["items"] if n["type"] == "proposal" and not n["is_read"]]
+    rev = package(c, pid, pkg)["revision"]
+    assert c.post(f"/api/projects/{pid}/proposals/{pkg}/accept", json={"revision": rev}).status_code == 200
+    assert not [n for n in c.get("/api/notifications").json()["items"] if n["type"] == "proposal" and not n["is_read"]]
