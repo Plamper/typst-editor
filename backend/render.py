@@ -622,14 +622,19 @@ def _entry(files: list[tuple[str, bytes]]) -> str:
 def _write_root(root: Path, main_text: str, files: list[tuple[str, bytes]]) -> str:
     """Lay the compile root out on disk; returns the entry path to compile."""
     entry = _entry(files)
-    for name, data in files:
-        if ".tmp." in name:
-            continue
-        dest = root / name
+    base = root.resolve()
+
+    def inside(name: str) -> Path:  # a stored path never leaves the compile root ("/x", "../x")
+        dest = (root / name).resolve()
+        if base not in dest.parents:
+            raise HTTPException(400, f"Bad file path: {name}")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
-    (root / entry).parent.mkdir(parents=True, exist_ok=True)
-    (root / entry).write_text(main_text, encoding="utf-8")
+        return dest
+
+    for name, data in files:
+        if ".tmp." not in name:
+            inside(name).write_bytes(data)
+    inside(entry).write_text(main_text, encoding="utf-8")
     return entry
 
 

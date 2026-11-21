@@ -251,6 +251,10 @@ def _restore_project_state(project_id: str, sid: str, b: SnapRestore, user: str)
                     raise HTTPException(400, 'Too many docs')
                 con.execute('UPDATE docs SET trashed=1 WHERE project_id=?', (project_id,))
                 for d in state['documents']:
+                    try:  # a stored checkpoint is data: its folder passes the same rule as a new one
+                        d['folder'] = project_files.doc_folder(d['folder'])
+                    except ValueError:
+                        d['folder'] = ''
                     if not con.execute('SELECT 1 FROM docs WHERE id=?', (d['id'],)).fetchone():
                         con.execute('INSERT INTO docs(id,owner,title,folder,content,project_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)',
                                     (d['id'], owner, d['title'], d['folder'], d['content'], project_id, d.get('created_at') or db.now_iso(), db.now_iso()))

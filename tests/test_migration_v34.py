@@ -84,6 +84,9 @@ def test_migration_moves_files_rewrites_references_and_converts_entries(c):
         assert not {"files", "project_resources"} & {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     finally:
         con.close()
+    assert (root / a / "logo.png").is_file()  # copied, not moved: a crash before the commit loses nothing
+    from backend.services.maintenance import reap_trash_dirs
+    reap_trash_dirs()  # the startup sweep drops the old copies once v34 is committed
     assert not (root / a).exists() and not (root / b).exists()
     # Restored trash entry lands in the tree; the proposal still reads its file.
     assert c.post("/api/trash/t1/restore").status_code == 200
@@ -93,6 +96,7 @@ def test_migration_moves_files_rewrites_references_and_converts_entries(c):
 
 def test_migration_is_idempotent_after_a_crash(c, monkeypatch):
     pid, a, b = _old_layout(c)
+    (deps.get_files_dir() / a / "orphan.png").write_bytes(b"disk-only")  # written by an outside writer, no files row
     from backend import db as dbmod
 
     real = dbmod._migrate_v34
@@ -112,11 +116,47 @@ def test_migration_is_idempotent_after_a_crash(c, monkeypatch):
     con = db.connect()
     try:
         paths = sorted(r[0] for r in con.execute("SELECT path FROM project_files WHERE project_id=?", (pid,)))
-        assert paths == ["Ch/logo-2.png", "Ch/logo.png", "Ch/part.typ", "data.csv", "lib/style.typ", "logo.png"]
+        assert paths == ["Ch/logo-2.png", "Ch/logo.png", "Ch/part.typ", "data.csv", "lib/style.typ", "logo.png", "orphan.png"]
         assert con.execute("SELECT COUNT(*) FROM schema_version WHERE v=34").fetchone()[0] == 1
     finally:
         con.close()
     assert (deps.get_files_dir() / pid / "Ch/logo-2.png").read_bytes() == b"B-logo"
+    assert (deps.get_files_dir() / pid / "orphan.png").read_bytes() == b"disk-only"
+    assert (deps.get_files_dir() / pid / "Ch/part.typ").read_bytes() == b'#image("/Ch/logo-2.png")'  # rewritten once
+
+
+def test_migration_survives_odd_old_data(c):
+    """A file where another document has a folder, a corrupt CRDT state, a folder the store cannot hold,
+    attachments of a trashed document and old snapshots: the server still starts and nothing is lost."""
+    pid, a, b = _old_layout(c)
+    root = deps.get_files_dir()
+    d = c.post(f"/api/projects/{pid}/docs", json={"title": "D", "folder": "tmp"}).json()["id"]
+    assert c.post(f"/api/projects/{pid}/docs", json={"title": "D"}).status_code == 200  # same title at the root: the moved D must yield
+    x = c.post(f"/api/projects/{pid}/docs", json={"title": "X", "folder": "img"}).json()["id"]  # a folder where D has a file
+    e = c.post(f"/api/projects/{pid}/docs", json={"title": "E"}).json()["id"]
+    t = c.post(f"/api/projects/{pid}/docs", json={"title": "T"}).json()["id"]
+    with db.tx() as con:
+        for did, path, data in ((d, "img", b"plain"), (e, "IMG/a.png", b"E-a"), (t, "secret.png", b"T-s")):
+            (root / did / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / did / path).write_bytes(data)
+            con.execute("INSERT INTO files VALUES (?,?,?,?,?)", (did, path, len(data), 0, ""))
+        con.execute("UPDATE docs SET content=?,yjs=? WHERE id=?", ('#image("IMG/a.png")', b"garbage", e))
+        con.execute("UPDATE docs SET folder='../..' WHERE id=?", (d,))
+        con.execute("UPDATE docs SET trashed=1 WHERE id=?", (t,))
+        con.execute("INSERT INTO snapshots (id,doc_id,content,label,created_at) VALUES ('s_old',?,?,'old',?)", (b, '#image("logo.png")', db.now_iso()))
+    _run()
+    con = db.connect()
+    try:
+        tree = {r[0] for r in con.execute("SELECT path FROM project_files WHERE project_id=?", (pid,))}
+        assert {"img-2", "img/a.png"} <= tree and "secret.png" not in tree  # document X keeps its folder, D's file yields
+        assert (root / pid / "img/a.png").read_bytes() == b"E-a" and (root / pid / "img-2").read_bytes() == b"plain"
+        assert con.execute("SELECT content,yjs FROM docs WHERE id=?", (e,)).fetchone()[:] == ('#image("/img/a.png")', None)
+        assert con.execute("SELECT folder,title FROM docs WHERE id=?", (d,)).fetchone()[:] == ("", "D (2)")
+        assert con.execute("SELECT folder FROM docs WHERE id=?", (x,)).fetchone()[0] == "img"
+        assert con.execute("SELECT content,doc_id FROM trash_entries WHERE kind='file' AND name='secret.png'").fetchone()[:] == (b"T-s", t)
+        assert con.execute("SELECT content FROM snapshots WHERE id='s_old'").fetchone()[0] == '#image("/Ch/logo-2.png")'
+    finally:
+        con.close()
 
 
 def test_old_project_checkpoint_restores(c):

@@ -181,3 +181,23 @@ def test_folder_rename_and_delete_carry_files(c):
     assert p["files"] == [] and all(d["folder"] != "B" for d in p["documents"])
     with db.tx() as con:
         assert con.execute("SELECT name FROM trash_entries WHERE kind='file' AND project_id=?", (pid,)).fetchone()[0] == "B/x.txt"
+
+
+def test_create_rejects_folders_the_file_tree_cannot_hold(c):
+    register_user(c, "foldercheck")
+    for bad in ("P/../..", "P/a:b", "P/./x"):
+        assert c.post("/api/docs/create", json={"title": "X", "folder": bad}).status_code == 400
+    assert c.post("/api/docs/create", json={"title": "X", "folder": "Kapitel ä/Teil 1"}).status_code == 200
+    did = c.post("/api/docs/create", json={"title": "Y", "folder": "x//escape"}).json()["id"]  # never "/escape"
+    assert c.get(f"/api/docs/{did}").json()["folder"] == "escape"
+
+
+def test_compile_root_never_writes_outside(tmp_path):
+    import pytest
+    from fastapi import HTTPException
+
+    from backend import render
+    for name in ("/abs/__doc__.typ", "../up.png", "a/../../up.png"):
+        with pytest.raises(HTTPException):
+            render._write_root(tmp_path / "root", "x", [(name, b"x")])
+    assert not (tmp_path / "up.png").exists() and not (tmp_path / "abs").exists()

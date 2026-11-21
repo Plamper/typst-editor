@@ -17,7 +17,7 @@ def _patch(monkeypatch, **kw):
 def test_limit_defaults():
     cfg = backend_config.load()
     assert cfg.MAX_DOCS_PER_USER == 100
-    assert cfg.MAX_FILES_PER_DOC == 200
+    assert cfg.MAX_FILES_PER_DOC == 1000
     assert cfg.MAX_BYTES_PER_USER == 500 * 1024 * 1024
     assert backend_main.EXPORT_MAX == 100 * 1024 * 1024
 

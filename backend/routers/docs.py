@@ -81,6 +81,10 @@ def create_doc(b: DocCreate, req: Request, user: str = Depends(deps.me)) -> dict
         max_docs = config.load().MAX_DOCS_PER_USER
     except Exception:
         max_docs = 100
+    try:
+        folder = project_files.doc_folder(b.folder[:FOLDER_MAX])
+    except ValueError:
+        raise HTTPException(400, "Bad folder name") from None
     did, now = db.new_id("d_"), db.now_iso()
     try:
         with db.tx() as con:
@@ -89,7 +93,7 @@ def create_doc(b: DocCreate, req: Request, user: str = Depends(deps.me)) -> dict
             con.execute("INSERT INTO docs (id, owner, title, content, folder, created_at, updated_at) "
                         "VALUES (?,?,?,?,?,?,?)",
                         (did, user, t, b.content,
-                         b.folder.strip()[:FOLDER_MAX], now, now))
+                         folder, now, now))
             projects.attach_doc(con, did)
     except sqlite3.IntegrityError as e:
         raise HTTPException(400, "Title already exists") from e

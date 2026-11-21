@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import sqlite3
 
 from backend import db, deps
 
@@ -20,6 +21,21 @@ def reap_trash_dirs() -> dict[str, int]:
         log.warning("trash sweep list failed: %s", e)
         return counts
     trash = [p for p in entries if p.name.startswith(".trash-")]
+    # Migration v34 copied document attachments (<files>/d_<id>) into the project trees; once it is
+    # committed (no `files` table) the old copies are garbage.
+    try:
+        con = db.connect()
+        try:
+            legacy = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='files'").fetchone() is not None
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        log.warning("legacy attachment sweep skipped: %s", e)
+        legacy = True
+    for p in entries if not legacy else []:
+        if p.name.startswith("d_") and p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+            counts["removed" if not p.exists() else "skipped"] += 1
     # B9: duplicate stages file trees in .tmp.dup-<id> before the atomic
     # rename; a crash between copytree and os.replace orphans the staging
     # dir (invisible to quota/list walks via the ".tmp." rule). Sweep them

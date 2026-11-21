@@ -8,7 +8,10 @@ Every project has one tree of files (`GET/PUT/DELETE /api/projects/{id}/files/{p
 documents compile from their own folder, so `"../img/a.png"` and project-absolute `"/img/a.png"` both work. The migration
 moves existing attachments into their document's folder and modules to their path (name clashes get `-2`, `-3`), rewrites
 references that would otherwise break to `/path` (with a snapshot first), and migrates trash entries and open proposal
-packages. Moving a file rewrites the quoted references to it. The old `/api/docs/{id}/files`, `/api/projects/{id}/resources`,
+packages. Attachments of trashed documents go to the trash instead of the live tree, and old document snapshots get
+the same reference rewrite. The bytes are copied first; the old `<files>/<doc_id>` folders are removed at the next start
+after the migration committed, so a crash mid-migration loses nothing. `MAX_FILES_PER_DOC` now limits files per project
+(default 1000, name kept for old configs). Moving a file rewrites the quoted references to it. The old `/api/docs/{id}/files`, `/api/projects/{id}/resources`,
 `demote` and `rename-entry` routes are gone; MCP paths are `/Project/path` (no `.library`, no attachment paths).
 A document is its title everywhere: there is no `main.typ` in paths, proposal packages, exports (`Title.typ`) and project
 ZIPs (`<folder>/<Title>.typ` next to the project files). ZIP import lists every `.typ` file with a checkbox (`POST /api/zip-preview`

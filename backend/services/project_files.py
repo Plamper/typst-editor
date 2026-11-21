@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import logging
 import posixpath
+import re
 import sqlite3
 import time
 
@@ -397,22 +398,57 @@ def file_to_doc(project_id: str, path: str, user: str) -> dict:
     return {"id": did, "title": title, "broken": broken}
 
 
+FOLDER_BAD = re.compile(r'[\\:*?"<>|\x00-\x1f]')
+
+
+def doc_folder(raw: str | None) -> str:
+    """A document folder as stored: no empty segments, no outer spaces. ValueError for "..", "." or characters
+    a file system cannot hold: the document compiles at <folder>/__doc__.typ inside the compile root."""
+    parts = [s.strip() for s in (raw or "").split("/") if s.strip()]
+    if any(s in (".", "..") or FOLDER_BAD.search(s) for s in parts):
+        raise ValueError(f"bad folder: {raw!r}")
+    return "/".join(parts)
+
+
 # --- the layout before project files (migration v34, old project checkpoints) ---
 
-def _free(path: str, taken: set[str]) -> str:
-    stem, suffix = posixpath.splitext(path)
-    out, n = path, 2
-    while out.casefold() in taken or posixpath.basename(out).lower() == ENTRY:
-        out, n = f"{stem}-{n}{suffix}", n + 1
+def _free(path: str, taken: set[str], spelled: dict[str, str]) -> str:
+    """A free spot for `path`: a file never sits where a folder is or below another file (casefolded `taken`
+    holds files as "a/b.png" and folders as "a/"). A folder keeps the spelling it has; a file in its way makes it
+    seg-2. A taken file name gets -2, -3, ... before its suffix."""
+    *dirs, leaf = [s for s in path.split("/") if s]
+    parent = ""
+    for seg in dirs:
+        cand, n = seg, 2
+        while posixpath.join(parent, cand).casefold() in taken:
+            cand, n = f"{seg}-{n}", n + 1
+        here = posixpath.join(parent, cand)
+        parent = spelled.setdefault(here.casefold(), here)
+        taken.add(parent.casefold() + "/")
+    stem, suffix = posixpath.splitext(leaf)
+    out, n = posixpath.join(parent, leaf), 2
+    while out.casefold() in taken or out.casefold() + "/" in taken or posixpath.basename(out).lower() == ENTRY:
+        out, n = posixpath.join(parent, f"{stem}-{n}{suffix}"), n + 1
     taken.add(out.casefold())
     return out
 
 
-def legacy_paths(taken: set[str], modules: list[str], docs: list[tuple[str, str, list[str]]]) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
-    """Old project modules (at their name) and attachments of each (doc id, folder F, paths) at F/path, one tree.
-    A path taken case-insensitively gets -2, -3, ... before its suffix. `taken` (casefolded) grows."""
-    module_map = {n: _free(n, taken) for n in sorted(modules)}
-    doc_maps = {did: {p: _free(posixpath.join(folder, p), taken) for p in sorted(paths)} for did, folder, paths in docs}
+def legacy_paths(existing: list[str], modules: list[str], docs: list[tuple[str, str, list[str]]],
+                 folders: list[str] | None = None) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Old project modules (at their name) and attachments of each (doc id, folder F, paths) at F/path, one tree
+    next to the `existing` project files. Document and empty `folders` stay folders: a file in their way yields.
+    Deterministic for the same input."""
+    taken: set[str] = set()
+    spelled: dict[str, str] = {}
+    for folder in sorted({f for f in [*(folders or []), *(d[1] for d in docs)] if f}):
+        parent = ""
+        for seg in folder.split("/"):
+            parent = spelled.setdefault(posixpath.join(parent, seg).casefold(), posixpath.join(parent, seg))
+            taken.add(parent.casefold() + "/")
+    for path in existing:
+        _free(path, taken, spelled)
+    module_map = {n: _free(n, taken, spelled) for n in sorted(modules)}
+    doc_maps = {did: {p: _free(posixpath.join(folder, p), taken, spelled) for p in sorted(paths)} for did, folder, paths in docs}
     return module_map, doc_maps
 
 

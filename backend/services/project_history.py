@@ -75,7 +75,12 @@ def load(content: str) -> dict:
     if 'resources' not in state:
         return state
     modules = state.pop('resources')
-    module_map, doc_maps = pf.legacy_paths(set(), list(modules), [(d['id'], d.get('folder') or '', list(d.get('files') or {})) for d in state['documents']])
+    for d in state['documents']:
+        try:
+            d['folder'] = pf.doc_folder(d.get('folder'))
+        except ValueError:
+            d['folder'] = ''
+    module_map, doc_maps = pf.legacy_paths([], list(modules), [(d['id'], d.get('folder') or '', list(d.get('files') or {})) for d in state['documents']])
     files = {}
     for name, new in module_map.items():
         text = modules[name]

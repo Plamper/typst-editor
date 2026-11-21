@@ -520,71 +520,114 @@ def _migrate_v34(con: sqlite3.Connection) -> None:
     # One file tree per project: modules (project_resources) and document attachments (files,
     # <files>/<doc_id>/<path>) become project files at <files>/<project_id>/<path>. Attachments of
     # a document in folder F land at F/path (clashes get -2, -3, ...); references that would miss
-    # their file under the folder-relative compile are rewritten to "/<new path>". Bytes are moved,
-    # never copied: a rerun after a crash finds them at the target (same deterministic mapping).
+    # their file under the folder-relative compile are rewritten to "/<new path>". Bytes are copied:
+    # a crash before the commit leaves the old files intact for the rerun; the startup sweep
+    # (maintenance.reap_trash_dirs) removes <files>/<doc_id> once this step is committed.
+    # Attachments of trashed documents go to the owner's trash, not into the live tree.
     import json
-    import os
     import posixpath
 
     from backend import deps
     from backend.services import project_files as pf
-    from backend.services import snapshots
+    from backend.services import resources, snapshots, trash
     from backend.services.docfiles import file_type, store
 
     has_files, has_res = bool(_cols(con, "files")), bool(_cols(con, "project_resources"))
     base = deps.get_files_dir()
     maps: dict[str, dict[str, str]] = {}
-    folders = {r[0]: r[1] for r in con.execute("SELECT id,folder FROM docs")}
     log = logging.getLogger(__name__)
 
-    def add(pid: str, path: str, data: bytes | None) -> None:
-        if data is not None:
-            store.put(pid, path, data)
-        p = store.doc_path(pid, path)
-        data = p.read_bytes()
+    def add(pid: str, path: str, data: bytes) -> None:
+        store.put(pid, path, data)
         con.execute("INSERT OR REPLACE INTO project_files(project_id,path,size,mtime,type,version,updated_at) VALUES (?,?,?,?,?,?,?)",
-                    (pid, path, len(data), p.stat().st_mtime, file_type(path), pf.version(data), now_iso()))
+                    (pid, path, len(data), time.time(), file_type(path), pf.version(data), now_iso()))
 
+    def folder_of(d: sqlite3.Row) -> str:  # one folder rule (pf.doc_folder); a folder no file system can hold moves to the root
+        try:
+            folder = pf.doc_folder(d["folder"])
+        except ValueError:
+            log.warning("v34: document %s had folder %r, moved to the project root", d["id"], d["folder"])
+            folder = ""
+        title, n = d["title"], 2
+        while folder != (d["folder"] or ""):  # the title yields when the target folder has it already
+            try:
+                con.execute("UPDATE docs SET folder=?,title=? WHERE id=?", (folder, title, d["id"]))
+                break
+            except sqlite3.IntegrityError:
+                title, n = f'{d["title"]} ({n})', n + 1
+        return folder
+
+    def utf8(name: str) -> bool:
+        try:
+            name.encode("utf-8")
+            return True
+        except UnicodeEncodeError:
+            return False
+
+    def doc_text(d: sqlite3.Row) -> tuple[str, bytes | None]:  # empty or corrupt CRDT state: the text column wins, like sync does
+        yjs = bytes(d["yjs"]) if d["yjs"] else None
+        try:
+            return pf.stored_text(d["content"] or "", yjs), yjs
+        except ValueError:
+            log.warning("v34: document %s has an unreadable Yjs state, using its text", d["id"])
+            return d["content"] or "", None
+
+    folders = {r[0]: r[1] or "" for r in con.execute("SELECT id,folder FROM docs")}
+    old_trash = con.execute("SELECT id,kind,doc_id,name FROM trash_entries WHERE kind IN ('file','resource')").fetchall()  # before this step adds any
     for (pid,) in con.execute("SELECT id FROM projects").fetchall():
+        owner = con.execute("SELECT owner FROM projects WHERE id=?", (pid,)).fetchone()[0]
         modules = {r[0]: r[1] or "" for r in con.execute("SELECT name,content FROM project_resources WHERE project_id=?", (pid,))} if has_res else {}
-        docs = con.execute("SELECT id,folder,content,yjs FROM docs WHERE project_id=? ORDER BY trashed,created_at,id", (pid,)).fetchall()
+        docs = con.execute("SELECT id,title,folder,content,yjs,trashed FROM docs WHERE project_id=? ORDER BY trashed,created_at,id", (pid,)).fetchall()
         atts = []
         for d in docs:
+            folders[d["id"]] = folder_of(d)
             names = {r[0] for r in con.execute("SELECT path FROM files WHERE doc_id=?", (d["id"],))} if has_files else set()
-            atts.append((d["id"], d["folder"] or "", sorted(names | {e.path for e in store.list(d["id"])})))
-        taken = {r[0].casefold() for r in con.execute("SELECT path FROM project_files WHERE project_id=?", (pid,))}
-        module_map, doc_maps = pf.legacy_paths(taken, list(modules), atts)
+            on_disk = {e.path for e in store.list(d["id"])}
+            if bad := {n for n in on_disk if not utf8(n)}:  # bytes that are no UTF-8 name (Linux): no path can hold them
+                log.warning("v34: skipped attachments with undecodable names in %s: %r", d["id"], sorted(bad))
+            atts.append((d["id"], folders[d["id"]], sorted(names | (on_disk - bad))))
+        existing = [r[0] for r in con.execute("SELECT path FROM project_files WHERE project_id=? ORDER BY path", (pid,))]
+        empty = [r[0] for r in con.execute("SELECT path FROM project_folders WHERE project_id=?", (pid,))]
+        module_map, doc_maps = pf.legacy_paths(existing, list(modules), atts, empty)
         maps.update(doc_maps)
+        attached = {old for local in doc_maps.values() for old in local}
         for name, new in module_map.items():
             text = modules[name]
             if new.lower().endswith(".typ"):
                 text = pf.legacy_refs(text, posixpath.dirname(name), posixpath.dirname(new), {}, module_map)
+                for m in resources.REF_RE.finditer(text):  # old compiles gave it the attachment of whichever document ran
+                    hit = resources.resolve(posixpath.dirname(new), m.group(1))
+                    if hit in attached and hit not in module_map:
+                        log.warning("v34: module %s/%s quotes the attachment %r, check that path", pid, new, m.group(1))
             add(pid, new, text.encode())
         for d in docs:
             local = doc_maps[d["id"]]
             for old, new in local.items():
-                src, dst = base / d["id"] / old, store.doc_path(pid, new)
-                if src.is_file():
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(src, dst)
-                elif not dst.is_file():
+                src = base / d["id"] / old
+                if not src.is_file():
                     log.warning("v34: attachment %s/%s missing, skipped", d["id"], old)
                     continue
-                data = None
+                data = src.read_bytes()
                 if new.lower().endswith(".typ"):
-                    text = dst.read_bytes().decode("utf-8", errors="surrogateescape")
-                    fixed = pf.legacy_refs(text, posixpath.dirname(old), posixpath.dirname(new), local, module_map)
-                    data = fixed.encode("utf-8", errors="surrogateescape") if fixed != text else None
-                add(pid, new, data)
-            yjs = bytes(d["yjs"]) if d["yjs"] is not None else None
-            text = pf.stored_text(d["content"] or "", yjs)
-            fixed = pf.legacy_refs(text, "", d["folder"] or "", local, module_map)
+                    text = data.decode("utf-8", errors="surrogateescape")
+                    data = pf.legacy_refs(text, posixpath.dirname(old), posixpath.dirname(new), local, module_map).encode("utf-8", errors="surrogateescape")
+                if d["trashed"]:
+                    trash.archive(con, owner, "file", new, data, project_id=pid, doc_id=d["id"])  # goes with the document when it is purged
+                else:
+                    add(pid, new, data)
+            folder = folders[d["id"]]
+            for snap in con.execute("SELECT id,content FROM snapshots WHERE doc_id=?", (d["id"],)).fetchall():
+                fixed = pf.legacy_refs(snap["content"] or "", "", folder, local, module_map)
+                if fixed != (snap["content"] or ""):
+                    con.execute("UPDATE snapshots SET content=? WHERE id=?", (fixed, snap["id"]))
+            text, yjs = doc_text(d)
+            fixed = pf.legacy_refs(text, "", folder, local, module_map)
             if fixed != text:
                 con.execute("INSERT INTO snapshots (id, doc_id, content, label, created_at) VALUES (?,?,?,?,?)",
                             (new_id("s_"), d["id"], text, "project-files migration", now_iso()))
                 snapshots.prune_snaps(con, d["id"])
                 con.execute("UPDATE docs SET content=?,yjs=? WHERE id=?", (fixed, pf.yjs_with(yjs, fixed), d["id"]))
-    for t in con.execute("SELECT id,kind,doc_id,name FROM trash_entries WHERE kind IN ('file','resource')").fetchall():
+    for t in old_trash:
         if t["kind"] == "resource" or not t["doc_id"]:
             con.execute("UPDATE trash_entries SET kind='file' WHERE id=?", (t["id"],))
             continue
@@ -604,12 +647,6 @@ def _migrate_v34(con: sqlite3.Connection) -> None:
                 if f.get("target"):
                     f["target"] = posixpath.join(folder, f["target"])
         con.execute("UPDATE suggestion_packages SET files=? WHERE id=?", (json.dumps(files, ensure_ascii=False, separators=(",", ":")), row["id"]))
-    for doc_id in maps:
-        for root, _dirs, _files in os.walk(base / doc_id, topdown=False):
-            try:
-                os.rmdir(root)
-            except OSError:
-                pass  # hidden or temp leftovers keep their directory
     con.execute("DROP TABLE IF EXISTS files")
     con.execute("DROP TABLE IF EXISTS project_resources")
 
