@@ -34,15 +34,16 @@ test('boot exchanges a URL token and reports an invalid one after the session ch
     $: id => nodes[id] || { style: {}, classList: { add() {} } }, cm: { measure() {} },
     sidebar: async () => {}, watchSidebar() {}, loadInbox: async () => {}, loadTpl: async () => {},
     checkJoin: async () => false, lastOwn: [], lastShared: [], openDoc() {},
-    openN: 1, docId: '', tplName: '', URLSearchParams, location: { search: '' }, console,
+    openN: 1, docId: '', tplName: '', URLSearchParams, location: { search: '', hash: '' }, console,
     hadOidcErr: false, hadInvite: false, t: k => k, loadAuthConfig: async () => {},
     ...extra,
   })
 
   // A token is exchanged first; the normal /api/me call then boots the app.
+  // The fragment is canonical: browsers do not send it to the server.
   const calls = []
   const ctx = bootContext({
-    location: { search: '?token=tpl_abc' },
+    location: { search: '', hash: '#token=tpl_abc' },
     api: async (method, path, body) => {
       calls.push([method, path, body])
       return { user: 'alice' }
@@ -58,15 +59,17 @@ test('boot exchanges a URL token and reports an invalid one after the session ch
 
   // A rejected exchange still lets the cookie session decide; if both fail,
   // the login view explains that the link is gone.
-  let authConfig = 0
+  let authConfig = 0, authArgs = null
   const bad = bootContext({
-    location: { search: '?token=tpl_dead' },
+    location: { search: '', hash: '#token=tpl_dead' },
     api: async () => { throw { status: 401 } },
-    loadAuthConfig: async () => { authConfig++ },
+    loadAuthConfig: async (...args) => { authConfig++; authArgs = args },
   })
   await vm.runInContext(restore, bad)
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(authConfig, 1)
+  // badToken=true keeps OIDC auto-redirect from hiding the error.
+  assert.equal(authArgs[3], true)
   assert.equal(nodes.err.textContent, 'login.linkInvalid')
 })
 
@@ -120,6 +123,10 @@ test('OIDC login config hides password fields and auto-redirects with join token
   assert.deepEqual(assigned, [])
 
   assert.equal(context.oidcErrMsg('rate_limited'), 'login.oidcRateLimited')
+
+  // A failed login-link exchange shows its error instead of bouncing to the IdP.
+  await context.loadAuthConfig(false, false, undefined, true)
+  assert.deepEqual(assigned, [])
 
   // Auto-redirects when no error or invite is present.
   await context.loadAuthConfig(false, false)

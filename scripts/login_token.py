@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Internal maintenance for persistent ?token= login links.
+"""Internal maintenance for persistent #token= login links.
 
 The links are not exposed in the web UI. Run this with the same DATA_DIR as
-the app; the token is printed once and only its hash is stored.
+the app; the token is printed once and only its hash is stored. The token
+lives in the URL fragment, which browsers never send to the server, so it
+does not end up in access logs. The legacy ?token= query form still works.
 
 Revoking stops future exchanges only. A session that was already created
 from the link is a normal session and stays valid until it expires or is
@@ -27,7 +29,7 @@ def _user_exists(name: str) -> bool:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Create, list or revoke internal ?token= login links.")
+    ap = argparse.ArgumentParser(description="Create, list or revoke internal #token= login links.")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     create = sub.add_parser("create", help="Create a link and print its token once.")
@@ -51,7 +53,7 @@ def main() -> None:
         print("id: %s" % tid)
         print("token: %s" % token)
         if a.base_url:
-            print("url: %s/?token=%s" % (a.base_url.rstrip("/"), token))
+            print("url: %s/#token=%s" % (a.base_url.rstrip("/"), token))
         return
 
     if a.cmd == "list":

@@ -79,11 +79,14 @@ async function login(u, p) {
 $('login').onsubmit = e => { e.preventDefault(); login($('u').value, $('p').value).catch(err => $('err').textContent = err.message) }
 $('out').onclick = () => { try { clearTimeout(sideESTimer); sideES?.close(); sideES = null } catch (e) {}; api('POST', '/api/logout').finally(() => {
   try { sessionStorage.setItem('typst_logged_out', '1') } catch (e) {}
-  try { // an explicit logout drops ?token from this tab; a bookmark still has it
-    const q = new URLSearchParams(location.search)
-    if (q.has('token')) {
-      q.delete('token'); const rest = q.toString()
-      history.replaceState(null, '', location.pathname + (rest ? '?' + rest : ''))
+  try { // an explicit logout drops #token (or the legacy ?token) from this tab; a bookmark still has it
+    const q = new URLSearchParams(location.search), h = new URLSearchParams((location.hash || '').replace(/^#/, ''))
+    const hadQ = q.has('token'), hadH = h.has('token')
+    if (hadQ) q.delete('token')
+    if (hadH) h.delete('token')
+    if (hadQ || hadH) {
+      const rest = q.toString(), hash = h.toString()
+      history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + (hash ? '#' + hash : ''))
     }
   } catch (e) {}
   location.reload()
@@ -302,7 +305,7 @@ function consumeLoggedOut() {
     return v
   } catch (e) { return false }
 }
-function loadAuthConfig(hadOidcErr, hadInvite, hadLogout = consumeLoggedOut()) {
+function loadAuthConfig(hadOidcErr, hadInvite, hadLogout = consumeLoggedOut(), badToken = false) {
   return api('GET', '/api/auth/config').then(cfg => {
     if (!cfg) return
     const oidc = cfg.oidc || {}
@@ -316,7 +319,7 @@ function loadAuthConfig(hadOidcErr, hadInvite, hadLogout = consumeLoggedOut()) {
       }
       $('oidcBox').style.display = ''
       $('oidcBox').classList.toggle('only', cfg.password_login === false)
-      if (oidc.auto_redirect && !hadOidcErr && !hadInvite && !hadLogout) {
+      if (oidc.auto_redirect && !hadOidcErr && !hadInvite && !hadLogout && !badToken) {
         location.assign(oidcHref)
         return
       }
@@ -337,9 +340,12 @@ const hadOidcErr = checkOidcError()
 const hadInvite = new URLSearchParams(location.search).has('invite')
 checkInvite() // ?invite=CODE: registration view + prefilled code (join handled separately by checkJoin)
 let tokenInvalid = false
-function bootSession() { // ?token= stays in the URL: exchange it for a cookie, then use the normal session path
+function bootSession() { // #token= stays in the URL: exchange it for a cookie, then use the normal session path
   let token = ''
-  try { token = new URLSearchParams(location.search).get('token') || '' } catch (e) {}
+  try {
+    const h = new URLSearchParams((location.hash || '').replace(/^#/, ''))
+    token = h.get('token') || new URLSearchParams(location.search).get('token') || ''
+  } catch (e) {}
   if (!token) return api('GET', '/api/me')
   return api('POST', '/api/login/token', { token })
     .catch(e => { if (e.status === 401) tokenInvalid = true })
@@ -359,7 +365,7 @@ bootSession().then(async d => { // session via cookie only (HttpOnly)
     const pick = (lastOwn.find(x => x.title === 'Tutorial') || lastOwn[0] || lastShared[0])
     if (pick) openDoc(pick.id)
   }
-}).catch(e => { console.warn('session restore failed', e); loadAuthConfig(hadOidcErr, hadInvite).then(() => { if (tokenInvalid) $('err').textContent = t('login.linkInvalid') }) })
+}).catch(e => { console.warn('session restore failed', e); loadAuthConfig(hadOidcErr, hadInvite, undefined, tokenInvalid).then(() => { if (tokenInvalid) $('err').textContent = t('login.linkInvalid') }) })
 try { (window.requestIdleCallback || (fn => setTimeout(fn, 1500)))(() => ensureTypst().catch(() => {})) } catch (e) {} // warm compiler when idle: UI paints first
 window.__booted = true // module alive: login guard in classic script stands down
 document.getElementById('booterr')?.remove() // module running: remove boot error box
