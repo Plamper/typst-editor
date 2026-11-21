@@ -88,3 +88,37 @@ def test_bibliography_and_reference_links(page):
     _main(page)
     _click(page, 1, 0.19, 0.2407)  # "Equation 1" reference link: the formula
     assert _pos(page)[0] == 11, f"equation link: Ln {_pos(page)}"
+
+
+LONG = "".join(f"= Part {i}\n" + "Body sentence number {i} for the long document. " * 12 + "\n\n" for i in range(30))
+
+EDGE = """(el) => el.scrollTop <= 2 ? 'top' : el.scrollTop + el.clientHeight >= el.scrollHeight - 2 ? 'bottom' : 'middle'"""
+
+
+def test_editor_ends_reach_the_preview_ends(page):
+    _setup(page, 'e2e_sync_edges', 'Edge doc', LONG)
+    pv, ed = page.locator('#preview'), page.locator('#cm .cm-scroller')
+    box = ed.bounding_box()
+    assert box
+    page.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+    for _ in range(3):  # the reader wheels the editor to its very end
+        page.mouse.wheel(0, 40000)
+        page.wait_for_timeout(500)
+    assert ed.evaluate(EDGE) == 'bottom'
+    page.wait_for_timeout(1500)
+    assert pv.evaluate(EDGE) == 'bottom', 'editor at its end: the preview shows the last page end'
+    for _ in range(3):
+        page.mouse.wheel(0, -40000)
+        page.wait_for_timeout(500)
+    assert ed.evaluate(EDGE) == 'top'
+    page.wait_for_timeout(1500)
+    assert pv.evaluate(EDGE) == 'top', 'editor at its top: the preview shows the first page top'
+    pbox = pv.bounding_box()
+    assert pbox
+    page.mouse.move(pbox['x'] + pbox['width'] / 2, pbox['y'] + pbox['height'] / 2)
+    for _ in range(3):  # and the other way round
+        page.mouse.wheel(0, 40000)
+        page.wait_for_timeout(500)
+    page.wait_for_timeout(1500)
+    assert pv.evaluate(EDGE) == 'bottom'
+    assert ed.evaluate(EDGE) == 'bottom', 'preview at its end: the editor shows the last line'

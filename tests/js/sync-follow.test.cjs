@@ -30,6 +30,7 @@ function edCtx({ text, items, owned, active = '', secAt = {} }) {
     const cm = { state: { doc: { lines: text.split('\\n').length, lineAt: p => ({ number: text.slice(0, p).split('\\n').length }) } }, scrollDOM: {} }
     function cmTop(p) { return p }
     function smoothFollow(el, y) { log.push(y) }
+    function scrollEdge() { return 0 }
     function pvPageHint() { return 1 }
     function pvSecAtY() { return secAt }
     function pvSecAtLine() { return null }

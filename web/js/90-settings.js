@@ -650,10 +650,14 @@ function applySyncBtn() { const b = $('syncBtn'); if (!b) return; b.classList.to
 function applyFollowBtn() { const b = $('followBtn'); if (!b) return; b.classList.toggle('on', followAll); b.setAttribute('aria-pressed', followAll) }
 let syncSkip = false // our own jump selects a line: that selection is not a cursor move
 let cmSelT = 0 // last cursor move: an editor scroll right after it is cursor-follow, not a reader scroll
-function queueSyncPv(at) { // throttle: continuous cursor/scroll movement still updates the preview (no wait-for-idle)
+let syncEdge = 0 // reader scrolled the editor to its very top (-1) or bottom (1): the preview goes to its own end too
+const SYNC_EDGE_PX = 2 // scroll distance to an end that still counts as that end
+function scrollEdge(el) { return el.scrollHeight - el.clientHeight <= 2 * SYNC_EDGE_PX ? 0 : el.scrollTop <= SYNC_EDGE_PX ? -1 : el.scrollTop + el.clientHeight >= el.scrollHeight - SYNC_EDGE_PX ? 1 : 0 }
+function queueSyncPv(at, edge) { // throttle: continuous cursor/scroll movement still updates the preview (no wait-for-idle)
   if (syncSkip) return
   if (!followAll) return
   syncView = Number.isFinite(at) ? at : -1
+  syncEdge = edge || 0
   if (syncT) return // a run is already scheduled and reads the latest position
   syncT = setTimeout(() => { syncT = 0; syncToPv() }, SYNC_MS)
 }
@@ -666,7 +670,7 @@ try { // wheel over the editor: the preview follows what is on screen, not only 
     if (Date.now() - cmSelT < 150) return // a cursor move already synced the cursor
     smoothStop(sc) // scrollbar drag/touch/page key: the reader owns the editor view
     syncEdMiss = false // a pending follow from the preview must not pull the editor back
-    try { queueSyncPv(cm.elementAtHeight(sc.scrollTop + sc.clientHeight / 2).from) } catch (e) {}
+    try { queueSyncPv(cm.elementAtHeight(sc.scrollTop + sc.clientHeight / 2).from, scrollEdge(sc)) } catch (e) {}
   }, { passive: true })
 } catch (e) {}
 let syncEdT = 0
@@ -681,6 +685,16 @@ function syncToEd() {
   if (!followAll || !docId || tplName || (activeFile && !fileTab)) return
   const pv = $('preview')
   if (!pv.clientHeight || document.body.classList.contains('editonly')) return
+  const edge = !fileTab && scrollEdge(pv)
+  if (edge) { // the first or last page is on screen: so is the first or last line
+    syncEdMiss = false
+    if (edge < 0) smoothFollow(cm.scrollDOM, 0)
+    else { // CodeMirror measures lazily rendered lines on the way down: let it bring the end in, then sit flush on it
+      cm.dispatch({ effects: EditorView.scrollIntoView(cm.state.doc.length, { y: 'end' }) })
+      requestAnimationFrame(() => { const sc = cm.scrollDOM; sc.scrollTop = sc.scrollHeight; pvSelfWrite(sc) })
+    }
+    return
+  }
   const pi = pvViewPage(pv, syncEdOff), slot = pi >= 0 ? pv.querySelectorAll('.pvPage')[pi] : null
   if (!slot) return
   const pr = pv.getBoundingClientRect(), sr = slot.getBoundingClientRect()
@@ -715,6 +729,7 @@ function syncToEd() {
 try { $('preview').addEventListener('wheel', () => { // a reader wheel wins over a pending sync retry
   if (syncT) { clearTimeout(syncT); syncT = 0 } // no pending cursor sync may yank the preview back
   syncMiss = false // nor the retry from a render that started before the reader scrolled
+  syncEdge = 0
 }, { passive: true }) } catch (e) {}
 try { $('preview').addEventListener('scroll', () => { // reader scroll: the editor view moves along
   const pv = $('preview')
@@ -722,6 +737,7 @@ try { $('preview').addEventListener('scroll', () => { // reader scroll: the edit
   smoothStop(pv) // scrollbar drag/touch/keyboard: the reader wins over a running animation
   if (syncT) { clearTimeout(syncT); syncT = 0 } // the reader took over: no pending cursor sync may yank the preview back
   syncMiss = false // nor the retry from a render that started before the reader scrolled
+  syncEdge = 0
   queueSyncEd()
 }, { passive: true }) } catch (e) {}
 function pvPageHint(pi, total, n, at, frac) { // click page -> source line: section window first, then layout ratio
@@ -1940,11 +1956,14 @@ function pvGuessLine(line, sec) { // no text anchor at all: proportional inside 
   return { page, x0: 0, x1: 0, y0: within * h, y1: within * h, h: 1, vw: slot ? +slot.dataset.w || h : h, vh: h }
 }
 function syncToPv(force) { // force: explicit navigation (outline/find), works even with follow off
+  const edge = force ? 0 : syncEdge // read once: a stale end from an earlier editor scroll never steers a later sync
+  syncEdge = 0
   const fileTab = !!activeFile && !window.changeSession && /\.typ$/i.test(activeFile) && !isTplKey(activeFile) // an included chapter is on the page too: its text and its own headings (also in the PDF outline) anchor it
   if ((!followAll && !force) || !docId || tplName || (activeFile && !window.changeSession && !fileTab)) return
   if (scrollRestore && !scrollRestore.pv) return // reopened doc: saved preview spot wins over the first follow
   const pv = $('preview')
   if (!pv.scrollHeight || document.body.classList.contains('editonly')) return
+  if (edge && !fileTab) { syncView = -1; syncMiss = false; smoothFollow(pv, edge < 0 ? 0 : pv.scrollHeight - pv.clientHeight); return } // the first or last line of the document is on screen: so is the first or last page
   const lines = getT().split('\n'), at = syncView >= 0 ? syncView : cm.state.selection.main.head
   const line = cm.state.doc.lineAt(Math.max(0, Math.min(cm.state.doc.length, at))).number
   syncView = -1
@@ -2041,6 +2060,7 @@ function cmGlide(pos) { // same rule as the preview: a real jump glides, a small
 }
 function cmJump(pos, holdPv, forcePv) { // smooth editor jump + brief line flash; holdPv: a preview click keeps the preview where it is; forcePv: explicit navigation
   if (syncT) { clearTimeout(syncT); syncT = 0 } // the jump owns the next sync, no stale cursor target
+  syncEdge = 0
   const line = cm.state.doc.lineAt(Math.max(0, Math.min(cm.state.doc.length, pos)))
   const deco = Decoration.set([Decoration.line({ class: 'cm-syncLine' }).range(line.from)])
   syncSkip = true // this selection is the jump, not a reader cursor move
