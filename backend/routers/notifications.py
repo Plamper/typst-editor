@@ -1,6 +1,6 @@
 """Topbar summary: unread notifications plus open review packages by others.
 
-#6 (round 4): the client dots-list polls GET /api/notifications/summary.
+The client dots-list polls GET /api/notifications/summary.
 Contract (additive; new endpoint, nothing else changes):
   unread: int             recipient's unconfirmed notifications
   package_total: int      matching open packages by others (uncapped)

@@ -55,7 +55,7 @@ def provision_user(
     )
     projects.attach_doc(con, did, check_quota=False)
 
-# Session cleanup runs in a background daemon thread (1C): verify_session is
+# Session cleanup runs in a background daemon thread: verify_session is
 # read-only, never DELETEs. Interval is short enough to bound the sessions
 # table, long enough to stay off the hot path.
 SESSION_CLEANUP_INTERVAL_S = 300.0
@@ -132,7 +132,7 @@ def cookie_token(cookies: dict[str, str], host: str) -> str:
 
 
 def _cached_conn() -> _sqlite3.Connection:
-    """Thread-local reused connection (1C): PRAGMAs run once per connection.
+    """Thread-local reused connection: PRAGMAs run once per connection.
 
     Keyed by the live DB path so tests that monkeypatch db.DB_PATH get a
     fresh connection instead of a stale one. Falls back to db.connect()
@@ -180,7 +180,7 @@ def _cached_conn() -> _sqlite3.Connection:
 
 
 def cleanup_expired_sessions() -> int:
-    """Delete expired sessions. Called by the background thread (1C)."""
+    """Delete expired sessions. Called by the background thread."""
     try:
         con = db.connect()
     except Exception as e:
@@ -223,7 +223,7 @@ def _cleanup_loop(interval_s: float) -> None:
 
 
 def ensure_cleanup_thread(interval_s: float = SESSION_CLEANUP_INTERVAL_S) -> None:
-    """Start the daemon cleanup thread once (idempotent, 1C)."""
+    """Start the daemon cleanup thread once (idempotent)."""
     global _CLEANUP_THREAD
     with _CLEANUP_LOCK:
         if _CLEANUP_THREAD is not None and _CLEANUP_THREAD.is_alive():

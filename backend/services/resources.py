@@ -17,14 +17,10 @@ from backend.constants import ENTRY
 
 RESOURCE_EXTS = {".typ": "template", ".bib": "library", ".csv": "table", ".tsv": "table", **dict.fromkeys((".json", ".yaml", ".yml", ".toml", ".xml", ".txt", ".csl"), "data")}
 REF_RE = re.compile(r'"([^"\n]{1,240})"')
-# Explicit bounds (not silent truncation): per-text scan cap + total closure
-# cap. Typical docs reach a handful of files; the caps only stop cycles and
-# pathological inputs. A capped-away file surfaces as a normal Typst
-# "file not found" compile error, never as silent success.
-REF_MAX_PER_TEXT = 200
+# Explicit bound (not silent truncation) on the include closure. Typical docs reach a
+# handful of files; the cap only stops cycles and pathological inputs. A capped-away
+# file surfaces as a normal Typst "file not found" compile error, never as silent success.
 REACHABLE_MAX = 500
-# Backwards-compat alias (old importers): total-closure cap.
-REF_MAX = REACHABLE_MAX
 # The compile entry file is the doc itself: a resource by that name would shadow it in
 # every compile. New/updated resources reject it; get/read/delete keep working for any pre-existing rows.
 RESERVED_NAMES = frozenset({ENTRY})

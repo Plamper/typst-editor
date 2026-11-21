@@ -1,11 +1,11 @@
 """Yjs-compatible sync server in Python (pycrdt).
 
-Write-behind persistence (1C):
+Write-behind persistence:
   WS updates only mark rooms dirty; a background flusher persists dirty rooms
   every WRITE_BEHIND_FLUSH_SECONDS and on last disconnect. A `kill -9` loses
   at most WRITE_BEHIND_FLUSH_SECONDS of edits (see the constant below).
 
-No synchronous DB access runs on the event loop in the WS hot path (1C):
+No synchronous DB access runs on the event loop in the WS hot path:
   initial checks, room load, role/session/trash rechecks and the final save
   all go through `asyncio.to_thread`. Role, trash status and session live in
   room state and are invalidated on share/unshare/delete/logout.
@@ -278,9 +278,9 @@ async def _role_async(r: dict, user: str, doc_id: str) -> str | None:
     return role
 
 async def _session_async(token: str) -> str | None:
-    """Cached session check without blocking the loop (1C).
+    """Cached session check without blocking the loop.
 
-    B6 fail-closed: any DB exception -> None (same as session_ok), never a
+    Fail-closed: any DB exception -> None (no verified user), never a
     stale cached user. A stale True would admit a revoked/expired session.
     """
     now = time.monotonic()
@@ -307,7 +307,7 @@ def fresh_trashed(doc_id: str) -> bool:
 
 
 async def _trashed_async(doc_id: str, r: dict | None = None) -> bool:
-    """Room-cached trash status without blocking the loop (1C)."""
+    """Room-cached trash status without blocking the loop."""
     now = time.monotonic()
     if r is not None:
         if now - float(r.get("trashed_at", 0.0)) < TRASH_CACHE_TTL and "trashed" in r:
@@ -414,7 +414,7 @@ async def _quota_ok_cached_async(doc_id: str) -> bool:
 
 
 def _size_ok(room_or_doc: Any, payload: bytes, cached_len: int | None = None) -> bool:
-    """Cheaper size gate replacing the per-update full doc copy (1C).
+    """Cheaper size gate replacing the per-update full doc copy.
 
     Old path copied the whole doc (trial.apply_update(doc.get_update())) per
     keystroke. New path: one stringify of the live doc + payload-byte
@@ -572,7 +572,7 @@ async def _flusher_loop() -> None:
 
 
 def ensure_flusher() -> None:
-    """Start the write-behind flusher task once per loop (1C)."""
+    """Start the write-behind flusher task once per loop."""
     global _flush_task
     try:
         loop = asyncio.get_running_loop()
@@ -698,7 +698,7 @@ async def kick_user(doc_id: str, username: str) -> None:
             r.get("tokens", {}).pop(c, None)
             r.get("sess_at", {}).pop(c, None)
     r.get("role_cache", {}).pop(username, None)
-    # Share/unshare invalidation (1C): force trash re-read for remaining
+    # Share/unshare invalidation: force trash re-read for remaining
     # conns (role change never implies trash change, but re-read is cheap
     # and keeps drop_role_cache/kick_user/drop coherent; delete path uses
     # drop() which already clears trash).
@@ -1108,7 +1108,7 @@ async def handle(ws: WebSocket, doc_id: str) -> None:
         await _close(ws, doc_id, 1011, "room-fail")
         return
     doc: Doc = r["doc"]
-    # Hold role, trash status and session in room state (1C): users/tokens/
+    # Hold role, trash status and session in room state: users/tokens/
     # sess_at bind each WS to its user + token + last check (used for precise
     # cleanup on bcast-fail/kick/disconnect; the session verdict itself comes
     # from the shared _sess_cache in sync.py via _session_async, invalidated

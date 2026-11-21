@@ -416,7 +416,7 @@ async function render() {
         if (pvObs) pvObs.disconnect()
         pvSlots = []; pvPageSize = null
         $('preview').replaceChildren(p)
-        if (firstMsg) { if (navigator.onLine !== false) toast(t('preview.typstError', { msg: firstMsg.slice(0, 140) })) } // offline: inline message suffices, no toast spam (2E gate, worker path)
+        if (firstMsg) { if (navigator.onLine !== false) toast(t('preview.typstError', { msg: firstMsg.slice(0, 140) })) } // offline: inline message suffices, no toast spam (worker path)
         else if (navigator.onLine !== false) toast(t('preview.loadFailed'), () => render())
       } else if (errLines.length && !lined && errKey !== lastErrToast && navigator.onLine !== false) { lastErrToast = errKey; toast(t('preview.typstError', { msg: firstMsg.slice(0, 140) })) } // line errors: red marks + badge suffice, no toast per keystroke
       lastInfra = !errLines.length && !$('preview').querySelector('.pvPage[data-done]') // infra (not content): watchdog retries
@@ -1253,7 +1253,7 @@ function pvBar() { // page-fit button next to fit-width (shell untouched: button
   b.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="2" width="7" height="12" rx="1"/><path d="M1.5 5.5v5M1.5 5.5l1.3 1.3M1.5 5.5L.2 6.8M14.5 10.5v-5M14.5 10.5l1.3-1.3M14.5 10.5l-1.3-1.3"/></svg>'
   const tip = t('preview.zoomPage')
   b.title = tip; b.setAttribute('aria-label', tip); b.setAttribute('aria-pressed', 'false')
-  b.setAttribute('data-i18n-title', 'preview.zoomPage'); b.setAttribute('data-i18n-aria', 'preview.zoomPage') // future language switch (2D) picks it up via applyI18n
+  b.setAttribute('data-i18n-title', 'preview.zoomPage'); b.setAttribute('data-i18n-aria', 'preview.zoomPage') // future language switch picks it up via applyI18n
   b.onclick = () => { pvModeSet('page'); pvModeApply(); pvRelayout() }
   f.after(b)
   f.onclick = () => { pvModeSet('width'); pvModeApply(); pvRelayout() } // replaces scale-2 fitPv: exact at any pvScale, immediate (no wait for next render)

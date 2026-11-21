@@ -994,12 +994,12 @@ async function saveNow(force, auto) {
   }
   if (!docId || docRole === 'reviewer' || !ytext) return
   if (!wsLive() || navigator.onLine === false) { $('save').textContent = t('docs.offlineRetry'); return } // Yjs owns the document text: no REST off the sync path (forked text doubled on reconnect), quiet even when explicit
-  if (auto) { if (!window.suggestionDraft) $('save').textContent = t('docs.saved'); paintConn(); return } // reconnect won the race: Yjs has it, no REST (2E); draft must not claim 'saved'
+  if (auto) { if (!window.suggestionDraft) $('save').textContent = t('docs.saved'); paintConn(); return } // reconnect won the race: Yjs has it, no REST; draft must not claim 'saved'
   try { await api('POST', `/api/docs/${docId}/save`, { content: ytext.toString(), ...(force ? { force: true } : {}) }); $('save').textContent = t('docs.saved') }
   catch (e) {
     if (e.status === 409 && !force && prov && prov.wsconnected && synced) return saveNow(true, auto) // live: Y state already merges everyone's edits, safe to overwrite
     $('save').textContent = saveErr(e)
-    if (auto && (navigator.onLine === false || !wsLive())) return // quiet: status line already says it, no toast spam (2E)
+    if (auto && (navigator.onLine === false || !wsLive())) return // quiet: status line already says it, no toast spam
     if (e.status === 409 && !force) toast(t('docs.saveConflict'), () => saveNow(true), t('docs.forceSave'))
     else toast(t('docs.saveFail', { msg: e.message }), () => saveNow(force), t('common.retry'))
   }

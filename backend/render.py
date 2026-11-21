@@ -288,7 +288,7 @@ def _compile_slot():
 
 
 def _compile_preexec() -> None:
-    """Child-side rlimits for typst (1C): 1 GB AS, 30s CPU, 100 MB files."""
+    """Child-side rlimits for typst: 1 GB AS, 30s CPU, 100 MB files."""
     _res: Any
     try:
         import resource as _res

@@ -2,6 +2,8 @@
 *
 !requirements.txt
 !backend/
+!scripts/
+scripts/*
 !scripts/backup.py
 !index.html
 !vendor-cm.js
