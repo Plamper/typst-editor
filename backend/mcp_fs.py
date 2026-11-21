@@ -233,6 +233,17 @@ def need_write(node: dict) -> None:
         raise err(403, "forbidden", "Your key or role may only read, comment and propose")
 
 
+def need_own(ctx: Ctx, sql: str, args: tuple, what: str) -> None:
+    """Agents remove only their own proposals and comments; moderation stays in the web app."""
+    con = db.connect()
+    try:
+        row = con.execute(sql, args).fetchone()
+    finally:
+        con.close()
+    if row and row[0] != ctx.user:
+        raise err(403, "forbidden", f"Only your own {what} can be deleted")
+
+
 def doc_text(doc_id: str) -> str:
     live = sync.room_text(doc_id)
     if live is not None:
@@ -597,6 +608,7 @@ async def write(ctx: Ctx, path: str, content: str | None = None, content_base64:
     kind = node["kind"]
     created = kind.startswith("new_")
     if kind == "new_project":
+        need_write({"role": ctx.cap})
         from backend.routers.projects import ProjectTitle, create_project
         r = create_project(ProjectTitle(title=node["title"]), fake_request(ctx.user), ctx.user)
         return {"path": "/" + node["title"], "id": r["id"], "created": True}
@@ -754,6 +766,7 @@ async def move(ctx: Ctx, path: str, to: str, fix_refs: bool = True, package: str
     node = resolve(ctx, path, create=path.endswith("/") and path != "/")
     kind = node["kind"]
     if kind == "trash_item":
+        need_write({"role": ctx.cap})
         return await asyncio.to_thread(_restore, ctx, node)
     dest = resolve(ctx, to, create=True)
     if dest["kind"] in ("doc", "file", "module", "template", "project"):
@@ -762,11 +775,13 @@ async def move(ctx: Ctx, path: str, to: str, fix_refs: bool = True, package: str
     if kind == "project":
         if dest["kind"] != "new_project":
             raise err(400, "bad_path", "A project is renamed to /NewTitle")
+        need_write(node)
         rp.rename_project(node["project_id"], rp.ProjectTitle(title=dest["title"]), req, ctx.user)
         return {"path": dest["path"]}
     if kind == "template":
         if dest["kind"] != "new_template":
             raise err(400, "bad_path", f"A template is renamed to /{TPL}/name")
+        need_write(node)
         rt.rename_template(node["name"], TplRename(name=dest["name"]), req, ctx.user)
         return {"path": dest["path"]}
     if kind in ("folder", "new_folder"):
@@ -909,6 +924,7 @@ async def delete(ctx: Ctx, path: str, package: str = "") -> dict:
     node = resolve(ctx, path, create=path.endswith("/") and path != "/")
     kind, req = node["kind"], fake_request(ctx.user)
     if kind == "proposal":
+        need_own(ctx, "SELECT author FROM suggestion_packages WHERE id=? AND project_id=?", (node["id"], node["project_id"]), "proposals")
         delete_package(node["project_id"], node["id"], req, ctx.user)
         return {"deleted": node["path"], "note": "proposals are removed for good"}
     if kind == "new_folder":
@@ -919,6 +935,7 @@ async def delete(ctx: Ctx, path: str, package: str = "") -> dict:
     elif kind in ("doc", "file", "module") and _proposing(ctx, node):
         return await propose(ctx, node, {"op": "delete", "path": path}, package)
     elif kind == "template":
+        need_write(node)
         rt.delete_template(node["name"], req, ctx.user)
     elif kind == "project":
         if node["role"] != "owner":
@@ -953,8 +970,7 @@ def find(ctx: Ctx, query: str, path: str = "/", kind: str = "") -> dict:
         raise err(400, "bad_request", "Search needs at least 2 characters")
     if kind and kind not in ("doc", "file", "module", "template", "trash"):
         raise err(400, "bad_request", "kind is one of doc, file, module, template, trash")
-    if path.strip("/"):
-        resolve(ctx, path, create=path.endswith("/"))
+    prefix = resolve(ctx, path, create=path.endswith("/"))["path"].rstrip("/") if path.strip("/") else ""
     con = db.connect()
     try:
         files_dir = deps.get_files_dir()
@@ -976,7 +992,10 @@ def find(ctx: Ctx, query: str, path: str = "/", kind: str = "") -> dict:
                 p, text = doc_path(e["doc_id"]), doc_text(e["doc_id"])
             elif k == "file":
                 d = doc_path(e["doc_id"])
-                p, text = (d + "/" + e["name"]) if d else "", store.get(e["doc_id"], e["name"]).decode("utf-8", errors="replace")
+                try:
+                    p, text = (d + "/" + e["name"]) if d else "", store.get(e["doc_id"], e["name"]).decode("utf-8", errors="replace")
+                except FileNotFoundError:
+                    continue
             elif k == "resource":
                 p = f"/{names.get(e['project_id'], '')}/{LIB}/{e['name']}"
                 row = con.execute("SELECT content FROM project_resources WHERE project_id=? AND name=?", (e["project_id"], e["name"])).fetchone()
@@ -993,6 +1012,8 @@ def find(ctx: Ctx, query: str, path: str = "/", kind: str = "") -> dict:
             seen.add(p)
             hits.append({"path": p, "kind": "doc" if k == "trash_doc" else k, "count": e["count"], "line": line, "snippet": snippet})
         for pid, pname in names.items():
+            if _project_role(con, ctx, pid) == "guest":
+                continue
             for r in con.execute("SELECT name FROM project_resources WHERE project_id=? AND name LIKE ? ESCAPE '\\'", (pid, "%" + q.replace("%", "").replace("_", "") + "%")):
                 p = f"/{pname}/{LIB}/{r['name']}"
                 if p not in seen:
@@ -1004,7 +1025,6 @@ def find(ctx: Ctx, query: str, path: str = "/", kind: str = "") -> dict:
                 hits.append({"path": p, "kind": "doc", "count": 0, "line": 0, "snippet": h["snippet"]})
     finally:
         con.close()
-    prefix = "/" + path.strip("/") if path.strip("/") else ""
     hits = [h for h in hits if (not prefix or h["path"] == prefix or h["path"].startswith(prefix + "/")) and (not kind or h["kind"] == kind)]
     hits.sort(key=lambda h: -h["count"])
     return {"query": q, "hits": hits[:SEARCH_MAX], "total": len(hits)}

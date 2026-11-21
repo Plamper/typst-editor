@@ -8,6 +8,7 @@ from __future__ import annotations
 import secrets
 import time
 from dataclasses import dataclass
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
@@ -66,7 +67,7 @@ def download(token: str, req: Request) -> Response:
     if not link or not link.name:
         raise HTTPException(404, "Link expired or unknown")
     return Response(link.data, media_type=link.mime or "application/octet-stream",
-                    headers={"Content-Disposition": f'attachment; filename="{link.name}"', "X-Content-Type-Options": "nosniff",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(link.name)}", "X-Content-Type-Options": "nosniff",
                              "Cache-Control": "no-store"})
 
 
@@ -76,11 +77,10 @@ async def upload(token: str, req: Request) -> dict:
 
     deps.limited(req, "files")
     _sweep()
-    link = _links.get(token)
+    link = _links.pop(token, None)  # taken before the body arrives: a second PUT with the same token finds nothing
     if not link or not link.path:
         raise HTTPException(404, "Link expired or unknown")
     body = await deps.read_capped_body(req, UPLOAD_MAX)
-    _links.pop(token, None)
     import base64
 
     return await mcp_fs.write(link.ctx, link.path, content_base64=base64.b64encode(body).decode(), force=True)

@@ -405,6 +405,7 @@ function renderSettings() {
       msel.setAttribute('aria-label', t('settings.modeForKey', { name: k.name })); msel.title = t('settings.keyMode')
       msel.onchange = () => {
         const mode = msel.value
+        if (mode === (k.mode || 'auto')) return
         msel.disabled = true
         api('PATCH', '/api/keys/' + encodeURIComponent(k.id), { mode })
           .then(d => { k.mode = d.mode || mode; toast(t('settings.modeChanged')) })

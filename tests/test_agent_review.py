@@ -211,3 +211,43 @@ def test_only_typ_files_convert_even_as_proposals(shared):
         assert a.fail("move", path=src, to=dst)["code"] == "bad_path"
     assert p.fail("propose", project="/Report", ops=[{"op": "move", "path": "/Report/.library/data.csv", "to": "/Report/Daten"}])["code"] == "bad_path"
     assert c.post(f"/api/projects/{pid}/convert", json={"name": "data.csv", "to": "document"}).status_code == 400
+
+
+def test_reviewer_key_cannot_reach_owner_actions(c):
+    register_user(c, "alice")
+    project(c)
+    ed = make_agent(c, name="ed")
+    ed("write", path="/.templates/memo.typ", content="memo")
+    did = doc(c, project(c, "Old"), "Gone", "x")
+    assert c.delete(f"/api/docs/{did}").status_code == 200
+    rev = make_agent(c, role="reviewer", name="rev")
+    for call, args in (("write", {"path": "/New", "content": ""}), ("move", {"path": "/Report", "to": "/Renamed"}),
+                       ("move", {"path": "/.templates/memo.typ", "to": "/.templates/x.typ"}), ("delete", {"path": "/.templates/memo.typ"}),
+                       ("move", {"path": f"/.trash/{did}", "to": "/"})):
+        assert rev.fail(call, **args)["code"] == "forbidden", (call, args)
+
+
+def test_agent_deletes_only_its_own_proposals_and_comments(shared):
+    c, pid = shared
+    did = doc(c, pid, "Plan", "x\ny\n")
+    login(c, "bob")
+    b = make_agent(c, name="bobbot")
+    pkg = b("edit", path="/Report@alice/Plan", edits=[{"old": "x", "new": "X"}])["proposal"]
+    cid = c.post(f"/api/docs/{did}/comments", json={"text": "bob says", "line": 1}).json()["id"]
+    login(c, "alice")
+    a = make_agent(c, name="alicebot")
+    assert a.fail("delete", path=f"/Report/.proposals/{pkg}")["code"] == "forbidden"
+    assert a.fail("comment", path="/Report/Plan", id=cid, delete=True)["code"] == "forbidden"
+
+
+
+def test_doc_guests_do_not_find_module_names(c):
+    register_user(c, "alice")
+    pid = project(c)
+    did = doc(c, pid, "Shared", "hello")
+    assert c.post(f"/api/projects/{pid}/resources", json={"name": "secretplan.typ", "content": "x"}).status_code == 200
+    register_user(c, "bob")
+    login(c, "alice")
+    assert c.post(f"/api/docs/{did}/share", json={"username": "bob", "role": "editor"}).status_code == 200
+    login(c, "bob")
+    assert make_agent(c, name="bobbot")("search", query="secretplan")["hits"] == []

@@ -19,6 +19,7 @@ KEY_RE = re.compile(r"^tpe_[0-9a-f]{8}_[0-9a-f]{32}$")
 KEY_ROLES = ("editor", "reviewer")
 
 _ROLE_RANK = {"reviewer": 1, "editor": 2, "owner": 3}
+MODE_RANK = {"propose": 1, "auto": 2, "direct": 3}
 
 
 def cap_min(cap: str, role: str) -> str:
@@ -73,6 +74,7 @@ def me_with_key(req: Request) -> tuple[str, str]:
         hit = verify_api_key(authz[7:].strip())
         if not hit:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API key")
+        req.state.key_mode = hit["mode"]
         return hit["user"], hit["role"]
     user = auth.verify_session(deps.session_token(req))
     if not user:

@@ -1110,7 +1110,7 @@ body.settings-open #modal { z-index: 302; }
 #setPop .storageMeta { color: var(--sub); font-size: 11.5px; line-height: 1.45; }
 #setPop .setView .row { flex-wrap: wrap; }
 #setPop .keyCreateSec { overflow-x: auto; }
-#setPop .keyCreateRow { display: grid; grid-template-columns: minmax(110px, 1.2fr) minmax(95px, .9fr) minmax(90px, .8fr) auto; align-items: center; gap: 6px; }
+#setPop .keyCreateRow { display: grid; grid-template-columns: minmax(110px, 1.2fr) minmax(95px, .9fr) minmax(95px, .9fr) minmax(90px, .8fr) auto; align-items: center; gap: 6px; }
 #setPop .keyCreateRow > input, #setPop .keyCreateRow > select { box-sizing: border-box; width: 100%; min-width: 0; max-width: none; }
 #setPop .keyCreateRow > button { white-space: nowrap; }
 #setPop .setView .row select.keyRoleSel, #setPop .setView .row select.keyModeSel { flex: none; width: auto; max-width: 140px; min-height: 26px; padding: 2px 24px 2px 7px; font-size: 12px; line-height: 1.2; }
@@ -7117,6 +7117,7 @@ function renderSettings() {
       msel.setAttribute('aria-label', t('settings.modeForKey', { name: k.name })); msel.title = t('settings.keyMode')
       msel.onchange = () => {
         const mode = msel.value
+        if (mode === (k.mode || 'auto')) return
         msel.disabled = true
         api('PATCH', '/api/keys/' + encodeURIComponent(k.id), { mode })
           .then(d => { k.mode = d.mode || mode; toast(t('settings.modeChanged')) })

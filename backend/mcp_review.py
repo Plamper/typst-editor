@@ -14,7 +14,7 @@ import time
 from fastapi import HTTPException
 
 from backend import db
-from backend.mcp_fs import Ctx, apply_edits, doc_text, err, fake_request, is_text, resolve, version
+from backend.mcp_fs import Ctx, apply_edits, doc_text, err, fake_request, is_text, need_own, resolve, version
 from backend.services import change_packages as cp
 from backend.services import notifications, projects
 
@@ -260,6 +260,7 @@ def comment(ctx: Ctx, path: str, text: str = "", quote: str = "", line: int = 0,
         if not id:
             raise err(400, "bad_request", "id of the comment is required (read the document to see them)")
         if delete:
+            need_own(ctx, "SELECT username FROM comments WHERE id=? AND doc_id=?", (id, node["doc_id"]), "comments")
             return rc.delete_comment(node["doc_id"], id, req, ctx.user)
         return rc.resolve_comment(node["doc_id"], id, ResolveSet(resolved=bool(resolved)), req, ctx.user)
     if not text.strip() or len(text) > 2000:

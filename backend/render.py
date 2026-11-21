@@ -762,6 +762,7 @@ def _compile_export_doc(main_text: str, files: list[tuple[str, bytes]], fmt: str
         total = len(main_text.encode("utf-8"))
         doc_name = doc_name or ENTRY
         seen: set[str] = {doc_name.lower()}
+        skipped = list(skipped or [])
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr(doc_name, main_text)
             for name, data in files:
@@ -774,6 +775,7 @@ def _compile_export_doc(main_text: str, files: list[tuple[str, bytes]], fmt: str
                 if not clean or ".." in clean.split("/"):
                     continue
                 if clean.lower() in seen:
+                    skipped.append(clean)
                     continue
                 seen.add(clean.lower())
                 total += len(data)
@@ -781,7 +783,7 @@ def _compile_export_doc(main_text: str, files: list[tuple[str, bytes]], fmt: str
                     raise _bad("Export too large (max 100 MB)", 413)
                 z.writestr(clean, data)
             if skipped:
-                z.writestr("SKIPPED.txt", "Oversized files left out:\n" + "\n".join(skipped) + "\n")
+                z.writestr("SKIPPED.txt", "Files left out (oversized or same name as another file):\n" + "\n".join(skipped) + "\n")
         payload = buf.getvalue()
         if len(payload) > EXPORT_MAX:
             raise _bad("Export too large (max 100 MB)", 413)

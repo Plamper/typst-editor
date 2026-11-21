@@ -27,7 +27,7 @@ from backend.schemas import (
     SpellPreference,
 )
 from backend.services import quota as quota_svc
-from backend.services.apikeys import _ROLE_RANK, KEY_ROLES, me_with_key, mint_api_key
+from backend.services.apikeys import _ROLE_RANK, KEY_ROLES, MODE_RANK, me_with_key, mint_api_key
 from backend.services.locks import _drop_user_locks, _named_lock
 from backend.services.proxy import _proxy_trusted
 
@@ -286,11 +286,19 @@ def _key_role(role: str, cap: str) -> str:
     return role
 
 
+def _key_mode(mode: str, req: Request) -> str:
+    # A key in mode propose must not mint or switch to a key that writes directly.
+    if MODE_RANK[mode] > MODE_RANK[getattr(req.state, "key_mode", "direct")]:
+        raise HTTPException(403, "Cannot grant a freer mode than your own key")
+    return mode
+
+
 @router.post("/api/keys")
 def create_key(b: KeyCreate, req: Request, authn: tuple[str, str] = Depends(me_with_key)) -> dict:
     user, cap = authn
     deps.limited(req, "keys", user)
     role = _key_role(b.role, cap)
+    mode = _key_mode(b.mode, req)
     nm = b.name.strip()[:40]
     if not nm:
         raise HTTPException(400, "Enter a key name.")
@@ -310,12 +318,12 @@ def create_key(b: KeyCreate, req: Request, authn: tuple[str, str] = Depends(me_w
             try:
                 con.execute("INSERT INTO api_keys (id, username, name, prefix, key_hash, role, mode, expires_at, created_at) "
                             "VALUES (?,?,?,?,?,?,?,?,?)",
-                            (kid, user, nm, prefix, auth.sha(full), role, b.mode, expires_at, db.now_iso()))
+                            (kid, user, nm, prefix, auth.sha(full), role, mode, expires_at, db.now_iso()))
                 con.commit()
             except sqlite3.IntegrityError:
                 continue
             return {"id": kid, "name": nm, "prefix": prefix,
-                    "key": full, "role": role, "mode": b.mode, "expires_at": expires_at}
+                    "key": full, "role": role, "mode": mode, "expires_at": expires_at}
         finally:
             con.close()
     raise HTTPException(500, "Key creation failed")
@@ -348,7 +356,7 @@ def update_key(kid: str, b: KeyUpdate, req: Request,
         if not row:
             raise HTTPException(404, "Key gone")
         role = _key_role(b.role, cap) if b.role is not None else row["role"]
-        mode = b.mode or row["mode"]
+        mode = _key_mode(b.mode, req) if b.mode else row["mode"]
         con.execute("UPDATE api_keys SET role=?, mode=? WHERE id=?", (role, mode, kid))
         con.commit()
         return {"ok": True, "id": kid, "role": role, "mode": mode}

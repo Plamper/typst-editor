@@ -18,10 +18,19 @@ from backend.services.docfiles import file_type, safe_name, store
 from backend.services.sidebar import notify_sidebar
 
 
+def _entries(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+    entries = [e for e in archive.infolist() if not e.is_dir()]
+    if len(entries) > config.load().MAX_FILES_PER_DOC + 1:
+        raise HTTPException(400, "Too many files in ZIP")
+    if sum(e.file_size for e in entries) > EXPORT_MAX:
+        raise HTTPException(413, "Uncompressed ZIP too large (max 100 MB)")
+    return entries
+
+
 def _typ_texts(archive: zipfile.ZipFile) -> dict[str, str]:
     out = {}
-    for e in archive.infolist():
-        if not e.is_dir() and e.filename.lower().endswith(".typ") and e.file_size <= MAX_TXT:
+    for e in _entries(archive):
+        if e.filename.lower().endswith(".typ") and e.file_size <= MAX_TXT:
             with archive.open(e) as stream:
                 out[e.filename] = stream.read(MAX_TXT + 1).decode("utf-8", errors="replace")
     return out
@@ -66,14 +75,9 @@ def read_project_zip(data: bytes, entry: str = "") -> tuple[str, str, list[tuple
     """(document file path, its text, the other files relative to the document's folder)."""
     if len(data) > UPLOAD_MAX:
         raise HTTPException(413, "ZIP too large (max 10 MB)")
-    limits = config.load()
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            entries = [e for e in archive.infolist() if not e.is_dir()]
-            if len(entries) > limits.MAX_FILES_PER_DOC + 1:
-                raise HTTPException(400, "Too many files in ZIP")
-            if sum(e.file_size for e in entries) > EXPORT_MAX:
-                raise HTTPException(413, "Uncompressed ZIP too large (max 100 MB)")
+            entries = _entries(archive)
             chosen = _pick_entry(_typ_texts(archive), entry)
             prefix = chosen.removesuffix(PurePosixPath(chosen).name)
             files, seen = [], set()

@@ -28,7 +28,7 @@ Connect: `<server>/mcp`, header `Authorization: Bearer tpe_...` (the user create
 
 ## Proposals
 
-In shared projects, for reviewer keys and keys in mode `propose`, `edit`/`write`/`move`/`delete` do not change anything: they add to a **proposal package** that humans accept hunk by hunk.
+In shared projects, for reviewer keys and keys in mode `propose`, `edit`/`write`/`move`/`delete` on documents, attachments and modules do not change anything: they add to a **proposal package** that humans accept hunk by hunk.
 
 - Send related changes as **one package**: `propose(project, ops=[…], title)`, or pass `package=<id>` to every following call. Never one package per line.
 - Correct a package by adding to it, or remove it: `delete("/P/.proposals/<id>")`. Your own comments go with `comment(id, delete=true)`.

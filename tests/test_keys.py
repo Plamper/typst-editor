@@ -109,3 +109,14 @@ def test_key_mode_is_stored_listed_and_changeable(c):
     r = c.patch(f"/api/keys/{k['id']}", json={"mode": "direct"})
     assert r.status_code == 200 and r.json() == {"ok": True, "id": k["id"], "role": "editor", "mode": "direct"}
     assert c.patch(f"/api/keys/{k['id']}", json={}).status_code == 400
+
+
+def test_propose_key_cannot_free_itself(c):
+    register_user(c, "u1")
+    r = c.post("/api/keys", json={"name": "careful", "role": "editor", "mode": "propose"})
+    hdr = {"Authorization": f"Bearer {r.json()['key']}"}
+    kid = r.json()["id"]
+    assert c.patch(f"/api/keys/{kid}", json={"mode": "direct"}, headers=hdr).status_code == 403
+    assert c.post("/api/keys", json={"name": "free", "mode": "auto"}, headers=hdr).status_code == 403
+    assert c.post("/api/keys", json={"name": "also", "mode": "propose"}, headers=hdr).status_code == 200
+    assert c.patch(f"/api/keys/{kid}", json={"mode": "direct"}).status_code == 200  # the human session may
