@@ -196,12 +196,12 @@ test('renderMediaChips hides upload and delete for reviewers but keeps copy chip
     el: (tag, cls, text) => node(cls, text), icoBtn: (cls, icon) => node(cls, icon),
     TEXT_EXT: /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i, ICO_DUP: 'dup', ICO_X: 'x',
     deleteFile: () => { throw Error('reviewer must not delete') },
-    copyToLibrary: name => { copied = name },
+    copyFileToPersonal: async (project, name) => { copied = name }, docResReadonly: false, docProject: 'p',
     mediaInsert: () => '', cm: { state: { facet: () => true, selection: { main: { from: 0, to: 0 } } }, dispatch() {}, focus() {} },
     toast() {},
   })
   vm.runInContext(files.slice(files.indexOf('function renderMediaChips(files)'), files.indexOf("$('mediaBtn').onclick")), c)
-  c.renderMediaChips([{ name: 'pic.png', size: 2000 }])
+  c.renderMediaChips([{ path: 'pic.png', size: 2000 }])
   assert.equal(bar.style.display, '')
   const chip = bar.children[0]
   assert.equal(chip.children.some(x => x.onclick && (x.onclick === null)), false)
@@ -209,21 +209,21 @@ test('renderMediaChips hides upload and delete for reviewers but keeps copy chip
   assert.equal(chip.children.length, 2) // name + size, no delete X
   assert.equal(chip.children[0].onclick, null) // insert is blocked for reviewers
   assert.equal(chip.children[1].className, 'sz')
-  c.renderMediaChips([{ name: 'module.typ', size: 20 }])
+  c.renderMediaChips([{ path: 'module.typ', size: 20 }])
   const textChip = bar.children[0]
   assert.equal(textChip.children.length, 3) // name + size + copy
   textChip.children[2].onclick()
-  assert.equal(copied, 'module.typ') // backend allows library-copy for any reader role
+  assert.equal(copied, 'module.typ') // any reader may copy a file into the personal modules
   // owner keeps the full set
   bar.replaceChildren(); c.docRole = 'owner'
-  c.renderMediaChips([{ name: 'a.typ', size: 10 }])
+  c.renderMediaChips([{ path: 'a.typ', size: 10 }])
   assert.equal(bar.children.length, 2) // upload button + one chip
   const ochip = bar.children[1]
   assert.equal(ochip.children.length, 4) // name (clickable) + size + delete X + copy
   assert.notEqual(ochip.children[0].onclick, null)
   // trash hides the whole manager again
   bar.replaceChildren(); c.openedTrashed = true
-  c.renderMediaChips([{ name: 'a.typ', size: 10 }])
+  c.renderMediaChips([{ path: 'a.typ', size: 10 }])
   assert.equal(bar.style.display, 'none')
   assert.equal(bar.children.length, 0)
 })

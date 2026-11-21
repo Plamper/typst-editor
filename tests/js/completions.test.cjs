@@ -9,7 +9,7 @@ const complete = source.slice(source.indexOf('function typstComplete'), source.i
 function completionContext(bibKeys, parser) {
   const c = vm.createContext({
     window: {}, tplName: '', activeFile: '', tabName: () => '', bibKeys, mediaNames: [], getT: () => '',
-    projectResources: () => [], t: key => key, T_KW: [], T_SNIP: [], T_BLOCKED: new Set(['LineComment', 'Str', 'Label', 'Ref']),
+    fileRefs: () => [], t: key => key, T_KW: [], T_SNIP: [], T_BLOCKED: new Set(['LineComment', 'Str', 'Label', 'Ref']),
     typstParser: parser, typstBuiltinSignatures: undefined, pcDoc: null, pcTree: null,
   })
   vm.runInContext(complete, c)

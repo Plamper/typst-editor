@@ -1,7 +1,7 @@
 """Late UI responses stay attached to the document that requested them."""
 from playwright.sync_api import expect
 
-from e2e.helpers import register
+from e2e.helpers import doc_project, put_file, register
 
 
 def _docs(page, username):
@@ -81,8 +81,7 @@ def test_keyboard_on_nested_document_action_runs_that_action(page):
 
 def test_history_diff_compares_main_when_attachment_tab_is_open(page):
     first, _ = _docs(page, "audit_history")
-    assert page.request.post(f"/api/docs/{first}/files/other.typ/text",
-                             data={"content": "Completely different attachment"}).ok
+    assert put_file(page.request, doc_project(page.request, first), 'other.typ', "Completely different attachment").ok
     project = page.request.get(f'/api/docs/{first}').json()['project_id']
     assert page.request.post(f'/api/projects/{project}/snapshots', data={}).ok
     _open(page, "Audit first")

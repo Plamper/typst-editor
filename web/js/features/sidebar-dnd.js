@@ -16,10 +16,10 @@ function sidebarWatchDrop() { // OS-file drags: no dragend reaches our rows, dro
 }
 function sidebarCanDrop(data, target) {
   if (!data?.entry) return false
-  if (target === 'trash') return ['document', 'resource', 'file'].includes(data.entry.kind) && !data.trashed
+  if (target === 'trash') return ['document', 'resource', 'file'].includes(data.entry.kind) && !data.trashed // resource = a personal module row
   if (target === 'documents') return !!data.trashed && data.entry.kind === 'document' && !data.trashId
   if (data.trashed) return !!data.trashId && (data.entry.kind !== 'file' || TEXT_EXT.test(data.entry.name))
-  return !data.trashed && !data.personal && (data.entry.kind === 'resource' || data.entry.kind === 'file' && TEXT_EXT.test(data.entry.name))
+  return !data.trashed && !data.personal && data.entry.kind === 'file' && TEXT_EXT.test(data.entry.name)
 }
 function markDropTarget(node) { // exactly one target at a time, no flicker between a row and its label
   document.querySelectorAll('.drop-target').forEach(n => { if (n !== node) n.classList.remove('drop-target') })
@@ -75,14 +75,11 @@ function sidebarDropTarget(row, target) {
       if (target === 'trash') await trashSidebarEntry(data)
       else if (target === 'documents' && data.trashed) await restoreSidebarDocument(data)
       else if (target === 'modules' && data.trashed) await restoreSidebarDocument(data, null, true)
-      else if (target === 'modules' && !data.trashed && !data.personal) {
-        if (data.entry?.kind === 'resource') await pullLibrary({ source_scope: 'project', source_project_id: data.project, source: data.entry.name }, { scope: 'personal' })
-        else if (data.entry?.kind === 'file' && TEXT_EXT.test(data.entry.name)) await copyToLibrary(data.entry.name, data.entry.doc_id, { scope: 'personal' })
-      }
+      else if (target === 'modules' && !data.trashed && !data.personal) await copyFileToPersonal(data.project, data.entry.name)
     } catch (error) { toast(error.message) }
   }
 }
-const TRASH_KINDS = new Set(['personal', 'resource', 'file'])
+const TRASH_KINDS = new Set(['personal', 'file'])
 function trashEntryUrl(entry) { return (TRASH_KINDS.has(entry.kind) ? '/api/trash/' : '/api/docs/') + entry.id }
 async function trashSidebarEntry(data) {
   if (data.entry.kind === 'document') return trashSidebarDocument(data.entry.doc_id)
@@ -94,7 +91,7 @@ async function trashSidebarEntry(data) {
   } else {
     if (!await flushTab() || !await flushTpl()) return
     const project = projects.find(p => p.id === data.project)
-    await deleteProjectEntry(project, data.entry.name, data.entry.doc_id, data.entry.kind === 'resource')
+    await deleteProjectEntry(project, data.entry.name)
   }
 }
 async function trashSidebarDocument(document) {
@@ -110,13 +107,12 @@ async function restoreSidebarDocument(data, target = null, modules = false) {
   if (data.trashId) {
     await loadTpl(); await sidebar()
     if (target && result.kind === 'personal') return pullLibrary({ source_scope: 'personal', source: result.name }, { scope: 'project', project_id: target.id })
-    if (modules && result.kind === 'resource') return pullLibrary({ source_scope: 'project', source_project_id: result.project_id, source: result.name }, { scope: 'personal' })
-    if (modules && result.kind === 'file') return copyToLibrary(result.name, result.doc_id, { scope: 'personal' })
+    if (modules && result.kind === 'file') return copyFileToPersonal(result.project_id, result.name)
     if (target && result.project_id && result.project_id !== target.id) {
       const source = projects.find(p => p.id === result.project_id)
-      if (source) await transferProjectEntry(source, { kind: result.kind, name: result.name, doc_id: result.doc_id }, true, target, true)
+      if (source) await transferProjectEntry(source, { kind: result.kind, name: result.name }, true, target, true)
     }
-    if (docId === result.doc_id || docProject === result.project_id) { filesDirty = true; await loadDocResources(true); queueRender() }
+    if (docProject === result.project_id) { filesDirty = true; await loadProjectFiles(true); queueRender() }
     return
   }
   await sidebar()

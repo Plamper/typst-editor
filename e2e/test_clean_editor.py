@@ -5,7 +5,7 @@ import re
 import pytest
 from playwright.sync_api import expect
 
-from e2e.helpers import create_doc, register
+from e2e.helpers import create_doc, file_paths, file_text, put_file, register
 
 
 @pytest.mark.parametrize('extension', ['csv', 'bib'])
@@ -24,9 +24,9 @@ def test_structured_proposal_actions_without_source_mode(page, extension, action
         content = content.replace('Jane', 'Joan')
     if change == 'delete':
         content = base.replace('Old title' if extension == 'csv' else 'title={Old title}, ', '')
-    assert page.request.post(f'/api/projects/{project}/resources', data={'name': name, 'content': base}).ok
+    assert put_file(page.request, project, name, base).ok
     response = page.request.post(f'/api/projects/{project}/proposals', data={'title': 'Field review', 'files': [{
-        'kind': 'resource', 'path': name, 'action': 'modify', 'base': base, 'content': content,
+        'kind': 'file', 'path': name, 'action': 'modify', 'base': base, 'content': content,
         'changes': [{'old_string': base, 'new_string': content}],
     }]})
     assert response.ok, response.text()
@@ -71,9 +71,8 @@ def test_structured_proposal_actions_without_source_mode(page, extension, action
     else:
         page.wait_for_function("[...window.changeSession.files.values()].every(f => f.content === f.base)")
     expect(page.locator('#cmWrap')).not_to_be_visible()
-    resources = page.request.get(f'/api/projects/{project}/resources').json()['resources']
     expected = base.replace('Old title', 'New title') if extension == 'bib' and change == 'replace' else content
-    assert next(r for r in resources if r['name'] == name)['content'] == (expected if action == 'accept' else base)
+    assert file_text(page.request, project, name) == (expected if action == 'accept' else base)
 
 
 def test_bib_draft_marks_and_opens_changed_input_immediately(page):
@@ -83,7 +82,7 @@ def test_bib_draft_marks_and_opens_changed_input_immediately(page):
     document = next(d for d in page.request.get('/api/docs').json()['own'] if d['title'] == 'Live Bib')
     project = document['project_id']
     base = '@book{key, title={Old title}, author={Jane}, year={2026}}\n'
-    assert page.request.post(f'/api/projects/{project}/resources', data={'name': 'sources.bib', 'content': base}).ok
+    assert put_file(page.request, project, 'sources.bib', base).ok
     page.reload()
     page.locator('#own .doc .t').filter(has_text='Live Bib').click()
     page.locator('#own .doc .t').filter(has_text='sources.bib').click()
@@ -102,8 +101,7 @@ def test_bib_draft_marks_and_opens_changed_input_immediately(page):
     page.locator('#pop .th .hd button').click()
     expect(title.locator('textarea')).to_have_value('Old title')
     expect(title).not_to_have_class(re.compile('bib-proposed'))
-    resources = page.request.get(f'/api/projects/{project}/resources').json()['resources']
-    assert next(r for r in resources if r['name'] == 'sources.bib')['content'] == base
+    assert file_text(page.request, project, 'sources.bib') == base
 
 
 def test_bib_form_adds_custom_field(page):
@@ -112,7 +110,7 @@ def test_bib_form_adds_custom_field(page):
     document = next(d for d in page.request.get('/api/docs').json()['own'] if d['title'] == 'Added field')
     project = document['project_id']
     base = '@book{key, title={Sample}, author={Doe, Jane}, year={2026}}\n'
-    assert page.request.post(f'/api/projects/{project}/resources', data={'name': 'sources.bib', 'content': base}).ok
+    assert put_file(page.request, project, 'sources.bib', base).ok
     page.reload()
     page.locator('#own .doc .t').filter(has_text='Added field').click()
     page.locator('#own .doc .t').filter(has_text='sources.bib').click()
@@ -122,11 +120,10 @@ def test_bib_form_adds_custom_field(page):
     isbn = page.locator('.bibField').filter(has=page.locator('span', has_text=re.compile('^isbn$')))
     expect(isbn.locator('input')).to_be_focused()
     expect(page.locator('#cm .cm-content')).not_to_contain_text('isbn')  # the empty row never reaches the document
-    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith(f'/api/projects/{project}/resources') and 'isbn = {978-3-16-148410-0}' in (r.request.post_data or ''), timeout=15_000) as saved:
+    with page.expect_response(lambda r: r.request.method == 'PUT' and f'/api/projects/{project}/files/' in r.url and 'isbn = {978-3-16-148410-0}' in (r.request.post_data or ''), timeout=15_000) as saved:
         isbn.locator('input').fill('978-3-16-148410-0')
     assert saved.value.ok
-    resources = page.request.get(f'/api/projects/{project}/resources').json()['resources']
-    assert 'isbn = {978-3-16-148410-0}' in next(r for r in resources if r['name'] == 'sources.bib')['content']
+    assert 'isbn = {978-3-16-148410-0}' in file_text(page.request, project, 'sources.bib')
 
 
 def test_bib_form_pending_field_survives_entry_rename(page):
@@ -135,7 +132,7 @@ def test_bib_form_pending_field_survives_entry_rename(page):
     document = next(d for d in page.request.get('/api/docs').json()['own'] if d['title'] == 'Pending rename')
     project = document['project_id']
     base = '@book{first, title={Sample}}\n@misc{second, title={Other}}\n'
-    assert page.request.post(f'/api/projects/{project}/resources', data={'name': 'sources.bib', 'content': base}).ok
+    assert put_file(page.request, project, 'sources.bib', base).ok
     page.reload()
     page.locator('#own .doc .t').filter(has_text='Pending rename').click()
     page.locator('#own .doc .t').filter(has_text='sources.bib').click()
@@ -149,10 +146,10 @@ def test_bib_form_pending_field_survives_entry_rename(page):
     page.locator('.bibMoreFields summary').click()
     isbn = page.locator('.bibField[data-field="isbn"]')
     expect(isbn.locator('input')).to_have_value('')
-    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith(f'/api/projects/{project}/resources') and 'isbn = {978-3-16-148410-0}' in (r.request.post_data or ''), timeout=15_000) as saved:
+    with page.expect_response(lambda r: r.request.method == 'PUT' and f'/api/projects/{project}/files/' in r.url and 'isbn = {978-3-16-148410-0}' in (r.request.post_data or ''), timeout=15_000) as saved:
         isbn.locator('input').fill('978-3-16-148410-0')
     assert saved.value.ok
-    content = next(r for r in page.request.get(f'/api/projects/{project}/resources').json()['resources'] if r['name'] == 'sources.bib')['content']
+    content = file_text(page.request, project, 'sources.bib')
     assert content.startswith('@book{renamed,')
     assert 'isbn = {978-3-16-148410-0}' in content
 
@@ -163,7 +160,7 @@ def test_bib_form_add_field_rejects_duplicate_invalid_and_cancel(page):
     document = next(d for d in page.request.get('/api/docs').json()['own'] if d['title'] == 'Field checks')
     project = document['project_id']
     base = '@book{key, title={Sample}, author={Doe, Jane}, year={2026}}\n'
-    assert page.request.post(f'/api/projects/{project}/resources', data={'name': 'sources.bib', 'content': base}).ok
+    assert put_file(page.request, project, 'sources.bib', base).ok
     page.reload()
     page.locator('#own .doc .t').filter(has_text='Field checks').click()
     page.locator('#own .doc .t').filter(has_text='sources.bib').click()
@@ -183,8 +180,7 @@ def test_bib_form_add_field_rejects_duplicate_invalid_and_cancel(page):
     page.fill('#mInp', 'isbn')
     page.click('#mNo')
     expect(page.locator('.bibField').filter(has=page.locator('span', has_text=re.compile('^isbn$')))).to_have_count(0)
-    resources = page.request.get(f'/api/projects/{project}/resources').json()['resources']
-    assert next(r for r in resources if r['name'] == 'sources.bib')['content'] == base
+    assert file_text(page.request, project, 'sources.bib') == base
 
 
 def test_bib_form_add_field_accepts_ui_label_names(page):
@@ -193,7 +189,7 @@ def test_bib_form_add_field_accepts_ui_label_names(page):
     document = next(d for d in page.request.get('/api/docs').json()['own'] if d['title'] == 'Field labels')
     project = document['project_id']
     base = '@book{key, title={Sample}, author={Doe, Jane}, year={2026}}\n'
-    assert page.request.post(f'/api/projects/{project}/resources', data={'name': 'sources.bib', 'content': base}).ok
+    assert put_file(page.request, project, 'sources.bib', base).ok
     page.reload()
     page.locator('#own .doc .t').filter(has_text='Field labels').click()
     page.locator('#own .doc .t').filter(has_text='sources.bib').click()
@@ -205,10 +201,10 @@ def test_bib_form_add_field_accepts_ui_label_names(page):
         expect(row.locator('input')).to_have_count(1)
         expect(row.locator('span').first).to_have_text(name)
         assert row.evaluate('r => !!r.closest(".bibMoreFields")')
-        with page.expect_response(lambda r, name=name, value=value: r.request.method == 'POST' and r.url.endswith(f'/api/projects/{project}/resources') and f'{name} = {{{value}}}' in (r.request.post_data or ''), timeout=15_000) as saved:
+        with page.expect_response(lambda r, name=name, value=value: r.request.method == 'PUT' and f'/api/projects/{project}/files/' in r.url and f'{name} = {{{value}}}' in (r.request.post_data or ''), timeout=15_000) as saved:
             row.locator('input').fill(value)
         assert saved.value.ok
-    content = next(r for r in page.request.get(f'/api/projects/{project}/resources').json()['resources'] if r['name'] == 'sources.bib')['content']
+    content = file_text(page.request, project, 'sources.bib')
     assert 'Type = {article}' in content
     assert 'constructor = {value}' in content
 
@@ -221,9 +217,9 @@ def test_csv_review_accepts_and_discards_only_clicked_cell(page):
     project = document['project_id']
     base = 'a,b,c,d\n1,2,,\n3,4,,\n'
     content = 'a,b,c,d\n1,2,first,\n3,4,,second\n'
-    assert page.request.post(f'/api/projects/{project}/resources', data={'name': 'data.csv', 'content': base}).ok
+    assert put_file(page.request, project, 'data.csv', base).ok
     response = page.request.post(f'/api/projects/{project}/proposals', data={'title': 'Two cells', 'files': [{
-        'kind': 'resource', 'path': 'data.csv', 'action': 'modify', 'base': base, 'content': content,
+        'kind': 'file', 'path': 'data.csv', 'action': 'modify', 'base': base, 'content': content,
         'changes': [{'old_string': base, 'new_string': content}],
     }]})
     assert response.ok, response.text()
@@ -244,9 +240,8 @@ def test_csv_review_accepts_and_discards_only_clicked_cell(page):
     expect(page.locator('#pop .bar b')).to_have_text('C2')
     page.locator('#pop .th .hd button').first.click()
     page.wait_for_function('window.changeSession?.package?.accepted === 1 && !window.changeSession.busy')
-    resources = page.request.get(f'/api/projects/{project}/resources').json()['resources']
     expected = 'a,b,c,d\n1,2,first,\n3,4,,\n'
-    assert next(r for r in resources if r['name'] == 'data.csv')['content'] == expected
+    assert file_text(page.request, project, 'data.csv') == expected
     page.locator('.csvEditor input[aria-label="D3"]').click()
     expect(page.locator('#pop .proposalCells tr')).to_have_count(1)
     expect(page.locator('#pop .proposalCells th')).to_have_text('D3')
@@ -267,10 +262,10 @@ def test_project_deletions_stage_undo_and_accept_without_live_delete(page, kind)
     if kind == 'document':
         target_doc = page.request.post(f'/api/projects/{project}/docs', data={'title': name, 'content': 'Target source'}).json()['id']
     elif kind == 'module':
-        assert page.request.post(f'/api/projects/{project}/resources', data={'name': name, 'content': 'Module source'}).ok
+        assert put_file(page.request, project, name, 'Module source').ok
     else:
         image = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==')
-        assert page.request.post(f'/api/docs/{target_doc}/files', multipart={'f': {'name': name, 'mimeType': 'image/png', 'buffer': image}}).ok
+        assert put_file(page.request, project, name, image).ok
     page.reload()
     page.locator('#own .doc .t').filter(has_text='Delete review').click()
     expect(page.locator('#title')).to_have_text('Delete review')
@@ -284,10 +279,8 @@ def test_project_deletions_stage_undo_and_accept_without_live_delete(page, kind)
     expect(row).to_have_class(re.compile('package-deleted'))
     assert '−' in row.locator('.t').evaluate('n => getComputedStyle(n, "::before").content')
     assert page.request.get(f'/api/docs/{target_doc}').ok
-    if kind == 'file':
-        assert page.request.get(f'/api/docs/{target_doc}/files/{name}').ok
-    elif kind == 'module':
-        assert any(r['name'] == name for r in page.request.get(f'/api/projects/{project}/resources').json()['resources'])
+    if kind != 'document':
+        assert name in file_paths(page.request, project)
     row.locator('.t').click()
     expect(page.locator('#title')).to_have_text(name)
     expect(page.locator('#tabs .tabw.on')).to_have_class(re.compile('package-deleted'))
@@ -327,10 +320,8 @@ def test_project_deletions_stage_undo_and_accept_without_live_delete(page, kind)
     expect(page.locator('#title')).to_have_text('Delete review')
     if kind == 'document':
         assert page.request.get(f'/api/docs/{target_doc}').status == 410
-    elif kind == 'file':
-        assert page.request.get(f'/api/docs/{target_doc}/files/{name}').status == 404
     else:
-        assert all(r['name'] != name for r in page.request.get(f'/api/projects/{project}/resources').json()['resources'])
+        assert name not in file_paths(page.request, project)
 
 
 def test_reviewer_can_stage_project_document_and_module_deletions_immediately(page, browser, base_url):
@@ -340,7 +331,7 @@ def test_reviewer_can_stage_project_document_and_module_deletions_immediately(pa
     document = next(d for d in page.request.get('/api/docs').json()['own'] if d['title'] == 'Shared delete')
     project = document['project_id']
     target = page.request.post(f'/api/projects/{project}/docs', data={'title': 'Target', 'content': 'Target source'}).json()['id']
-    assert page.request.post(f'/api/projects/{project}/resources', data={'name': 'layout.typ', 'content': 'Module source'}).ok
+    assert put_file(page.request, project, 'layout.typ', 'Module source').ok
     other = browser.new_context(base_url=base_url, locale="en-US")
     try:
         peer = other.new_page()
@@ -359,7 +350,7 @@ def test_reviewer_can_stage_project_document_and_module_deletions_immediately(pa
             peer.locator('#menu button').filter(has_text='Move to trash').click()
             expect(row).to_have_class(re.compile('package-deleted'))
         assert page.request.get(f'/api/docs/{target}').ok
-        assert any(r['name'] == 'layout.typ' for r in page.request.get(f'/api/projects/{project}/resources').json()['resources'])
+        assert 'layout.typ' in file_paths(page.request, project)
     finally:
         other.close()
 
@@ -406,7 +397,7 @@ def test_staged_delete_and_rename_can_be_discarded_per_file(page):
     document = next(d for d in page.request.get('/api/docs').json()['own'] if d['title'] == 'File undo')
     project = document['project_id']
     source = 'Original resource text'
-    assert page.request.post(f'/api/projects/{project}/resources', data={'name': 'notes.typ', 'content': source}).ok
+    assert put_file(page.request, project, 'notes.typ', source).ok
     page.reload()
     page.locator('#own .doc .t').filter(has_text='File undo').click()
     expect(page.locator('#title')).to_have_text('File undo')
@@ -431,9 +422,8 @@ def test_staged_delete_and_rename_can_be_discarded_per_file(page):
         page.wait_for_function("[...window.changeSession.files.values()].every(f => f.action === 'modify' && f.content === f.base)")
         expect(page.locator('#cm .cm-content')).to_have_attribute('contenteditable', 'true')
         expect(page.locator('#title')).to_have_text('notes.typ')
-    resources = page.request.get(f'/api/projects/{project}/resources').json()['resources']
-    assert next(r for r in resources if r['name'] == 'notes.typ')['content'] == source
-    assert all(r['name'] != 'renamed.typ' for r in resources)
+    assert file_text(page.request, project, 'notes.typ') == source
+    assert 'renamed.typ' not in file_paths(page.request, project)
 
 
 def test_starting_proposal_blocks_source_edits_until_ready(page):
@@ -471,7 +461,7 @@ def test_review_across_empty_document_and_resource_toggle_preserve_view(page):
     document = page.request.post('/api/docs/create', data={'title': 'Report', 'content': base}).json()['id']
     project = page.request.get(f'/api/docs/{document}').json()['project_id']
     assert page.request.post(f'/api/projects/{project}/docs', data={'title': 'Empty', 'content': ''}).ok
-    assert page.request.post(f'/api/projects/{project}/resources', data={'name': 'sources.bib', 'content': '@book{key, title={Writing}, year={2026}}\n'}).ok
+    assert put_file(page.request, project, 'sources.bib', '@book{key, title={Writing}, year={2026}}\n').ok
     response = page.request.post(f'/api/projects/{project}/proposals', data={'title': 'Review offsets', 'files': [{
         'kind': 'document', 'doc_id': document, 'path': 'main.typ', 'action': 'modify',
         'base': base, 'content': base.replace('offset', 'position'),
@@ -541,9 +531,9 @@ def test_own_repetitive_csv_proposal_can_be_viewed_and_withdrawn(page):
     old = ',,,\n' * 5
     new = ',,,\n,,,\n,,changed,\n,,,\n,,,\n'
     content = base.replace(old, new, 1)
-    assert page.request.post(f'/api/projects/{project}/resources', data={'name': 'data.csv', 'content': base}).ok
+    assert put_file(page.request, project, 'data.csv', base).ok
     response = page.request.post(f'/api/projects/{project}/proposals', data={'title': 'My CSV suggestion', 'files': [{
-        'kind': 'resource', 'path': 'data.csv', 'action': 'modify', 'base': base, 'content': content,
+        'kind': 'file', 'path': 'data.csv', 'action': 'modify', 'base': base, 'content': content,
         'changes': [{'old_string': old, 'new_string': new}],
     }]})
     assert response.ok, response.text()
@@ -564,8 +554,7 @@ def test_own_repetitive_csv_proposal_can_be_viewed_and_withdrawn(page):
     page.click('#mYes')
     page.wait_for_function('!window.changeSession')
     assert page.request.get(f'/api/projects/{project}/proposals').json()['packages'] == []
-    resources = page.request.get(f'/api/projects/{project}/resources').json()['resources']
-    assert next(r for r in resources if r['name'] == 'data.csv')['content'] == base
+    assert file_text(page.request, project, 'data.csv') == base
 
 
 def test_upload_in_proposal_is_submitted_without_writing_source(page):
@@ -584,7 +573,7 @@ def test_upload_in_proposal_is_submitted_without_writing_source(page):
     expect(page.locator('#suggestionToggle')).to_have_attribute('aria-pressed', 'false')
     docs = page.request.get('/api/docs').json()['own']
     document = next(d for d in docs if d['title'] == 'Proposal')
-    assert page.request.get(f'/api/docs/{document["id"]}/files/draft.csv').status == 404
+    assert 'draft.csv' not in file_paths(page.request, document['project_id'])
     url = f'/api/projects/{document["project_id"]}/proposals'
     packages = page.request.get(url).json()['packages']
     assert len(packages) == 1

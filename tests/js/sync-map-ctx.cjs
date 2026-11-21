@@ -6,8 +6,8 @@ const settings = read('90-settings.js')
 const MAP_SRC = settings.slice(settings.indexOf('function pvMathNorm'), settings.indexOf('function pvSrcMath')) + read('89-sync-map.js') + `
 var pvTexts = [], pvLinks = [], pvTextDone = [], pvMetaGen = 0, smDocs = []
 function pvSrcList() { return smDocs }
-function isTplKey(k) { return String(k).startsWith('@tpl/') }
-function tabName(k) { k = String(k); return (k.startsWith('@tpl/') ? k.slice(5) : k) || 'main.typ' }
+var docFolder = ''
+function tabName(k) { return String(k) || 'main.typ' }
 function pvMathMatch() { return [] }
 function pvImgMatch() { return [] }
 `

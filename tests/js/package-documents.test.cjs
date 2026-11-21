@@ -46,9 +46,9 @@ test('discarding an active added document keeps the project draft and returns to
   assert.equal(c.window.changeSession, c.session)
 })
 
-test('sidebar selection follows added document and attachment tabs instead of their source document', () => {
+test('sidebar selection follows added document and project file tabs instead of their source document', () => {
   const c = context()
-  const keys = ['document:d_existing:', 'document:d_new:', 'file:d_existing:pixel.png']
+  const keys = ['document:d_existing:', 'document:d_new:', 'file::pixel.png']
   const rows = keys.map(key => ({ dataset: { packageKey: key }, current: false,
     closest: () => ({ dataset: { projectId: 'p_test' } }),
     classList: { toggle: (_name, value) => { rows[keys.indexOf(key)].current = value } } }))
@@ -100,7 +100,7 @@ test('inline add and rename acceptance uses file actions instead of missing text
   assert.deepEqual(calls, [['added'], ['renamed']])
 })
 
-test('leaving an added document tab restores source without requesting a nonexistent attachment', async () => {
+test('leaving an added document tab restores source without requesting a nonexistent file', async () => {
   const c = context()
   let text
   Object.assign(c, { sessionStashTimer: 0, clearTimeout: () => {}, packageDraft: async () => {}, sessionStashKey: () => 'draft',
@@ -123,7 +123,7 @@ test('accepting a document rename refreshes the current document title immediate
   c.session.files = new Map([['document:d_existing:', { id: 'pf_doc', kind: 'document', doc_id: 'd_existing', path: '', action: 'rename', target: 'New name' }]])
   Object.assign(c, { activeFile: '', docTitle: 'Old name', saveSessionCorrections: async () => true,
     cm: { dispatch: () => {} }, editableComp: { reconfigure: () => {} }, editMode: () => {}, paintFileExtras: () => {},
-    paintSuggestionControls: () => {}, sessionUrl: () => '/proposals/sp_test', loadDocResources: async () => {}, projectResources: () => [],
+    paintSuggestionControls: () => {}, sessionUrl: () => '/proposals/sp_test', loadProjectFiles: async () => true,
     api: async () => ({ files: [], revision: 2 }), threads: [], initRanges: () => {}, invalidateCommentCache: () => {},
     fileCache: new Map(), closePop: () => {}, endChangeSession: async (...args) => { endArgs = args; c.window.changeSession = null },
     toast: message => { throw Error(message) } })
@@ -171,7 +171,7 @@ test('accepted revision survives a failed refresh and a rename with pending cont
     cm: { dispatch: () => {} }, editableComp: { reconfigure: () => {} }, editMode: () => {},
     paintFileExtras: () => {}, paintSuggestionControls: () => {}, sessionActivate: async () => {},
     sessionUrl: () => '/proposal', toast: () => {}, sessionRuntime: f => f,
-    loadDocResources: async () => { throw Error('refresh failed') }, api: async () => ({ revision: 2, files: [pending] }) })
+    loadProjectFiles: async () => { throw Error('refresh failed') }, api: async () => ({ revision: 2, files: [pending] }) })
   vm.runInContext(packages.slice(packages.indexOf('async function acceptSessionSelection'), packages.indexOf('async function deleteSelectedPackage')), c)
   await c.acceptSessionSelection('doc', '@action')
   assert.equal(c.session.package.revision, 2)
@@ -181,7 +181,7 @@ test('accepted revision survives a failed refresh and a rename with pending cont
 })
 
 
-test('accepting current document deletion closes review without fetching trashed resources', async () => {
+test('accepting current document deletion closes review without fetching trashed project files', async () => {
   for (const tab of ['', 'style.typ']) {
     const c = context()
     c.session.package = { revision: 1 }
@@ -192,7 +192,7 @@ test('accepting current document deletion closes review without fetching trashed
       cm: { dispatch: () => {} }, editableComp: { reconfigure: () => {} }, editMode: () => {},
       paintFileExtras: () => {}, paintSuggestionControls: () => {}, sessionUrl: () => '/proposal',
       api: async () => ({ revision: 2, files: [] }), threads: [], initRanges: () => {}, invalidateCommentCache: () => {},
-      fileCache: new Map(), closePop: () => {}, loadDocResources: async () => assert.fail('trashed resources requested'),
+      fileCache: new Map(), closePop: () => {}, loadProjectFiles: async () => assert.fail('trashed project files requested'),
       closeView: () => closed++, endChangeSession: async () => { assert.equal(c.activeFile, ''); ended++; c.window.changeSession = null },
       toast: message => assert.fail(message) })
     vm.runInContext(packages.slice(packages.indexOf('async function acceptSessionSelection'), packages.indexOf('async function deleteSelectedPackage')), c)
@@ -228,7 +228,7 @@ test('ending acceptance preserves main and module views instead of restoring old
       localStorage: { removeItem() {} }, fileCache: new Map(), shadow: 'Accepted source',
       setT: (...args) => { restored = args }, cm: { dispatch() {} }, editableComp: { reconfigure() {} }, editMode() {}, tabCanEdit: () => true,
       paintTabs() {}, paintFileExtras() {}, paintOutline() {}, reanchor() {}, refreshHl() {}, queueRender() {}, paintSuggestionControls() {},
-      sidebar: async () => {}, loadDocResources: async () => {}, sessionOriginalSwitchTab: async (...args) => { switched = args; return true } })
+      sidebar: async () => {}, loadProjectFiles: async () => {}, sessionOriginalSwitchTab: async (...args) => { switched = args; return true } })
     vm.runInContext(packages.slice(packages.indexOf('async function endChangeSession'), packages.indexOf('async function choosePackage')), c)
     await c.endChangeSession(true, true)
     if (key) assert.deepEqual(switched, [key, true, true])
@@ -245,7 +245,7 @@ test('last acceptance restores accepted text even before its websocket echo arri
     let restored
     Object.assign(c, { activeFile: '', shadow, saveSessionCorrections: async () => true, cm: { dispatch() {} },
       editableComp: { reconfigure() {} }, editMode() {}, paintFileExtras() {}, paintSuggestionControls() {},
-      sessionUrl: () => '/proposals/sp_test', loadDocResources: async () => {}, projectResources: () => [],
+      sessionUrl: () => '/proposals/sp_test', loadProjectFiles: async () => true,
       api: async () => ({ files: [], revision: 2 }), threads: [], initRanges() {}, invalidateCommentCache() {},
       fileCache: new Map(), closePop() {}, endChangeSession: async (_discard, _preserve, text) => { restored = text; c.window.changeSession = null },
       toast: message => { throw Error(message) } })

@@ -733,7 +733,7 @@ try { // the editor view: a reader scroll moves the preview in step, not only th
   }, { passive: true })
 } catch (e) {}
 let syncEdT = 0
-function syncEdTab() { return !!activeFile && !window.changeSession && /.typ$/i.test(activeFile) && !isTplKey(activeFile) } // an included chapter is on the page too: its own text can follow the reading point
+function syncEdTab() { return !!activeFile && !window.changeSession && /.typ$/i.test(activeFile) } // an included chapter is on the page too: its own text can follow the reading point
 function queueSyncEd() { // preview scroll -> editor view: throttled, never moves the cursor
   if (!followAll || !docId || tplName || (activeFile && !syncEdTab())) return
   if (syncEdT) return
@@ -859,7 +859,7 @@ function pvFileAnchor(key, main) { // main line where a text file enters the pag
   for (let i = 0; i < mask.length; i++) {
     const m = mask[i].match(/(?:^|[#=({,;]|\blet\s+\w+\s*=)\s*(include|import)\s*\(?\s*(?:<([^>]+)>|"([^"]+)"|([^\s:,)]+))/) // #include "a.typ", #include("a.typ"), #let x = include "a.typ", #{ include "a.typ" }
     if (!m) continue
-    const path = String(m[2] || m[3] || m[4] || '').replace(/^\.?\//, '').replace(/\.typ$/i, '')
+    const path = smPath(docFolder ? docFolder + '/' : '', String(m[2] || m[3] || m[4] || '')).replace(/\.typ$/i, '') // the document's relative paths start in its folder
     if (path === want) { if (m[1] === 'include') return i + 1; if (!weak) weak = i + 1 }
     else if (path.split('/').pop() === base && !loose) loose = m[1] === 'include' ? i + 1 : 0
   }
@@ -2021,7 +2021,7 @@ function pvGuessLine(line, sec) { // no text anchor at all: proportional inside 
 function syncToPv(force) { // force: explicit navigation (outline/find), works even with follow off
   const edge = force ? 0 : syncEdge // read once: a stale end from an earlier editor scroll never steers a later sync
   syncEdge = 0
-  const fileTab = !!activeFile && !window.changeSession && /\.typ$/i.test(activeFile) && !isTplKey(activeFile) // an included chapter is on the page too: its text and its own headings (also in the PDF outline) anchor it
+  const fileTab = !!activeFile && !window.changeSession && /\.typ$/i.test(activeFile) // an included chapter is on the page too: its text and its own headings (also in the PDF outline) anchor it
   if ((!followAll && !force) || !docId || tplName || (activeFile && !window.changeSession && !fileTab)) return
   if (scrollRestore && !scrollRestore.pv) return // reopened doc: saved preview spot wins over the first follow
   const pv = $('preview')

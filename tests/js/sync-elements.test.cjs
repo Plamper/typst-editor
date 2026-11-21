@@ -64,7 +64,8 @@ test('a numbered display formula is still a display formula', () => {
 })
 
 function viewCtx() {
-  const c = vm.createContext({ posOfLine, tabName: k => k, srcMask: null })
+  const c = vm.createContext({ posOfLine, tabName: k => k, srcMask: null, docFolder: '' })
+  vm.runInContext(slice(read('89-sync-map.js'), 'function smPath', 'function smIncludes'), c)
   vm.runInContext(slice(preview, 'function srcMask', 'function srcHeadings'), c)
   vm.runInContext(slice(settings, 'const SRC_MATH', 'function srcObjs'), c)
   vm.runInContext('const srcObjCache = new Map();' + slice(settings, 'function srcObjs', 'const srcObjCache'), c)
@@ -99,6 +100,9 @@ test('an include resolves by full path first and in every common form', () => {
   assert.equal(c.pvFileAnchor('chapters/intro.typ', main), 3) // same file name in another folder never wins
   assert.equal(c.pvFileAnchor('chapters/two.typ', main), 4)
   assert.equal(c.pvFileAnchor('appendix/intro.typ', main), 2)
+  c.docFolder = 'chapters' // a document in a folder includes relative to it
+  assert.equal(c.pvFileAnchor('appendix/intro.typ', '= A\n#include "../appendix/intro.typ"'), 2)
+  assert.equal(c.pvFileAnchor('chapters/two.typ', '= A\n#include "two.typ"'), 2)
 })
 test('the structure mask reads left to right: raw and URLs hide comment starters, headings may be functions', () => {
   const c = vm.createContext({})

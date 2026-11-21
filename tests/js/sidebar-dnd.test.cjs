@@ -35,12 +35,12 @@ test('private module drag permits moving into trash and restoring to modules', (
   assert.equal(event.dataTransfer.dropEffect, 'move')
   assert.equal(c.sidebarCanDrop({ trashed: true, trashId: 'tr_1', entry: { kind: 'personal', name: 'module.typ' } }, 'modules'), true)
 })
-test('module drop copies a project resource to the private collection', async () => {
+test('module drop copies a project text file to the private collection', async () => {
   let copied
-  const c = context({ pullLibrary: (...args) => copied = args })
+  const c = context({ copyFileToPersonal: (...args) => copied = args })
   const target = row(); c.sidebarDropTarget(target, 'modules')
-  await target.ondrop(drop({ project: 'p', entry: { kind: 'resource', name: 'module.typ' } }))
-  assert.deepEqual(plain(copied), [{ source_scope: 'project', source_project_id: 'p', source: 'module.typ' }, { scope: 'personal' }])
+  await target.ondrop(drop({ project: 'p', entry: { kind: 'file', name: 'module.typ' } }))
+  assert.deepEqual(plain(copied), ['p', 'module.typ'])
 })
 test('trash only accepts live documents and restoration accepts trashed documents', () => {
   const c = context()

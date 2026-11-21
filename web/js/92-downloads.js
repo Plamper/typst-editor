@@ -51,7 +51,7 @@ async function dlSvgClient() {
   try {
     if (!$typst.svg) throw new Error(t('downloads.svgUnknown'))
     if (!await shadowAll(activeFile ? shadow : getT()) || doc !== docId || epoch !== openN) return
-    const svg = (await $typst.svg({ mainFilePath: '/__doc__.typ' }))
+    const svg = (await $typst.svg({ mainFilePath: docMain() }))
       .replace(/&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)/g, '&amp;') // raw & (text/CSV/URL) breaks XML
     if (doc !== docId || epoch !== openN) return
     dlBlob(new Blob([svg], { type: 'image/svg+xml' }), name)
@@ -63,7 +63,7 @@ async function dlPdfClient() {
   const doc = docId, epoch = openN, name = dlName('.pdf')
   try {
     if (!await shadowAll(activeFile ? shadow : getT()) || doc !== docId || epoch !== openN) return
-    const pdf = await $typst.pdf({ mainFilePath: '/__doc__.typ' })
+    const pdf = await $typst.pdf({ mainFilePath: docMain() })
     if (doc !== docId || epoch !== openN) return
     dlBlob(new Blob([pdf], { type: 'application/pdf' }), name)
   } catch (e) { toast(t('downloads.pdfError', { msg: e.message })) }
@@ -137,14 +137,14 @@ $('dlPng').onclick = () => openExportDlg('png')
 $('dlSvg').onclick = () => openExportDlg('svg')
 $('dlTyp').onclick = () => {
   if (!docId && !tplName) return
-  if (docId && activeFile && !isTplKey(activeFile) && !TEXT_EXT.test(activeFile)) {
+  if (docId && activeFile && !TEXT_EXT.test(activeFile)) {
     const session = window.changeSession, proposed = session?.files.get(sessionKey(sessionCurrent()))
     if (proposed) {
       const bytes = sessionBytes(proposed, session.original)
       if (bytes == null) { toast(t('packages.fileAbsent')); return }
       dlBlob(new Blob([bytes]), !session.original && proposed.action === 'rename' ? proposed.target : activeFile); return
     }
-    const a = document.createElement('a'); a.href = `/api/docs/${docId}/files/${encodeURIComponent(activeFile)}`; a.download = activeFile; a.click(); return
+    const a = document.createElement('a'); a.href = fileUrl(activeFile); a.download = activeFile.split('/').pop(); a.click(); return
   }
   dlBlob(new Blob([getT()], { type: 'text/plain;charset=utf-8' }), (tplName || (activeFile ? tabName(activeFile) : dlName('.typ'))))
 }

@@ -10,72 +10,74 @@ function node(tag, cls, text) { // just enough DOM for structured dialog bodies
 function setup(extra = {}) {
   const c = vm.createContext({ el: node, lastOwn: [], lastShared: [], docId: 'd', docProject: 'p', openN: 1, activeFile: '', docResReadonly: false,
     flushTab: async () => true, flushTpl: async () => true, loadTpl: async () => {},
-    loadDocResources: async () => true, sidebar: async () => {}, sidebarFresh: async () => {}, t: x => x, toast: () => {}, tabRemapEntry: () => {}, tabRemapPrefix: () => {}, ...extra })
+    loadProjectFiles: async () => true, fileUrl: (path, project = 'p') => '/api/projects/' + project + '/files/' + path, docFolder: '',
+    refTo: path => path, sidebar: async () => {}, sidebarFresh: async () => {}, t: x => x, toast: () => {}, tabRemapEntry: () => {}, tabRemapPrefix: () => {}, ...extra })
   vm.runInContext(source, c)
   return c
 }
 
-test('new resource opens the normalized server name', async () => {
-  let opened
+test('a new project file opens under the normalized server path', async () => {
+  let opened, put
   const c = setup({ chooseFileType: async () => '.typ', ask: async () => 'Änderungen',
     fileStart: () => '', shut: new Set(), saveShut: () => {}, projects: [{ id: 'p', documents: [{ id: 'd' }] }],
-    api: async () => ({ name: '_nderungen.typ' }) })
+    putFile: async url => { put = url; return { path: '_nderungen.typ' } } })
   c.openProjectEntry = async (_p, _doc, name) => { opened = name }
   await c.newProjectResource('p')
+  assert.equal(put, '/api/projects/p/files/Änderungen.typ')
   assert.equal(opened, '_nderungen.typ')
 })
 
-test('delete missing module reports the race without issuing a write', async () => {
+test('deleting a missing file reports the race without issuing a write', async () => {
   let writes = 0, message
   const c = setup({ ask: async () => true, toast: value => { message = value },
-    api: async method => { if (method !== 'GET') writes++; return { resources: [] } } })
-  await c.deleteProjectEntry({ id: 'p' }, 'gone.typ', 'd', true)
+    api: async method => { if (method !== 'GET') writes++; return { files: [] } } })
+  await c.deleteProjectEntry({ id: 'p' }, 'gone.typ')
   assert.equal(writes, 0)
   assert.equal(message, 'files.tplGone')
-  await c.deleteProjectEntry(undefined, 'gone.typ', 'd', true)
+  await c.deleteProjectEntry(undefined, 'gone.typ')
   assert.equal(message, 'projects.contextGone')
 })
 
-test('rename confirmation lists references and submits the preview version', async () => {
+test('deleting a file trashes the version the list shows', async () => {
+  const calls = []
+  const c = setup({ ask: async () => true, queueRender: () => {}, api: async (method, url) => { calls.push([method, url]); return { files: [{ path: 'img/a.png', version: 'v7' }] } } })
+  await c.deleteProjectEntry({ id: 'p' }, 'img/a.png')
+  assert.deepEqual(calls.map(x => x.join(' ')), ['GET /api/projects/p/files', 'DELETE /api/projects/p/files/img/a.png?version=v7'])
+})
+
+test('rename confirmation lists references and moves with the preview version, fixing references', async () => {
   const prompts = [], writes = []
   const c = setup({ ask: async (label, opts) => { prompts.push(opts?.body ? opts.body.all() : label); return opts?.noInput ? true : 'new.typ' },
     api: async (_method, url, body) => {
-      if (url.endsWith('-preview')) return { name: 'new.typ', version: 'v1', references: ['Doc/main.typ: old.typ'] }
-      writes.push(body); return { name: 'new.typ' }
-    }, TPLK: '@', filesDirty: false, tabSig: '', queueRender: () => {} })
-  await c.renameProjectEntry({ id: 'p' }, 'old.typ', 'd', true)
+      if (url.endsWith('-preview')) return { path: 'new.typ', version: 'v1', references: ['Doc/main.typ: old.typ'] }
+      writes.push([url, body]); return { path: 'new.typ' }
+    }, filesDirty: false, tabSig: '', queueRender: () => {} })
+  await c.renameProjectEntry({ id: 'p' }, 'old.typ')
   assert.ok(prompts[1].includes('Doc/main.typ: old.typ'))
-  assert.equal(writes[0].version, 'v1')
+  assert.equal(writes[0][0], '/api/projects/p/files-move')
+  assert.equal(JSON.stringify(writes[0][1]), JSON.stringify({ path: 'old.typ', target: 'new.typ', version: 'v1', fix_refs: true }))
 })
 
 test('late rename completion cannot reset a different document draft', async () => {
   let finish
-  const c = setup({ TPLK: '@tpl/', ask: async (_label, opts) => opts?.noInput ? true : 'new.typ',
-    api: async (_method, url) => url.endsWith('-preview') ? { name: 'new.typ', version: 'v1', references: [] } : new Promise(r => { finish = r }),
-    queueRender: () => assert.fail('new document must remain untouched') })
-  const pending = c.renameProjectEntry({ id: 'p' }, 'old.typ', 'd', true)
-  while (!finish) await Promise.resolve()
-  c.docId = 'other'; c.openN = 2; c.activeFile = '@tpl/old.typ'; c.tabDirty = true
-  finish({ name: 'new.typ', version: 'v2' }); await pending
-  assert.equal(c.activeFile, '@tpl/old.typ')
+  const c = setup({ ask: async (_label, opts) => opts?.noInput ? true : 'new.typ',
+    api: async (_method, url) => url.endsWith('-preview') ? { path: 'new.typ', version: 'v1', references: [] } : new Promise(r => { finish = r }),
+    queueRender: () => assert.fail('new document must remain untouched'), switchTab: async () => assert.fail('no switch in another document') })
+  const pending = c.renameProjectEntry({ id: 'p' }, 'old.typ')
+  while (!finish) await new Promise(r => setImmediate(r))
+  c.docId = 'other'; c.openN = 2; c.activeFile = 'old.typ'; c.tabDirty = true
+  finish({ path: 'new.typ' }); await pending
+  assert.equal(c.activeFile, 'old.typ')
   assert.equal(c.tabDirty, true)
 })
 
-test('typing during rename survives under the normalized new name and version', async () => {
-  let finish, saves = 0
-  const c = setup({ TPLK: '@tpl/', activeFile: '@tpl/old.typ', tabDirty: false, fileT: 0,
-    clearTimeout: () => {}, tabState: new Map(), tabVersions: new Map(), tabPins: new Set(['old.typ']),
-    ask: async (_label, opts) => opts?.noInput ? true : 'new.typ',
-    api: async (_method, url) => url.endsWith('-preview') ? { name: 'new.typ', version: 'v1', references: [] } : new Promise(r => { finish = r }),
-    queueRender: () => {}, queueFileSave: () => { saves++ } })
-  const pending = c.renameProjectEntry({ id: 'p' }, 'old.typ', 'd', true)
-  while (!finish) await Promise.resolve()
-  c.tabDirty = true
-  finish({ name: 'new.typ', version: 'v2' }); await pending
-  assert.equal(c.activeFile, '@tpl/new.typ')
-  assert.equal(c.tabVersions.get('@tpl/new.typ'), 'v2')
-  assert.equal(c.tabDirty, true)
-  assert.equal(saves, 1)
+test('a renamed open file tab reopens under its new path', async () => {
+  const switches = []
+  const c = setup({ activeFile: 'old.typ', ask: async (_label, opts) => opts?.noInput ? true : 'new.typ',
+    api: async (_method, url) => url.endsWith('-preview') ? { path: 'new.typ', version: 'v1', references: [] } : { path: 'new.typ' },
+    queueRender: () => {}, switchTab: async name => { switches.push(name); c.activeFile = name; return true } })
+  await c.renameProjectEntry({ id: 'p' }, 'old.typ')
+  assert.deepEqual(switches, ['', 'new.typ'])
 })
 test('legacy document fallback and library permissions exclude guests and readers', () => {
   const c = setup({ lastOwn: [{ id: 'd', project_id: 'p' }] })
@@ -88,12 +90,12 @@ test('private module insertion waits for copied snapshot and uses returned name'
   let finish, inserted
   const c = setup({ ask: async (_label, options) => options?.noInput ? true : 'renamed.typ',
     api: async (_method, url) => url.endsWith('pull-preview') ? { preview: 'token' } : new Promise(r => { finish = r }),
-    resLine: x => '#include "' + x.name + '"', addTpl: x => { inserted = x } })
+    resLine: x => '#include "' + x.name + '"', addTpl: x => { inserted = x }, refTo: path => '../' + path, docFolder: 'Chapters' })
   const pending = c.insertPersonalResource({ name: 'private.typ' })
   while (!finish) await Promise.resolve()
   assert.equal(inserted, undefined)
   finish({ name: 'copied.typ' }); await pending
-  assert.equal(inserted, '#include "copied.typ"')
+  assert.equal(inserted, '#include "../copied.typ"') // the copied file is quoted as the open text reaches it
 })
 test('personal pull keeps its collection folder or follows the target folder', async () => {
   let initial, body, stem
@@ -157,16 +159,6 @@ test('project share preserves document-only guests without granting project memb
   assert.match(share, /s\.doc_id \? `\/api\/docs\/\$\{s\.doc_id\}\/share` : shareUrl/)
 })
 
-test('same-named local and project resource tabs coexist', () => {
-  const files = readFileSync('web/js/80-files-images.js', 'utf8')
-  const fn = files.slice(files.indexOf('const OPEN_TABS_KEY'), files.indexOf('const tabErrs'))
-  const c = setup({ lastFiles: [{ name: 'foo.typ' }], TEXT_EXT: /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i, usedTpls: () => [],
-    tabPins: new Set(['foo.typ']), effTpl: () => [{ name: 'foo.typ' }], isTplKey: k => k.startsWith('@tpl/'), tabName: k => k.slice(5), TPLK: '@tpl/', projects: [] })
-  vm.runInContext(fn, c)
-  vm.runInContext("openTabs = ['d:d', 'f:d/foo.typ', 'r:foo.typ']", c)
-  assert.deepEqual(Array.from(c.tabItems()), ['', 'foo.typ', '@tpl/foo.typ'])
-})
-
 test('pull retries every colliding source mapping and submits refreshed preview', async () => {
   const calls = [], answers = ['root.typ', 'root-new.typ', 'left.typ', 'right.typ', true]
   const c = setup({ ask: async () => answers.shift(), api: async (_m, url, body) => {
@@ -195,12 +187,14 @@ test('dependency rename cancellation aborts pull', async () => {
   assert.deepEqual(calls, ['/api/library/pull-preview'])
 })
 
-test('local copy uses drawer source document even with same named active file', async () => {
+test('copying a project file to the personal modules pulls it from its project under its base name', async () => {
   const calls = []
   const c = setup({ projects: [], tabSig: '', queueRender: () => {}, ask: async (_label, options) => options.noInput ? true : options.value,
-    api: async (_m, url, body) => { calls.push({ url, body }); return { preview: 'token' } } })
-  await c.copyToLibrary('nested/a.typ', 'source-document', { scope: 'personal' })
-  assert.deepEqual(calls.map(x => x.url), ['/api/docs/source-document/library-copy-preview', '/api/docs/source-document/library-copy'])
+    api: async (_m, url, body) => { calls.push({ url, body }); return url.endsWith('-preview') ? { preview: 'token' } : { name: body.name } } })
+  await c.copyFileToPersonal('source-project', 'nested/a.typ')
+  assert.deepEqual(calls.map(x => x.url), ['/api/library/pull-preview', '/api/library/pull'])
+  assert.equal(calls[0].body.source_project_id, 'source-project')
+  assert.equal(calls[0].body.source, 'nested/a.typ')
   assert.equal(calls[0].body.name, 'a.typ')
 })
 
@@ -232,45 +226,45 @@ test('sidebar callers share one request and schedule one follow-up', async () =>
 })
 
 
-test('project tabs list only what was opened, from any document or the module library', () => {
+test('project tabs list only what was opened: documents and project files', () => {
   const files = readFileSync('web/js/80-files-images.js', 'utf8')
   const fn = files.slice(files.indexOf('function projectTabEntry('), files.indexOf('const tabErrs'))
   const c = setup({ window: {}, projects: [{ id: 'p', documents: [{ id: 'd' }, { id: 'other' }],
-    files: [{ doc_id: 'd', name: 'image.png' }, { doc_id: 'other', name: 'data.csv' }, { doc_id: 'd', name: 'closed.png' }], resources: [{ name: 'unused.typ' }, { name: 'lib/closed.typ' }] }],
-    lastFiles: [{ name: 'image.png' }, { name: 'closed.png' }], effTpl: () => [], TPLK: '@tpl/', isTplKey: k => k.startsWith('@tpl/'), tabName: k => k.slice(5) })
+    files: [{ path: 'image.png' }, { path: 'data/data.csv' }, { path: 'closed.png' }] }],
+    lastFiles: [{ path: 'image.png' }, { path: 'closed.png' }], tabName: k => k })
   vm.runInContext(fn, c)
-  vm.runInContext("openTabs = ['d:d', 'd:other', 'f:d/image.png', 'f:other/data.csv', 'r:unused.typ', 'r:gone.typ', 'f:d/gone.png']", c)
-  assert.deepEqual(Array.from(c.tabItems()), ['', '@doc/other', 'image.png', '@file/other/data.csv', '@tpl/unused.typ'])
-  assert.equal(c.projectTabEntry('@file/other/nested/data.csv').document, 'other')
-  assert.equal(c.projectTabEntry('@file/other/nested/data.csv').name, 'nested/data.csv')
+  vm.runInContext("openTabs = ['d:d', 'd:other', 'f:image.png', 'f:data/data.csv', 'r:unused.typ', 'f:gone.png', 'f:d/image.png']", c)
+  assert.deepEqual(Array.from(c.tabItems()), ['', '@doc/other', 'image.png', 'data/data.csv'])
+  assert.equal(c.projectTabEntry('data/data.csv').document, 'd')
+  assert.equal(c.projectTabEntry('data/data.csv').name, 'data/data.csv')
 })
 
 
-test('dropping a file chooses a document without reopening either picker', async () => {
+test('dropping a file on another project keeps its path without any picker', async () => {
   const source = { id: 'p', role: 'owner' }, target = { id: 'target', documents: [{ id: 'first' }, { id: 'second' }] }, calls = []
   const c = setup({ docId: '', ask: () => assert.fail('no name dialog for drop'), askPick: () => assert.fail('no target document dialog'),
     api: async (_method, url, body) => { calls.push({ url, body }); return {} }, filesDirty: false })
-  await c.transferProjectEntry(source, { kind: 'file', doc_id: 'old', name: 'image.png' }, true, target, true)
+  await c.transferProjectEntry(source, { kind: 'file', name: 'img/image.png' }, true, target, true)
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].body.target_doc_id, 'first')
-  assert.equal(calls[0].body.target_name, 'image.png')
+  assert.equal(calls[0].body.target_doc_id, undefined)
+  assert.equal(calls[0].body.target_name, 'img/image.png')
 })
 
 test('history remains project-wide for modules and read-only project members', () => {
   const history = readFileSync('web/js/84-history.js', 'utf8')
   const fn = history.slice(0, history.indexOf('// --- History'))
-  const c = setup({ projects: [{ id: 'p', role: 'reviewer' }], docResReadonly: true, activeFile: '@tpl/module.typ' })
+  const c = setup({ projects: [{ id: 'p', role: 'reviewer' }], docResReadonly: true, activeFile: 'module.typ' })
   vm.runInContext(fn, c)
   assert.equal(c.historyUrl(), '/api/projects/p/snapshots')
   c.projects[0].role = 'guest'
   assert.equal(c.historyUrl(), '/api/docs/d/snapshots')
 })
 
-test('preview keeps compiling the document beside module and binary tabs, but not for a personal module', async () => {
+test('preview keeps compiling the document beside text and binary file tabs, but not for a personal module', async () => {
   const preview = readFileSync('web/js/50-preview.js', 'utf8')
   const fn = preview.slice(preview.indexOf('async function render()'), preview.indexOf('async function renderDirect'))
   let started = 0
-  const c = setup({ window: {}, tplName: '', activeFile: '@tpl/module.typ', renderN: 0, $: () => ({}), pvBar: () => { started++; throw new Error('stop') } })
+  const c = setup({ window: {}, tplName: '', activeFile: 'lib/module.typ', renderN: 0, $: () => ({}), pvBar: () => { started++; throw new Error('stop') } })
   vm.runInContext(fn, c)
   await assert.rejects(c.render(), /stop/)
   c.activeFile = 'image.png'
@@ -310,18 +304,16 @@ test('rail shortcuts open a collapsed section and never close an open one', () =
 })
 
 
-test('repeated CSV sidebar clicks share one pending open and review resources need no fetch', async () => {
-  let finish, switches = 0, loads = 0
-  const c = setup({ window: { changeSession: {} }, TPLK: '@tpl/', tabPins: new Set(),
-    loadDocResources: async () => { loads++; return true },
+test('repeated CSV sidebar clicks share one pending open', async () => {
+  let finish, switches = 0
+  const c = setup({ window: { changeSession: {} },
     switchTab: name => { switches++; return new Promise(r => { finish = () => { c.activeFile = name; r(true) } }) } })
-  const first = c.openProjectEntry({ id: 'p' }, 'd', 'data.csv', true)
-  const second = c.openProjectEntry({ id: 'p' }, 'd', 'data.csv', true)
+  const first = c.openProjectEntry({ id: 'p' }, 'd', 'data.csv')
+  const second = c.openProjectEntry({ id: 'p' }, 'd', 'data.csv')
   assert.equal(first, second)
   assert.equal(switches, 1)
-  assert.equal(loads, 0)
   finish(); await first
-  await c.openProjectEntry({ id: 'p' }, 'd', 'data.csv', true)
+  await c.openProjectEntry({ id: 'p' }, 'd', 'data.csv')
   assert.equal(switches, 1)
 })
 

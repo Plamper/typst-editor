@@ -1,7 +1,7 @@
-"""Project folders in the sidebar, the open-tabs bar and the document preview beside module tabs."""
+"""Project folders in the sidebar, the open-tabs bar and the document preview beside file tabs."""
 from playwright.sync_api import expect
 
-from e2e.helpers import register
+from e2e.helpers import file_paths, put_file, register
 
 
 def _project(page):
@@ -13,8 +13,8 @@ def _setup(page, name):
     register(page, name)
     page.request.post("/api/docs/create", data={"title": "Main", "content": '#import "lib/style.typ": accent\n#text(fill: accent)[Hello]'})
     did, pid = _project(page)
-    assert page.request.post(f"/api/projects/{pid}/resources", data={"name": "lib/style.typ", "content": "#let accent = red"}).ok
-    assert page.request.post(f"/api/projects/{pid}/resources", data={"name": "other.typ", "content": "x"}).ok
+    assert put_file(page.request, pid, "lib/style.typ", "#let accent = red").ok
+    assert put_file(page.request, pid, "other.typ", "x").ok
     assert page.request.post(f"/api/projects/{pid}/folders", data={"path": "empty/inner"}).ok
     page.reload()
     page.wait_for_function("window.__booted === true")
@@ -33,7 +33,7 @@ def test_sidebar_tree_and_tabs_only_list_opened_files(page):
     page.locator("aside .doc.sub", has_text="style.typ").click()
     expect(page.locator("#tabs button.tab")).to_have_count(2)
     expect(page.locator("#tabs button.tab", has_text="other.typ")).to_have_count(0)
-    # the document preview stays visible next to the module
+    # the document preview stays visible next to the file
     expect(page.locator("#rightCol")).to_be_visible()
     expect(page.locator("#pvFor")).to_have_text("Preview: Main.typ")
     expect(page.locator("#preview .pvPage").first).to_be_visible()
@@ -41,7 +41,7 @@ def test_sidebar_tree_and_tabs_only_list_opened_files(page):
     page.locator("#tabs .tabw", has_text="style.typ").hover()
     page.locator("#tabs .tabw", has_text="style.typ").locator("button.tx").click()
     expect(page.locator("#tabs button.tab")).to_have_count(1)
-    assert [r["name"] for r in page.request.get(f"/api/projects/{pid}/resources").json()["resources"]] == ["lib/style.typ", "other.typ"]
+    assert file_paths(page.request, pid) == ["lib/style.typ", "other.typ"]
     # no add / delete in the tab bar anymore
     expect(page.locator("#tabs .tadd")).to_have_count(0)
 
@@ -78,15 +78,15 @@ def test_create_folder_module_in_folder_and_rename_folder_through_the_ui(page):
     page.click("#mYes")
     folder = page.locator("aside .fhd.folder", has_text="chapters")
     expect(folder).to_have_count(1)
-    # new module inside the folder
+    # new file inside the folder
     folder.hover()
     folder.locator("button.mini").first.click()
-    page.locator("#menu button").filter(has_text="New module").click()
+    page.locator("#menu button").filter(has_text="New file").click()
     page.locator("#submenu button").filter(has_text=".typ").first.click()
     page.fill("#mInp", "intro")
     page.click("#mYes")
     expect(page.locator("#tabs button.tab", has_text="intro.typ")).to_have_count(1)
-    assert [r["name"] for r in page.request.get(f"/api/projects/{pid}/resources").json()["resources"]] == ["chapters/intro.typ"]
+    assert file_paths(page.request, pid) == ["chapters/intro.typ"]
     expect(page.locator("#pvFor")).to_have_text("Preview: Main.typ")
     # rename the folder: the open tab follows
     folder.hover()
@@ -97,14 +97,14 @@ def test_create_folder_module_in_folder_and_rename_folder_through_the_ui(page):
     page.keyboard.press("Enter")
     page.click("#mYes")
     expect(page.locator("aside .fhd.folder", has_text="parts")).to_have_count(1)
-    assert [r["name"] for r in page.request.get(f"/api/projects/{pid}/resources").json()["resources"]] == ["parts/intro.typ"]
+    assert file_paths(page.request, pid) == ["parts/intro.typ"]
     expect(page.locator("#tabs button.tab", has_text="intro.typ")).to_have_count(1)
     expect(page.locator("#tabs button.tab[aria-selected=true]", has_text="intro.typ")).to_have_count(1)
 
 
 def test_drag_entries_into_a_folder_and_back_to_the_project_root(page):
     did, pid = _setup(page, "folder_dnd")
-    names = lambda: [r["name"] for r in page.request.get(f"/api/projects/{pid}/resources").json()["resources"]]  # noqa: E731
+    names = lambda: file_paths(page.request, pid)  # noqa: E731
     row = page.locator("aside .doc.sub", has_text="other.typ")
     page.locator("aside .fhd.folder", has_text="lib").scroll_into_view_if_needed()
     row.drag_to(page.locator("aside .fhd.folder", has_text="lib"))
@@ -125,11 +125,11 @@ def test_file_rows_and_empty_hints_are_drop_areas_for_their_folder(page):
     # the empty hint belongs to the innermost folder: dropping on it moves the file there
     page.locator("aside .doc.sub", has_text="other.typ").drag_to(page.locator("aside .folderEmpty").first)
     expect(page.locator("aside .doc.sub[title='empty/inner/other.typ']")).to_have_count(1)
-    assert [r["name"] for r in page.request.get(f"/api/projects/{pid}/resources").json()["resources"]] == ["empty/inner/other.typ", "lib/style.typ"]
+    assert file_paths(page.request, pid) == ["empty/inner/other.typ", "lib/style.typ"]
     # dropping on a file row targets the folder that file lives in, not the file
     page.locator("aside .doc.sub[title='lib/style.typ']").drag_to(page.locator("aside .doc.sub[title='empty/inner/other.typ']"))
     expect(page.locator("aside .doc.sub[title='empty/inner/style.typ']")).to_have_count(1)
-    assert [r["name"] for r in page.request.get(f"/api/projects/{pid}/resources").json()["resources"]] == ["empty/inner/other.typ", "empty/inner/style.typ"]
+    assert file_paths(page.request, pid) == ["empty/inner/other.typ", "empty/inner/style.typ"]
 
 
 def test_last_tab_closes_to_the_plain_welcome_screen(page):

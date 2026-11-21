@@ -9,7 +9,7 @@ import re
 import struct
 import zlib
 
-from helpers import create_doc, put_source, register
+from helpers import create_doc, put_file, put_source, register
 from playwright.sync_api import expect
 
 PREVIEW_TIMEOUT = 60_000
@@ -99,9 +99,8 @@ def _setup(page, slug, title, source, files=()):
     create_doc(page, title)
     if files:
         doc = _project(page, title)
-        for name, mime, data in files:
-            assert page.request.post(f"/api/docs/{doc['id']}/files", multipart={
-                'f': {'name': name, 'mimeType': mime, 'buffer': data}}).ok
+        for name, _mime, data in files:
+            assert put_file(page.request, doc['project_id'], name, data).ok
         page.reload()
         page.wait_for_function('window.__booted === true')
         page.locator('aside .doc.sub', has_text=title).first.click()

@@ -9,7 +9,7 @@ const nameHelper = packages.slice(packages.indexOf('function sessionFileName'), 
 function context(extra = {}) {
   const File = class { constructor(parts, name) { this.name = name; this.size = String(parts[0] || '').length; this.parts = parts } }
   const c = vm.createContext({
-    File, t: key => key, sessionKey: file => file.kind + ':' + file.path, effTpl: () => [],
+    File, t: key => key, sessionKey: file => file.kind + ':' + file.path, lastFiles: [],
     pullLibrary: async (...args) => { c.baseCalls.push(args) },
     sessionAddFile: async file => { c.added.push(file.name); return file.name },
     baseCalls: [], added: [], window: { changeSession: null }, ...extra,

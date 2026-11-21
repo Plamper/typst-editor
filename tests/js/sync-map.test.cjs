@@ -6,7 +6,7 @@ const read = name => fs.readFileSync('web/js/' + name, 'utf8')
 const settings = read('90-settings.js'), preview = read('50-preview.js')
 const cut = (src, a, b) => src.slice(src.indexOf(a), src.indexOf(b))
 const ctx = vm.createContext({
-  window: {}, isTplKey: k => String(k).startsWith('@tpl/'), tabName: k => String(k).replace(/^@tpl\//, '') || 'main.typ',
+  window: {}, docFolder: '', tabName: k => String(k) || 'main.typ',
   pvMathMatch: () => [], pvImgMatch: () => [],
   pvClickCol: (it, x, y, cssW) => Math.max(0, Math.min(it.s.length, Math.round((x - it.x0) / (it.w / it.s.length)))), // 1 CSS px = 1 unit in these pages
 })

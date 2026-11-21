@@ -3,7 +3,7 @@ import re
 import struct
 import zlib
 
-from helpers import create_doc, put_source, register
+from helpers import create_doc, put_file, put_source, register
 from playwright.sync_api import expect
 
 PREVIEW_TIMEOUT = 60_000
@@ -122,15 +122,11 @@ def _setup(page, slug, title, source, pages=PAGES, headings=2, resources=True, e
     create_doc(page, title)
     doc = _project(page, title)
     if resources:
-        assert page.request.post(f"/api/docs/{doc['id']}/files", multipart={
-            'f': {'name': 'dot.png', 'mimeType': 'image/png', 'buffer': _png()}}).ok
-        assert page.request.post(f"/api/projects/{doc['project_id']}/resources",
-                                 data={'name': 'lib/util.typ', 'content': '#let unused = 1'}).ok
-        assert page.request.post(f"/api/projects/{doc['project_id']}/resources",
-                                 data={'name': 'part.typ', 'content': PART}).ok
+        assert put_file(page.request, doc['project_id'], 'dot.png', _png()).ok
+        assert put_file(page.request, doc['project_id'], 'lib/util.typ', '#let unused = 1').ok
+        assert put_file(page.request, doc['project_id'], 'part.typ', PART).ok
     if extra_typ:  # a second source file: the multi-source guard must be exercised, not bypassed
-        assert page.request.post(f"/api/docs/{doc['id']}/files", multipart={
-            'f': {'name': extra_typ, 'mimeType': 'text/plain', 'buffer': b'= Extra\n'}}).ok
+        assert put_file(page.request, doc['project_id'], extra_typ, b'= Extra\n').ok
     page.reload()
     page.wait_for_function('window.__booted === true')
     page.locator('aside .doc.sub', has_text=title).first.click()
@@ -219,8 +215,7 @@ def test_a_textless_page_scrolls_the_editor_to_its_line(page):
     register(page, 'e2e_sync_textless')
     create_doc(page, 'Textless page doc')
     doc = _project(page, 'Textless page doc')
-    assert page.request.post(f"/api/docs/{doc['id']}/files", multipart={
-        'f': {'name': 'dot.png', 'mimeType': 'image/png', 'buffer': _png()}}).ok
+    assert put_file(page.request, doc['project_id'], 'dot.png', _png()).ok
     filler = '\n'.join(f'Filler line {i:03d}.' for i in range(80))
     source = filler + '\n\n#pagebreak()\n\n#image("dot.png", width: 200pt)\n\n#pagebreak()\n\nLast tail line.\n'
     page.reload()

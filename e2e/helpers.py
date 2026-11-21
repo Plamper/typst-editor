@@ -76,3 +76,23 @@ def open_private_copy(page: Page, name: str) -> None:
         page.locator('#tplH').press('Enter')
     row.locator('.t').click()
     expect(page.locator('#title')).to_have_text(name)
+
+
+def put_file(request, project: str, path: str, data, version: str = ""):
+    """Create a project file (or overwrite it with its current version) through the raw PUT route."""
+    body = data.encode() if isinstance(data, str) else data
+    return request.put(f"/api/projects/{project}/files/{path}" + (f"?version={version}" if version else ""), data=body)
+
+
+def file_paths(request, project: str) -> list[str]:
+    return [f["path"] for f in request.get(f"/api/projects/{project}/files").json()["files"]]
+
+
+def file_text(request, project: str, path: str) -> str:
+    response = request.get(f"/api/projects/{project}/files/{path}")
+    assert response.ok, response.text()
+    return response.text()
+
+
+def doc_project(request, doc_id: str) -> str:
+    return request.get(f"/api/docs/{doc_id}").json()["project_id"]

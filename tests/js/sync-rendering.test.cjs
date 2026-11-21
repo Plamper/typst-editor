@@ -13,7 +13,8 @@ function workerContext() {
   const posted = [], state = { resets: 0, mapped: 0, failCompile: false, failMap: false, seen: '' }
   const comp = {
     reset: async () => { state.resets++ },
-    compile: async () => {
+    compile: async o => {
+      state.main = o.mainFilePath
       if (state.failCompile) return { result: null, diagnostics: [{ severity: 'error', message: 'bad' }] }
       return { result: new Uint8Array([1]), diagnostics: [] }
     }
@@ -21,7 +22,7 @@ function workerContext() {
   const T = {
     resetShadow: async () => { state.mapped = 0 },
     mapShadow: async () => { if (state.failMap) throw new Error('map'); state.mapped++ },
-    addSource: async (path, text) => { state.seen = String(text) },
+    addSource: async (path, text) => { state.seen = String(text); state.path = path },
     getCompiler: async () => comp
   }
   const c = vm.createContext({ self: {}, Uint8Array, TextEncoder, TextDecoder, setTimeout,
@@ -36,7 +37,14 @@ async function work(c, data) {
   for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve))
 }
 
-const job = (id, full) => ({ cmd: 'work', id, full, main: '= Hi', files: [{ name: 'a.png', bytes: [1] }], tpl: [] })
+const job = (id, full) => ({ cmd: 'work', id, full, main: '= Hi', mainPath: '/__doc__.typ', files: [{ name: 'a.png', bytes: [1] }] })
+
+test('the worker compiles the document at its folder path inside the project root', async () => {
+  const { c, state } = workerContext()
+  await work(c, { ...job(1, true), mainPath: '/Chapters/__doc__.typ' })
+  assert.equal(state.path, '/Chapters/__doc__.typ')
+  assert.equal(state.main, '/Chapters/__doc__.typ')
+})
 
 test('a content error after the full remap still reports the shadow as mapped', async () => {
   const { c, posted, state } = workerContext()
@@ -137,7 +145,7 @@ function renderContext() {
     cmpWarns: [], lastInfra: false, errLines: [], errKey: '', lastErrToast: '',
     docId: 'doc', tplName: '', openN: 1, activeFile: '', shadow: '', fileCache: new Map(),
     getT: () => 'main', pvWorkerFail: false, pvWorkerOk: true, pvEnsureWorker: () => true,
-    pvBar() {}, pvFiles: async () => ({ sig: 'sig', tpl: [] }),
+    pvBar() {}, pvFiles: async () => ({ sig: 'sig' }), docMain: () => '/__doc__.typ',
     pvCall: (job, id) => new Promise(resolve => pending.set(id, pdf => resolve({ pdf, diags: [] }))),
     pvScale: 2, pvZoom: 100, pvHasImages: () => false,
     pvCssW: w => w, pvBlank() {}, pvModeApply() {}, pvDraw: async () => {},

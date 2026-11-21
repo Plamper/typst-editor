@@ -5,7 +5,7 @@ const sessionKey = f => [f.kind, f.doc_id || '', f.path].join(':')
 const sessionDocumentTab = file => '@proposal-doc/' + file.doc_id + '.typ'
 function sessionIdentity(name) {
   const added = [...(window.changeSession?.files.values() || [])].find(f => f.kind === 'document' && f.action === 'add' && sessionDocumentTab(f) === name)
-  return added || { kind: !name ? 'document' : isTplKey(name) ? 'resource' : 'file', doc_id: !name || !isTplKey(name) ? docId : '', path: name ? tabName(name) : '' }
+  return added || (name ? { kind: 'file', doc_id: '', path: name } : { kind: 'document', doc_id: docId, path: '' })
 }
 const sessionCurrent = () => sessionIdentity(activeFile)
 const sessionUrl = s => '/api/projects/' + s.project + '/proposals' + (s.package ? '/' + s.package.id : '')
@@ -99,14 +99,9 @@ async function sessionEnsure(identity = sessionCurrent()) {
     content = identity.doc_id === docId && synced ? shadow : (await api('GET', '/api/docs/' + identity.doc_id)).content
     if (identity.doc_id === docId && synced) content = shadow // live sync may have completed during the read
   }
-  else if (identity.kind === 'resource') {
-    const items = (await api('GET', '/api/projects/' + s.project + '/resources')).resources
-    const item = items.find(f => f.name === identity.path)
-    if (!item) throw Error(t('files.tplGone'))
-    content = item.content
-  } else if (TEXT_EXT.test(identity.path)) content = (await api('GET', '/api/docs/' + identity.doc_id + '/files/' + encodeURIComponent(identity.path) + '/text')).content
+  else if (TEXT_EXT.test(identity.path)) content = await fileText(identity.path)
   else {
-    const response = await fetch('/api/docs/' + identity.doc_id + '/files/' + encodeURIComponent(identity.path))
+    const response = await fetch(fileUrl(identity.path, s.project))
     if (!response.ok) throw Error(response.statusText)
     content = bytesToBase64(new Uint8Array(await response.arrayBuffer()))
   }
@@ -192,8 +187,6 @@ async function startChangeSession(proposal = null) {
       } catch (e) {}
     }
     if (project !== docProject || docId !== current || openN !== epoch || window.changeSession || window.suggestionDraft) return
-    s.libraryBase = (await api('GET', '/api/projects/' + project + '/resources')).resources
-    if (project !== docProject || docId !== current || openN !== epoch || window.changeSession || window.suggestionDraft) return
     window.changeSession = s
     await sessionActivate()
     paintOwn(); paintShared(lastShared); paintTabs()
@@ -251,7 +244,6 @@ async function endChangeSession(discard = false, preserveView = false, mainText 
   if (addedTab) activeFile = ''
   if (current) {
     if (key) {
-      if (isTplKey(key)) { try { await loadDocResources(true) } catch (e) { toast(e.message) } }
       activeFile = ''
       if (!await sessionOriginalSwitchTab(key, true, preserveView)) setT(shadow)
     }
@@ -314,8 +306,7 @@ async function acceptSessionSelection(fileId = '', changeId = '', cell = null, f
     if (fileId && proposal.files.some(f => f.id === fileId && f.stale)) toast(t('packages.staleChange'), null, null, 6000, 'error') // the text moved on: nothing was applied
     const activeRename = [...s.files.values()].find(f => f.kind !== 'document' && f.action === 'rename' && sessionKey(f) === sessionKey(sessionCurrent()) && !proposal.files.some(p => p.id === f.id && p.action === 'rename'))
     if (activeRename) {
-      activeFile = activeRename.kind === 'resource' ? TPLK + activeRename.target : activeRename.target
-      if (activeRename.kind === 'resource') { tabPins.delete(activeRename.path); tabPins.add(activeRename.target) }
+      activeFile = activeRename.target
       tabDirty = false; tabSig = ''
     }
     const deletedCurrent = [...s.files.values()].some(f => f.kind === 'document' && f.doc_id === docId && f.action === 'delete' && !proposal.files.some(p => sessionKey(p) === sessionKey(f)))
@@ -328,9 +319,8 @@ async function acceptSessionSelection(fileId = '', changeId = '', cell = null, f
     s.package = proposal; s.files = new Map(proposal.files.map(f => [sessionKey(f), sessionRuntime(f)]))
     s.dirty = false
     if (!deletedCurrent) {
-      await loadDocResources(true)
+      await loadProjectFiles(true)
       if (window.changeSession !== s) return
-      s.libraryBase = projectResources().map(f => ({ ...f }))
     }
     if (proposal.files.length) for (const old of acceptedDocuments) {
       const current = await api('GET', '/api/docs/' + old.doc_id)
@@ -341,8 +331,7 @@ async function acceptSessionSelection(fileId = '', changeId = '', cell = null, f
     for (const th of threads) { th.a = null; th.b = null } // accepted text replaced the base: rebuild comment ranges on the fresh shadow
     initRanges(); invalidateCommentCache() // the accepted text reaches shadow via WS: the stale-ordered re-anchor must not stick behind the poll dedupe
     if (deletedActive && !deletedCurrent) {
-      if (isTplKey(activeFile)) await loadDocResources(true)
-      else lastFiles = lastFiles.filter(f => f.name !== activeFile)
+      lastFiles = lastFiles.filter(f => f.path !== activeFile)
       activeFile = ''; tabDirty = false; setT(shadow); tabSig = ''
     }
     if (deletedCurrent) {
@@ -619,7 +608,7 @@ async function discardSessionFile(file) {
 async function sessionOpenFile(file) {
   if (file.kind === 'document' && file.action === 'add') return switchTab(sessionDocumentTab(file))
   if (file.doc_id && file.doc_id !== docId) { await openDoc(file.doc_id); if (docId !== file.doc_id) return }
-  await switchTab(file.kind === 'document' ? '' : file.kind === 'resource' ? TPLK + file.path : file.path)
+  await switchTab(file.kind === 'document' ? '' : file.path)
 }
 function sessionFileName(raw) { // backend-safe path: sanitize each segment, keep folders and the extension
   const parts = String(raw || '').replace(/\\/g, '/').split('/').filter(seg => seg && seg !== '.')
@@ -636,13 +625,13 @@ function sessionFileName(raw) { // backend-safe path: sanitize each segment, kee
   const dot = clean.lastIndexOf('.'), ext = dot > clean.lastIndexOf('/') ? clean.slice(dot) : ''
   return ext && ext.length < 240 ? clean.slice(0, 240 - ext.length) + ext : clean.slice(0, 240)
 }
-async function sessionAddFile(file, resource = false) {
+async function sessionAddFile(file) {
   const s = window.changeSession
   if (!s || s.original || s.busy) return ''
   if (file.size > (TEXT_EXT.test(file.name) ? 200 * 1024 : 10 * 1024 * 1024)) throw Error(t('docs.maxKb'))
   const name = sessionFileName(file.name)
-  const identity = { kind: resource ? 'resource' : 'file', doc_id: resource ? '' : docId, path: name }
-  if (s.files.has(sessionKey(identity)) || (resource ? effTpl().some(f => f.name === name) : lastFiles.some(f => f.name === name))) throw Error(t('common.nameExists'))
+  const identity = { kind: 'file', doc_id: '', path: name }
+  if (s.files.has(sessionKey(identity)) || lastFiles.some(f => f.path === name)) throw Error(t('common.nameExists'))
   const binary = !TEXT_EXT.test(name), content = binary ? bytesToBase64(new Uint8Array(await file.arrayBuffer())) : await file.text()
   if (window.changeSession !== s) return ''
   s.files.set(sessionKey(identity), sessionRuntime({ ...identity, action: 'add', base: null, content, binary, changes: [] }))
@@ -652,8 +641,8 @@ async function sessionReplaceFile(name, file) { // Round5 #4: swap an existing f
   const s = window.changeSession
   if (!s || s.original || s.busy) return ''
   if (file.size > 10 * 1024 * 1024) throw Error(t('docs.maxKb'))
-  const identity = { kind: 'file', doc_id: docId, path: name }, key = sessionKey(identity)
-  if (!s.files.has(key) && !lastFiles.some(x => x.name === name)) throw Error(t('packages.fileAbsent'))
+  const identity = { kind: 'file', doc_id: '', path: name }, key = sessionKey(identity)
+  if (!s.files.has(key) && !lastFiles.some(x => x.path === name)) throw Error(t('packages.fileAbsent'))
   const had = s.files.get(key)
   const base = had?.base ?? (await sessionEnsure(identity))?.base
   if (window.changeSession !== s || base == null) return ''
@@ -727,7 +716,7 @@ switchTab = async (name, nosave, preserveView = false) => {
   const s = window.changeSession
   if (!s) return sessionOriginalSwitchTab(name, nosave, preserveView)
   if (s.busy) return false
-  if (name?.startsWith('@doc/') || name?.startsWith('@file/')) {
+  if (name?.startsWith('@doc/')) {
     const entry = projectTabEntry(name)
     if (entry.document !== docId) await openDoc(entry.document)
     if (docId !== entry.document || window.changeSession !== s) return false
@@ -760,32 +749,21 @@ tabItems = () => {
   const items = sessionOriginalTabItems(), s = window.changeSession
   if (!s) return items
   for (const f of s.files.values()) {
-    const item = f.kind === 'document' ? f.action === 'add' ? sessionDocumentTab(f) : f.doc_id === docId ? '' : '@doc/' + f.doc_id : f.kind === 'resource' ? TPLK + f.path : f.doc_id === docId ? f.path : '@file/' + f.doc_id + '/' + f.path
+    const item = f.kind === 'document' ? f.action === 'add' ? sessionDocumentTab(f) : f.doc_id === docId ? '' : '@doc/' + f.doc_id  : f.path
     if (!items.includes(item)) items.push(item)
   }
   return items
-}
-const sessionOriginalPvRes = pvResTpl
-pvResTpl = () => {
-  const s = window.changeSession
-  if (!s) return sessionOriginalPvRes()
-  const result = new Map((s.libraryBase || projectResources()).map(f => [f.name, { ...f }]))
-  if (!s.original) for (const f of s.files.values()) if (f.kind === 'resource') {
-    if (f.action === 'delete' || f.action === 'rename') result.delete(f.path)
-    if (f.content != null && f.action !== 'delete') result.set(f.action === 'rename' ? f.target : f.path, { name: f.action === 'rename' ? f.target : f.path, content: f.content })
-  }
-  return [...result.values()]
 }
 const sessionOriginalPvFiles = pvFiles
 pvFiles = async () => {
   const s = window.changeSession, pf = await sessionOriginalPvFiles()
   if (!pf || !s || s !== window.changeSession) return pf
-  for (const f of s.files.values()) if (f.kind === 'file' && f.doc_id === docId) {
+  for (const f of s.files.values()) if (f.kind === 'file') {
     const bytes = sessionBytes(f, s.original)
     if (!s.original && (f.action === 'delete' || f.action === 'rename')) fileCache.delete(f.path)
     if (bytes && (s.original || f.action !== 'delete')) fileCache.set(!s.original && f.action === 'rename' ? f.target : f.path, { bytes, mtime: 'proposal' })
   }
-  pf.tpl = pvResTpl(); pf.sig += '\u0002package:' + s.previewRevision + ':' + s.original
+  pf.sig += '\u0002package:' + s.previewRevision + ':' + s.original
   return pf
 }
 const sessionOriginalUpFile = upFile, sessionOriginalUpText = upText
@@ -830,36 +808,36 @@ async function stageDocumentDelete(document) {
   try { await stageSessionDelete({ kind: 'document', doc_id: document, path: '' }) } catch (e) { toast(e.message) }
   return true
 }
-const originalDeleteProjectEntry = async (project, name, document, resource) => {
+const originalDeleteProjectEntry = async (project, name) => {
   const s = window.changeSession
-  if (!s || s.project !== project?.id) return sessionOriginalDeleteEntry(project, name, document, resource)
-  await stageSessionDelete({ kind: resource ? 'resource' : 'file', doc_id: resource ? '' : document, path: name })
+  if (!s || s.project !== project?.id) return sessionOriginalDeleteEntry(project, name)
+  await stageSessionDelete({ kind: 'file', doc_id: '', path: name })
 }
-deleteProjectEntry = async (project, name, document, resource) => { // Round5 #4: suggest-mode deletes stage into a package too - the suggester's trash is never touched (accept archives it in the project owner's trash)
+deleteProjectEntry = async (project, name) => { // Round5 #4: suggest-mode deletes stage into a package too - the suggester's trash is never touched (accept archives it in the project owner's trash)
   if (!window.changeSession && window.suggestionDraft) {
     if (!await leaveSuggestionDraft()) return
     if (window.suggestionDraft || !await startChangeSession()) return
-    return deleteProjectEntry(project, name, document, resource) // session is open now: this same override stages the delete
+    return deleteProjectEntry(project, name) // session is open now: this same override stages the delete
   }
-  return originalDeleteProjectEntry(project, name, document, resource)
+  return originalDeleteProjectEntry(project, name)
 }
 const sessionOriginalDeleteFile = deleteFile
 deleteFile = async name => { // Round5 #4: media-manager chip delete must stage - the plain DELETE endpoint is source-blocked in-session and would live-write in suggest mode
   if (window.changeSession || window.suggestionDraft) {
-    try { await deleteProjectEntry({ id: docProject }, name, docId, false) } catch (e) { toast(e.message) }
+    try { await deleteProjectEntry({ id: docProject }, name) } catch (e) { toast(e.message) }
     return
   }
   return sessionOriginalDeleteFile(name)
 }
-renameProjectEntry = async (project, name, document, resource, host) => {
+renameProjectEntry = async (project, name, host) => {
   const s = window.changeSession
-  if (!s || s.project !== project?.id) return sessionOriginalRenameEntry(project, name, document, resource, host)
+  if (!s || s.project !== project?.id) return sessionOriginalRenameEntry(project, name, host)
   if (s.original || s.busy) return
-  host = sidebarLiveHost(host, [resource ? 'resource' : 'file', resource ? '' : document, name].join(':'))
+  host = sidebarLiveHost(host, ['file', '', name].join(':'))
   const label = host?.querySelector('.t')
   const target = label ? await sidebarInlineRename(host, label, name, { label: t('docs.renameDoc'), maxLen: 240, stem: true }) : await ask(t('projects.copyName'), { value: name, maxLen: 240, stem: true })
   if (!target?.trim() || target.trim() === name) return
-  const f = await sessionEnsure({ kind: resource ? 'resource' : 'file', doc_id: resource ? '' : document, path: name })
+  const f = await sessionEnsure({ kind: 'file', doc_id: '', path: name })
   if (!f || window.changeSession !== s) return
   f.action = 'rename'; f.target = target.trim(); s.dirty = true; s.previewRevision++; sessionStash(); paintSessionSidebar(); queueRender()
 }
@@ -900,7 +878,7 @@ newProjectResource = async (project, folder = '', chosenExt = '') => {
   const name = await ask(t('files.newFileHead'), { value: 'file' + ext, maxLen: 240 }); if (!name?.trim()) return
   const typed = name.trim().endsWith(ext) ? name.trim() : name.trim() + ext, path = folder ? folder + '/' + typed : typed
   const file = new File([fileStart(ext.slice(1))], path, { type: 'text/plain' })
-  const added = await sessionAddFile(file, true); if (added) await switchTab(TPLK + added)
+  const added = await sessionAddFile(file); if (added) await switchTab(added)
 }
 addEventListener('pagehide', () => sessionStash(true))
 paintSuggestionControls()
@@ -938,28 +916,25 @@ uploadProjectFiles = async (project, files, folder = '') => {
   if (window.changeSession.project !== project.id) throw Error(t('packages.sourceBlocked'))
   for (const file of files) {
     const at = folder ? new File([file], folder + '/' + file.name, { type: file.type }) : file
-    await sessionAddFile(at, TEXT_EXT.test(file.name))
+    await sessionAddFile(at)
   }
 }
 const sessionImportUpload = importUpload
 importUpload = async file => {
   if (!window.changeSession) return sessionImportUpload(file)
-  try { await sessionAddFile(file, TEXT_EXT.test(file.name)) } catch (e) { toast(e.message) }
+  try { await sessionAddFile(file) } catch (e) { toast(e.message) }
 }
 const sessionPullLibrary = pullLibrary
 pullLibrary = async (source, target, targetFolder = '') => {
   const s = window.changeSession
   if (!s) return sessionPullLibrary(source, target, targetFolder)
-  if (target.scope !== 'project' || target.project_id !== s.project) throw Error(t('packages.sourceBlocked'))
-  const available = source.source_scope === 'personal' ? (await api('GET', '/api/templates')).templates
-    : (await api('GET', '/api/projects/' + source.source_project_id + '/resources')).resources
+  if (source.source_scope !== 'personal' || target.scope !== 'project' || target.project_id !== s.project) throw Error(t('packages.sourceBlocked'))
+  const available = (await api('GET', '/api/templates')).templates
   const root = available.find(f => f.name === source.source)
   if (!root) throw Error(t('files.tplGone'))
-  // Personal modules keep their collection folder; a drop or the folder's +
-  // menu wins over it. Project resources keep their path unless a target
-  // folder asks for the whole tree below it.
-  const folder = targetFolder || (source.source_scope === 'personal' ? root.folder || '' : '')
-  const dest = item => folder ? folder + '/' + (source.source_scope === 'personal' ? item.name.split('/').pop() : item.name) : item.name
+  // Personal modules keep their collection folder; a drop or the folder's + menu wins over it.
+  const folder = targetFolder || root.folder || ''
+  const dest = item => folder ? folder + '/' + item.name.split('/').pop() : item.name
   const pending = [root], seen = new Set()
   let added = ''
   while (pending.length && window.changeSession === s) {
@@ -967,8 +942,8 @@ pullLibrary = async (source, target, targetFolder = '') => {
     const name = dest(item)
     if (seen.has(name)) continue
     seen.add(name)
-    if (!s.files.has(sessionKey({ kind: 'resource', path: name })) && !effTpl().some(f => f.name === name)) {
-      const stored = await sessionAddFile(new File([item.content], name), true)
+    if (!s.files.has(sessionKey({ kind: 'file', path: name })) && !lastFiles.some(f => f.path === name)) {
+      const stored = await sessionAddFile(new File([item.content], name))
       if (item === root) added = stored
     }
     for (const match of item.content.matchAll(/"([^"\n]+)"/g)) {

@@ -82,11 +82,10 @@ function smPath(dir, p) { // include path -> project file name ("../x.typ" resol
   return parts.join('/')
 }
 function smIncludes(srcs, si) { // #include sites of one source in order: [{at, si}]
-  const src = srcs[si], out = [], dir = src.key.includes('/') && !isTplKey(src.key) ? src.key.replace(/[^/]*$/, '') : ''
+  const src = srcs[si], out = [], dir = src.key ? src.key.replace(/[^/]*$/, '') : docFolder ? docFolder + '/' : '' // the document sits in its folder
   for (const m of srcMask(src.text).matchAll(/(^|[^\w.-])include\s*\(?\s*"([^"]+)"/g)) {
     const want = smPath(dir, m[2])
-    let k = srcs.findIndex(s => s.key && !isTplKey(s.key) && s.key === want) // a project file wins over a module of the same name
-    if (k < 0) k = srcs.findIndex(s => s.key && tabName(s.key) === want)
+    const k = srcs.findIndex(s => s.key && s.key === want)
     if (k >= 0) out.push({ at: m.index + m[1].length, si: k })
   }
   return out

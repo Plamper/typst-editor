@@ -174,14 +174,21 @@ window.newProjectFromMenu = newProjectFromMenu // menubar proxy (classic ui-laye
 $('new').onclick = e => { e.stopPropagation(); openNewMenu($('new')) }
 let upBusy = false // double-click: no second doc
 $('upDoc').onclick = () => $('docPick').click()
-async function zipDocumentEntry(f) { // which Typst file of the ZIP is the document: the server knows when it is obvious, else the user picks (null = cancelled)
+async function zipDocuments(f) { // every .typ of the ZIP with a checkbox: ticked ones become documents, the rest project files (null = cancelled)
   const body = new FormData(); body.append('f', f)
   const response = await fetch('/api/zip-preview', { method: 'POST', body })
   if (!response.ok) throw new Error(expMsg(await response.text()))
   const { entries, suggested } = await response.json()
-  if (suggested || !entries.length) return suggested || ''
-  const i = await askPick(t('docs.zipPickDoc'), entries.map(n => [n, t('docs.zipPickDocSub')]))
-  return i == null ? null : entries[i]
+  const box = el('div', 'mBody zipDocs')
+  box.append(el('p', 'mNote', t(entries.length ? 'docs.zipDocsNote' : 'docs.zipNoTyp')))
+  const checks = entries.map(path => {
+    const label = el('label', 'mCheck'), check = document.createElement('input')
+    check.type = 'checkbox'; check.value = path; check.checked = suggested.includes(path)
+    label.append(check, el('code', null, path)); box.append(label)
+    return check
+  })
+  if (!await ask(t('docs.zipDocs', { name: f.name }), { noInput: true, body: box, ok: t('docs.zipImport') })) return null
+  return checks.filter(c => c.checked).map(c => c.value)
 }
 async function importUpload(f) {
   if (!f || upBusy) return
@@ -190,24 +197,25 @@ async function importUpload(f) {
   try {
     if (!TEXT_EXT.test(f.name) && !/\.zip$/i.test(f.name)) { await uploadToProject([f]); return }
     if (/\.zip$/i.test(f.name)) {
-      const entry = await zipDocumentEntry(f)
-      if (entry == null) return
-      const r = await askNewDoc((entry || f.name).replace(/\.zip$/i, '').replace(/^.*\//, '').replace(/\.typ$/i, ''))
-      if (!r) return
-      const body = new FormData(); body.append('f', f); body.append('title', r.title.trim() || t('projects.new')); body.append('folder', ''); body.append('entry', entry)
+      const documents = await zipDocuments(f)
+      if (documents == null) return
+      const body = new FormData(); body.append('f', f); body.append('name', f.name); body.append('documents', JSON.stringify(documents))
       const response = await fetch('/api/docs/import-zip', { method: 'POST', body })
       if (!response.ok) throw new Error(expMsg(await response.text()))
-      await openDoc((await response.json()).id); sidebar(); return
+      const result = await response.json()
+      shut.delete('project:' + result.project_id); saveShut()
+      if (result.id) await openDoc(result.id)
+      await sidebar(); return
     }
     const txt = await f.text(), isTyp = /\.typ$/i.test(f.name), doc = docId, epoch = openN
     const targets = []
     if (isTyp) targets.push(['doc', t('docs.pickDoc'), t('docs.pickDocSub')])
     targets.push(['resource', t('files.uploadResource'), t('files.uploadResourceD')])
-    if (docId && docRole !== 'reviewer' && !openedTrashed) targets.push(['file', t('files.uploadLocal'), t('files.uploadLocalD')])
+    if (docProject && !docResReadonly && !openedTrashed) targets.push(['file', t('files.uploadLocal'), t('files.uploadLocalD')])
     const i = await askPick(t('files.uploadTarget'), targets.map(x => [x[1], x[2]]))
     if (i == null || !targets[i]) return
     const target = targets[i][0]
-    if (target === 'file') { if (doc === docId && epoch === openN) await upText(f); return }
+    if (target === 'file') { if (doc === docId && epoch === openN) { const path = await upText(f); if (path) await switchTab(path) } return }
     if (target === 'resource') {
       const r = await askNewTpl(f.name)
       if (!r || !r.name.trim()) return
@@ -232,7 +240,7 @@ $('docPick').onchange = async () => {
 $('del').onclick = async () => {
   const doc = docId, resource = tplName, epoch = openN
   if (window.changeSession || window.suggestionDraft) {
-    if (activeFile) await deleteProjectEntry({ id: docProject }, tabName(activeFile), docId, isTplKey(activeFile))
+    if (activeFile) await deleteProjectEntry({ id: docProject }, activeFile)
     else await stageDocumentDelete(doc)
     return
   }
@@ -256,9 +264,9 @@ $('del').onclick = async () => {
 setInterval(() => {
   if (!docId) return
   loadComments().catch(e => console.warn('comments poll failed', e))
-  if ((docProject || docRole !== 'owner') && navigator.onLine !== false) {
-    const doc = docId, before = JSON.stringify(window.docTpl)
-    loadDocResources(true).then(ok => { if (ok && doc === docId && before !== JSON.stringify(window.docTpl)) queueRender() }).catch(() => {})
+  if (docProject && navigator.onLine !== false) {
+    const doc = docId, before = lastMedia
+    loadProjectFiles(true).then(ok => { if (ok && doc === docId && before !== lastMedia) queueRender() }).catch(() => {})
   }
 }, POLL_MS)
 const unsafeState = () => { // edits that may not have reached the server yet
@@ -284,8 +292,7 @@ addEventListener('pagehide', () => { // stash latest edits, 2s save may still be
     fetch('/api/templates', { method: 'POST', headers: head,
       body: JSON.stringify({ name: tplName, content: getT(), ...(tplVer ? { version: tplVer } : {}) }), keepalive: true })
   } else if (docId && activeFile && tabDirty && tabCanEdit(activeFile)) {
-    const rq = tabReq(activeFile, getT())
-    fetch(rq.url, { method: 'POST', headers: head, body: JSON.stringify(rq.body), keepalive: true })
+    fetch(tabReq(activeFile), { method: 'PUT', body: getT(), keepalive: true })
   }
   else if (docId && ytext && synced && docRole !== 'reviewer' && live)
     fetch(`/api/docs/${docId}/save`, { method: 'POST', headers: head,
