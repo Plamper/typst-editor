@@ -1,4 +1,4 @@
-# Digest pin: check `docker buildx imagetools inspect python:3.11-slim` before release,
+# Digest pin: check `docker buildx imagetools inspect` for the tag below before release,
 # Dependabot (docker ecosystem) bumps the pin automatically.
 FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913
 ARG TARGETARCH
