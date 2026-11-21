@@ -123,12 +123,12 @@ def test_propose_tool_packs_ops_and_corrects_the_package(shared):
     c, pid = shared
     doc(c, pid, "Main", '#include "part.typ"\n')
     a = make_agent(c)
-    a("write", path="/Report/Main/part.typ", content="part", package="")
+    a("write", path="/Report/part.typ", content="part", package="")
     pkg = [e for e in a("ls", path="/Report/.proposals")["entries"]][0]["path"].rsplit("/", 1)[-1]
     a("delete", path=f"/Report/.proposals/{pkg}")
     r = a("propose", project="/Report", title="Restructure", ops=[
         {"op": "edit", "path": "/Report/Main", "edits": [{"old": "part", "new": "section"}]},
-        {"op": "write", "path": "/Report/Main/section.typ", "content": "sec"}])
+        {"op": "write", "path": "/Report/section.typ", "content": "sec"}])
     assert r["title"] == "Restructure" and r["files"] == 2
     assert a.fail("propose", project="/Report/Main", ops=[])["code"] == "bad_path"
     same = a.fail("propose", project="/Report", ops=[{"op": "edit", "path": "/Report/Main", "edits": [{"old": "include", "new": "include"}]}])
@@ -182,35 +182,49 @@ def test_converting_between_document_and_file_is_a_proposal_in_shared_projects(s
     c, pid = shared
     doc(c, pid, "Main", "= Main\n")
     a = make_agent(c, mode="direct", name="setup")
-    a("write", path="/Report/Main/chapter.typ", content="= Chapter\n")
+    a("write", path="/Report/chapter.typ", content="= Chapter\n")
     p = make_agent(c, mode="propose", name="careful")
-    sent = p("move", path="/Report/Main/chapter.typ", to="/Report/Kapitel/Chapter")
+    sent = p("move", path="/Report/chapter.typ", to="/Report/Kapitel/Chapter")
     assert sent["proposal"] and sent["files"] == 2
-    assert a("read", path="/Report/Main/chapter.typ")["content"] == "= Chapter\n"  # nothing changed yet
+    assert a("read", path="/Report/chapter.typ")["content"] == "= Chapter\n"  # nothing changed yet
     pk = package(c, pid, sent["proposal"])
     r = c.post(f"/api/projects/{pid}/proposals/{sent['proposal']}/accept", json={"revision": pk["revision"]})
     assert r.status_code == 200, r.text
     assert a("read", path="/Report/Kapitel/Chapter")["content"] == "= Chapter\n"
-    assert a.fail("read", path="/Report/Main/chapter.typ")["code"] == "not_found"
-    back = p("move", path="/Report/Kapitel/Chapter", to="/Report/Main/chapter.typ")
+    assert a.fail("read", path="/Report/chapter.typ")["code"] == "not_found"
+    back = p("move", path="/Report/Kapitel/Chapter", to="/Report/chapter.typ")
     pk = package(c, pid, back["proposal"])
     assert c.post(f"/api/projects/{pid}/proposals/{back['proposal']}/accept", json={"revision": pk["revision"]}).status_code == 200
-    assert a("read", path="/Report/Main/chapter.typ")["content"] == "= Chapter\n"
+    assert a("read", path="/Report/chapter.typ")["content"] == "= Chapter\n"
     assert a.fail("read", path="/Report/Kapitel/Chapter")["code"] == "not_found"
+
+
+def test_proposed_file_move_carries_the_reference_rewrite(shared):
+    c, pid = shared
+    doc(c, pid, "Main", '#include "part.typ"\n')
+    a = make_agent(c, mode="direct", name="setup")
+    a("write", path="/Report/part.typ", content="= Part\n")
+    p = make_agent(c, mode="propose", name="careful")
+    sent = p("move", path="/Report/part.typ", to="/Report/Chapters/part.typ")
+    got = {f["path"]: f for f in p("read", path=f"/Report/.proposals/{sent['proposal']}")["files"]}
+    assert got["/Report/part.typ"]["to"] == "/Report/Chapters/part.typ" and got["/Report/Main"]["action"] == "modify"
+    pk = package(c, pid, sent["proposal"])
+    assert c.post(f"/api/projects/{pid}/proposals/{sent['proposal']}/accept", json={"revision": pk["revision"]}).status_code == 200
+    assert a("read", path="/Report/Chapters/part.typ")["content"] == "= Part\n"
+    assert a("read", path="/Report/Main")["content"] == '#include "Chapters/part.typ"\n'
 
 
 def test_only_typ_files_convert_even_as_proposals(shared):
     c, pid = shared
     doc(c, pid, "Main", "= M\n")
     a = make_agent(c, mode="direct", name="setup")
-    a("write", path="/Report/.library/data.csv", content="a,b\n")
-    a("write", path="/Report/Main/notes.csv", content="x\n")
+    a("write", path="/Report/data.csv", content="a,b\n")
     p = make_agent(c, mode="propose", name="careful")
-    for src, dst in (("/Report/.library/data.csv", "/Report/Daten"), ("/Report/Main/notes.csv", "/Report/Notes"), ("/Report/Main/notes.csv", "/Report/.library/notes.csv")):
+    for src, dst in (("/Report/data.csv", "/Report/Daten"), ("/Report/Main", "/Report/Main.csv")):
         assert p.fail("move", path=src, to=dst)["code"] == "bad_path"
         assert a.fail("move", path=src, to=dst)["code"] == "bad_path"
-    assert p.fail("propose", project="/Report", ops=[{"op": "move", "path": "/Report/.library/data.csv", "to": "/Report/Daten"}])["code"] == "bad_path"
-    assert c.post(f"/api/projects/{pid}/convert", json={"name": "data.csv", "to": "document"}).status_code == 400
+    assert p.fail("propose", project="/Report", ops=[{"op": "move", "path": "/Report/data.csv", "to": "/Report/Daten"}])["code"] == "bad_path"
+    assert c.post(f"/api/projects/{pid}/convert", json={"path": "data.csv"}).status_code == 400
 
 
 def test_reviewer_key_cannot_reach_owner_actions(c):
@@ -241,16 +255,24 @@ def test_agent_deletes_only_its_own_proposals_and_comments(shared):
 
 
 
-def test_doc_guests_do_not_find_module_names(c):
+def test_doc_guests_see_only_the_files_their_document_reaches(c):
     register_user(c, "alice")
     pid = project(c)
-    did = doc(c, pid, "Shared", "hello")
-    assert c.post(f"/api/projects/{pid}/resources", json={"name": "secretplan.typ", "content": "x"}).status_code == 200
+    did = doc(c, pid, "Shared", '#include "part.typ"\n', folder="Ch")
+    assert c.put(f"/api/projects/{pid}/files/Ch/part.typ", content=b"= Part secretword\n").status_code == 200
+    assert c.put(f"/api/projects/{pid}/files/secretplan.typ", content=b"secretword\n").status_code == 200
     register_user(c, "bob")
     login(c, "alice")
     assert c.post(f"/api/docs/{did}/share", json={"username": "bob", "role": "editor"}).status_code == 200
     login(c, "bob")
-    assert make_agent(c, name="bobbot")("search", query="secretplan")["hits"] == []
+    b = make_agent(c, name="bobbot")
+    assert b("search", query="secretplan")["hits"] == []
+    assert not [h for h in b("search", query="secretword")["hits"] if "secretplan" in h["path"]]
+    listed = {e["path"] for e in b("ls", path="/Report@alice", depth=0)["entries"]}
+    assert listed == {"/Report@alice/Ch/Shared", "/Report@alice/Ch/part.typ"}
+    assert b("read", path="/Report@alice/Ch/part.typ")["content"].startswith("= Part")
+    assert b.fail("read", path="/Report@alice/secretplan.typ")["code"] == "not_found"
+    assert "/Report@alice/Ch/part.typ" in {h["path"] for h in b("search", query="part.typ")["hits"]}
 
 
 def test_handled_proposals_leave_no_unread_notification(shared):

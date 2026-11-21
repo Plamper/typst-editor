@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from backend import render
 from backend.mcp_fs import Ctx, err, read_bytes, resolve, version
 from backend.routers import transfer
+from backend.services import project_files
 
 INLINE_MAX = 128 * 1024
 
@@ -22,13 +23,18 @@ def _doc(ctx: Ctx, path: str) -> dict:
 
 
 def _label(file: str | None, node: dict) -> str | None:
-    """Diagnostics name the document path; other files lose the temp dir in front of them."""
-    parts = (file or "").replace("\\", "/").split("/")
+    """Diagnostics name agent paths: the compile entry (F/__doc__.typ) is the document, other files their project path."""
+    if not file:
+        return file
+    parts = file.replace("\\", "/").split("/")
     for i, seg in enumerate(parts):
         if seg.startswith(("check-doc-", "export-doc-", "mcp-view-")):
-            file = "/".join(parts[i + 1:])
+            parts = parts[i + 1:]
             break
-    return node["path"] if file == render.ENTRY else file
+    rel = "/".join(parts).lstrip("/")
+    if rel == project_files.entry(node["folder"]):
+        return node["path"]
+    return rel if rel.startswith("@") else f"/{node['pname']}/{rel}"
 
 
 def _compile_error(e: HTTPException, node: dict) -> HTTPException:
@@ -45,7 +51,7 @@ def _clean(text: str, node: dict) -> str:
         parts = word.replace("\\", "/").split("/")
         hit = next((i for i, seg in enumerate(parts) if seg.startswith(("check-doc-", "export-doc-", "mcp-view-"))), None)
         out.append("/".join(parts[hit + 1:]) if hit is not None else word)
-    return " ".join(out).replace(render.ENTRY, node["path"])
+    return " ".join(out).replace(project_files.entry(node["folder"]), node["path"]).replace(render.ENTRY, node["path"])
 
 
 def _source(node: dict):
@@ -95,12 +101,12 @@ async def export(ctx: Ctx, path: str, base: str, format: str = "pdf", pdf_standa
             if e.status_code == 422:
                 raise _compile_error(e, node) from None
             raise
-    elif node["kind"] in ("file", "module", "template"):
+    elif node["kind"] in ("file", "template"):
         data = await asyncio.to_thread(read_bytes, node, ctx.user)
         name = (node.get("name") or node["path"]).rsplit("/", 1)[-1]
         mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
     else:
-        raise err(400, "bad_path", "Export a document, file, module or template")
+        raise err(400, "bad_path", "Export a document, file or template")
     out = {"path": node["path"], "filename": name, "mime": mime, "size_bytes": len(data),
            "url": _link(base, transfer.offer_download(ctx, name, mime, data)),
            "expires_in": int(transfer.TTL), "hint": f"curl -sS -o '{name}' '<url>'"}
@@ -111,8 +117,8 @@ async def export(ctx: Ctx, path: str, base: str, format: str = "pdf", pdf_standa
 
 async def upload(ctx: Ctx, path: str, base: str) -> dict:
     node = resolve(ctx, path, create=True)
-    if node["kind"] not in ("doc", "new_doc", "file", "new_file", "module", "new_module", "template", "new_template"):
-        raise err(400, "bad_path", "Upload to a document, attachment, module or template path")
+    if node["kind"] not in ("doc", "new_doc", "file", "new_file", "template", "new_template"):
+        raise err(400, "bad_path", "Upload to a document, file or template path")
     url = _link(base, transfer.offer_upload(ctx, node["path"]))
     return {"path": node["path"], "url": url, "expires_in": int(transfer.TTL), "max_bytes": 10 * 1024 * 1024,
             "hint": f"curl -sS -T <local-file> '{url}'  (one use; replaces the target)"}

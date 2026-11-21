@@ -213,30 +213,30 @@ def _title(c, pid):
     return c.get(f"/api/projects/{pid}").json()["title"]
 
 
-@pytest.mark.skip(reason="stage 2: MCP path grammar moves to project files")
 def test_agent_paths_separate_equal_titles_by_folder(c):
     pid, _ = make(c)
     a = c.post(f"/api/projects/{pid}/docs", json={"title": "Chapter", "folder": "a"}).json()["id"]
     b = c.post(f"/api/projects/{pid}/docs", json={"title": "Chapter", "folder": "b"}).json()["id"]
-    assert c.post(f"/api/docs/{b}/files", files={"f": ("pic.png", b"x")}).status_code == 200
+    assert c.put(f"/api/projects/{pid}/files/b/pic.png", content=b"x").status_code == 200
     ctx, name = mcp_fs.Ctx("alice"), _title(c, pid)
     assert mcp_fs.resolve(ctx, f"/{name}/a/Chapter")["doc_id"] == a
     assert mcp_fs.resolve(ctx, f"/{name}/b/Chapter.typ")["doc_id"] == b
-    pic = mcp_fs.resolve(ctx, f"/{name}/b/Chapter/pic.png")
-    assert (pic["kind"], pic["doc_id"], pic["name"]) == ("file", b, "pic.png")
+    pic = mcp_fs.resolve(ctx, f"/{name}/b/pic.png")
+    assert (pic["kind"], pic["name"], pic["path"]) == ("file", "b/pic.png", f"/{name}/b/pic.png")
     with pytest.raises(HTTPException) as e:
         mcp_fs.resolve(ctx, f"/{name}/Chapter")
     assert e.value.status_code == 404
 
 
-@pytest.mark.skip(reason="stage 2: MCP path grammar moves to project files")
 def test_agent_paths_nested_same_name_new_file_and_trashed(c):
     pid, did = make(c)
     assert c.post(f"/api/projects/{pid}/folders", json={"path": "A"}).status_code == 200
     nested = c.post(f"/api/projects/{pid}/docs", json={"title": "A", "folder": "A"}).json()["id"]
     ctx, name = mcp_fs.Ctx("alice"), _title(c, pid)
+    assert mcp_fs.resolve(ctx, f"/{name}/A/A")["doc_id"] == nested
     new = mcp_fs.resolve(ctx, f"/{name}/A/A/file.typ", create=True)
-    assert (new["kind"], new["doc_id"], new["name"]) == ("new_file", nested, "file.typ")
+    assert (new["kind"], new["name"]) == ("new_file", "A/A/file.typ")
+    assert mcp_fs.resolve(ctx, f"/{name}/A/B", create=True)["kind"] == "new_doc"
     gone = c.post(f"/api/projects/{pid}/docs", json={"title": "Gone"}).json()["id"]
     assert c.delete(f"/api/docs/{gone}").status_code == 200
     with pytest.raises(HTTPException) as e:

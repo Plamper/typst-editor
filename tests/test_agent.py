@@ -94,13 +94,14 @@ def test_write_creates_everything_and_needs_base_version_to_overwrite(solo):
     assert a("write", path="/Brand New/Berichte/", content="")["created"]
     assert a("write", path="/Report/Berichte/Q2", content="= Q2")["path"] == "/Report/Berichte/Q2"
     pic = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 64).decode()
-    assert a("write", path="/Report/Berichte/Q2/img/logo.png", content_base64=pic)["created"]
-    assert a("write", path="/Report/.library/style.typ", content="#let c = red")["created"]
+    assert a("write", path="/Report/Berichte/img/logo.png", content_base64=pic)["created"]
+    assert a("write", path="/Report/style.typ", content="#let c = red")["created"]
     assert a("write", path="/.templates/memo.typ", content="= Memo")["created"]
     listing = {e["path"]: e["kind"] for e in a("ls", path="/Report", depth=0)["entries"]}
-    assert listing["/Report/Berichte/Q2/img/logo.png"] == "file" and listing["/Report/.library/style.typ"] == "module"
+    assert listing["/Report/Berichte/img/logo.png"] == "file" and listing["/Report/style.typ"] == "file"
+    assert listing["/Report/Berichte/Q2"] == "doc"
     assert a("read", path="/.templates/memo.typ")["content"] == "= Memo"
-    img = a.raw("read", path="/Report/Berichte/Q2/img/logo.png")
+    img = a.raw("read", path="/Report/Berichte/img/logo.png")
     assert any(x["type"] == "image" for x in img["content"])
     got = a("read", path="/Report/Berichte/Q2")
     stale = a.fail("write", path="/Report/Berichte/Q2", content="= Q2b")
@@ -108,6 +109,19 @@ def test_write_creates_everything_and_needs_base_version_to_overwrite(solo):
     assert a("write", path="/Report/Berichte/Q2", content="= Q2b", base_version=got["version"])["version"]
     assert a("read", path="/Report/Berichte/Q2")["content"] == "= Q2b"
     assert a("write", path="/Report/Berichte/Q2", content="= forced", force=True)["version"]
+    style = a("read", path="/Report/style.typ")
+    assert a.fail("write", path="/Report/style.typ", content="x")["code"] == "stale_version"
+    assert a("write", path="/Report/style.typ", content="#let c = blue", base_version=style["version"])["version"] != style["version"]
+    assert a("edit", path="/Report/style.typ", edits=[{"old": "blue", "new": "green"}])["replaced"] == 1
+    assert a("read", path="/Report/style.typ")["content"] == "#let c = green"
+
+
+def test_a_file_next_to_a_document_wins_its_typ_name(solo):
+    c, pid, a = solo
+    doc(c, pid, "Intro", "= Doc\n")
+    assert a("read", path="/Report/Intro.typ")["kind"] == "doc"
+    assert c.put(f"/api/projects/{pid}/files/Intro.typ", content=b"= File\n").status_code == 200
+    assert a("read", path="/Report/Intro.typ")["kind"] == "file" and a("read", path="/Report/Intro")["content"] == "= Doc\n"
 
 
 def test_edit_atomic_errors_and_changed_since(solo):
@@ -147,14 +161,15 @@ def test_edit_keeps_concurrent_typing_in_the_live_room(solo):
 def test_move_rename_references_and_trash_restore(solo):
     c, pid, a = solo
     doc(c, pid, "Main", '#include "part.typ"\n#image("pic.png")\n')
-    a("write", path="/Report/Main/part.typ", content="part")
-    a("write", path="/Report/.library/lib.typ", content="lib")
-    moved = a("move", path="/Report/Main/part.typ", to="/Report/Main/sections/part2.typ")
+    a("write", path="/Report/part.typ", content="part")
+    a("write", path="/Report/lib.typ", content="lib")
+    moved = a("move", path="/Report/part.typ", to="/Report/sections/part2.typ")
     assert moved["updated_references"] == 1
     assert a("read", path="/Report/Main")["content"] == '#include "sections/part2.typ"\n#image("pic.png")\n'
+    assert a("move", path="/Report/sections/part2.typ", to="/Report/other/")["path"] == "/Report/other/part2.typ"  # a folder keeps the name
+    assert a("read", path="/Report/Main")["content"].startswith('#include "other/part2.typ"')
     a("move", path="/Report/Main", to="/Report/Archiv/Final")
     assert a("read", path="/Report/Archiv/Final")["path"] == "/Report/Archiv/Final"
-    assert a("read", path="/Report/Archiv/Final/sections/part2.typ")["content"] == "part"
     a("move", path="/Report/Archiv/", to="/Report/Old/")
     assert a("read", path="/Report/Old/Final")["path"] == "/Report/Old/Final"
     assert a.fail("move", path="/Report/Old/Final", to="/Elsewhere/X")["code"] == "not_found"
@@ -164,22 +179,25 @@ def test_move_rename_references_and_trash_restore(solo):
     assert trash
     a("move", path=trash[0]["path"], to="/")
     assert a("read", path="/Report/Old/Final")["content"].startswith("#include")
-    a("delete", path="/Report/.library/lib.typ")
-    assert any(e["name"] == "lib.typ" for e in a("ls", path="/.trash")["entries"])
+    a("delete", path="/Report/lib.typ")
+    gone = [e for e in a("ls", path="/.trash")["entries"] if e["name"] == "lib.typ"]
+    assert gone and gone[0]["kind"] == "file"
+    a("move", path=gone[0]["path"], to="/")
+    assert a("read", path="/Report/lib.typ")["content"] == "lib"
     assert a("move", path="/Report", to="/Renamed")["path"] == "/Renamed"
 
 
 def test_copy_from_and_search(solo):
     c, pid, a = solo
     doc(c, pid, "Src", "needle in a haystack\nsecond\n")
-    a("write", path="/Report/Src/data.csv", content="a,b\n1,needle\n")
+    a("write", path="/Report/data/needles.csv", content="a,b\n1,needle\n")
     a("write", path="/Report/Copy", copy_from="/Report/Src")
     assert a("read", path="/Report/Copy")["content"].startswith("needle")
     hits = a("search", query="needle")["hits"]
     paths = {h["path"]: h for h in hits}
     assert paths["/Report/Src"]["line"] == 1 and "needle" in paths["/Report/Src"]["snippet"]
-    assert paths["/Report/Src/data.csv"]["kind"] == "file" and paths["/Report/Src/data.csv"]["line"] == 2
-    assert {h["path"] for h in a("search", query="needle", path="/Report/Src")["hits"]} == {"/Report/Src", "/Report/Src/data.csv"}
+    assert paths["/Report/data/needles.csv"]["kind"] == "file" and paths["/Report/data/needles.csv"]["line"] == 2
+    assert {h["path"] for h in a("search", query="needle", path="/Report/data")["hits"]} == {"/Report/data/needles.csv"}
     assert a.fail("search", query="n")["code"] == "bad_request"
 
 
@@ -187,28 +205,42 @@ def test_copy_from_and_search(solo):
 def test_render_check_and_pages(solo):
     c, pid, a = solo
     doc(c, pid, "Good", "= Hi\n#lorem(30)\n")
-    doc(c, pid, "Bad", "#let x = \n= oops #undefined\n")
+    doc(c, pid, "Bad", "#let x = \n= oops #undefined\n", folder="Kapitel")
     ok = a("render", path="/Report/Good")
     assert ok["ok"] and ok["pages"] == 1
-    bad = a.fail("render", path="/Report/Bad")
-    assert bad["code"] == "compile_error" and bad["diagnostics"][0]["file"] == "/Report/Bad" and bad["diagnostics"][0]["line"]
+    bad = a.fail("render", path="/Report/Kapitel/Bad")
+    assert bad["code"] == "compile_error" and bad["diagnostics"][0]["file"] == "/Report/Kapitel/Bad" and bad["diagnostics"][0]["line"]
     shots = a.raw("render", path="/Report/Good", pages="1")
     assert any(x["type"] == "image" for x in shots["content"])
+
+
+@pytest.mark.skipif(not shutil.which("typst"), reason="typst CLI missing")
+def test_render_resolves_paths_from_the_document_folder(solo):
+    c, pid, a = solo
+    doc(c, pid, "Main", '#include "part.typ"\n#include "../shared/style.typ"\n', folder="Chapters")
+    a("write", path="/Report/Chapters/part.typ", content="= Part\n")
+    a("write", path="/Report/shared/style.typ", content="#undefined_thing\n")
+    out = a("read", path="/Report/Chapters/Main", outline=True)["outline"]["imports"]
+    assert [i["resolves_to"] for i in out] == ["/Report/Chapters/part.typ", "/Report/shared/style.typ"]
+    bad = a.fail("render", path="/Report/Chapters/Main")
+    assert bad["diagnostics"][0]["file"] == "/Report/shared/style.typ"
+    a("write", path="/Report/shared/style.typ", content="#let x = 1\n", force=True)
+    assert a("render", path="/Report/Chapters/Main")["ok"]
 
 
 def test_export_and_upload_links(solo):
     c, pid, a = solo
     doc(c, pid, "Notes", "text\n")
-    a("write", path="/Report/Notes/data.bin", content_base64=base64.b64encode(b"\x00\x01\x02").decode())
-    exp = a("export", path="/Report/Notes/data.bin")
+    a("write", path="/Report/data.bin", content_base64=base64.b64encode(b"\x00\x01\x02").decode())
+    exp = a("export", path="/Report/data.bin")
     assert base64.b64decode(exp["content_base64"]) == b"\x00\x01\x02"
     got = c.get(exp["url"].replace("http://testserver", ""))
     assert got.status_code == 200 and got.content == b"\x00\x01\x02"
-    up = a("upload", path="/Report/Notes/big.bin")
+    up = a("upload", path="/Report/big.bin")
     r = c.put(up["url"].replace("http://testserver", ""), content=b"x" * 1000)
     assert r.status_code == 200, r.text
     assert c.put(up["url"].replace("http://testserver", ""), content=b"y").status_code == 404  # one use
-    assert {e["path"]: e for e in a("ls", path="/Report/Notes")["entries"]}["/Report/Notes/big.bin"]["size"] == 1000
+    assert {e["path"]: e for e in a("ls", path="/Report")["entries"]}["/Report/big.bin"]["size"] == 1000
     assert c.get("/api/transfer/nonsense").status_code == 404
 
 
@@ -227,61 +259,41 @@ def test_reviewer_key_cannot_write_directly_and_bearer_is_required(c):
 def test_text_file_and_document_convert_into_each_other(solo):
     c, pid, a = solo
     doc(c, pid, "Main", '#include "chapter.typ"\n')
-    a("write", path="/Report/Main/chapter.typ", content="= Chapter\n")
-    made = a("move", path="/Report/Main/chapter.typ", to="/Report/Kapitel/Chapter")
-    assert made["converted"] == "file to document"
-    assert a("read", path="/Report/Kapitel/Chapter")["content"] == "= Chapter\n"
-    assert a.fail("read", path="/Report/Main/chapter.typ")["code"] == "not_found"
-    back = a("move", path="/Report/Kapitel/Chapter", to="/Report/Main/chapter.typ")
+    a("write", path="/Report/chapter.typ", content='= Chapter\n#image("img/a.png")\n')
+    a("write", path="/Report/img/a.png", content_base64=base64.b64encode(b"x").decode())
+    made = a("move", path="/Report/chapter.typ", to="/Report/Kapitel/Chapter")
+    assert made["converted"] == "file to document" and made["broken_references"] == ["/Report/Main"]
+    assert a("read", path="/Report/Kapitel/Chapter")["content"] == '= Chapter\n#image("../img/a.png")\n'  # still reaches /img/a.png
+    assert a.fail("read", path="/Report/chapter.typ")["code"] == "not_found"
+    back = a("move", path="/Report/Kapitel/Chapter", to="/Report/chapter.typ")
     assert back["converted"] == "document to file"
-    assert a("read", path="/Report/Main/chapter.typ")["content"] == "= Chapter\n"
+    assert a("read", path="/Report/chapter.typ")["content"] == '= Chapter\n#image("img/a.png")\n'
     assert a.fail("read", path="/Report/Kapitel/Chapter")["code"] == "not_found"
+    doc(c, pid, "Layout", "#let x = 1\n")
+    assert a("move", path="/Report/Layout", to="/Report/Layout.typ")["converted"] == "document to file"  # in place
+    assert a("read", path="/Report/Layout.typ")["kind"] == "file"
 
 
-def test_typ_files_convert_to_documents_and_modules_and_warn_about_includes(solo):
+def test_only_typ_files_and_documents_convert(solo):
     c, pid, a = solo
-    doc(c, pid, "Main", '#include "chapter.typ"\n')
-    a("write", path="/Report/Main/chapter.typ", content="= Chapter\n")
-    a("write", path="/Report/Main/data.csv", content="a,b\n")
-    assert "converted" not in a.fail("move", path="/Report/Main/data.csv", to="/Report/Data")  # only .typ files convert
-    to_module = a("move", path="/Report/Main/chapter.typ", to="/Report/.library/chapter.typ")
-    assert to_module["converted"] == "file to module" and "broken_references" not in to_module  # still reachable as a module
-    assert a("read", path="/Report/.library/chapter.typ")["content"] == "= Chapter\n"
-    assert a.fail("read", path="/Report/Main/chapter.typ")["code"] == "not_found"
-    to_doc = a("move", path="/Report/.library/chapter.typ", to="/Report/Kapitel/Chapter")
-    assert to_doc["converted"] == "module to document"
-    assert to_doc["broken_references"] == ["/Report/Main"]  # Main still includes it
-    assert a("read", path="/Report/Kapitel/Chapter")["content"] == "= Chapter\n"
-    c_rest = c.post(f"/api/projects/{pid}/convert", json={"name": "x.typ", "to": "module"})
-    assert c_rest.status_code == 400
-
-
-def test_document_converts_to_a_module(solo):
-    c, pid, a = solo
-    doc(c, pid, "Layout", "#let accent = red\n")
-    done = a("move", path="/Report/Layout", to="/Report/.library/Layout.typ")
-    assert done["converted"] == "document to module"
-    assert a("read", path="/Report/.library/Layout.typ")["content"] == "#let accent = red\n"
-    assert a.fail("read", path="/Report/Layout")["code"] == "not_found"
-    rest = c.post(f"/api/projects/{pid}/convert", json={"doc_id": "d_nope", "document": True, "to": "document"})
-    assert rest.status_code == 400
+    doc(c, pid, "Main", "= M\n")
+    a("write", path="/Report/data.csv", content="a,b\n")
+    assert a.fail("move", path="/Report/data.csv", to="/Report/Data")["code"] == "bad_path"
+    assert a.fail("move", path="/Report/Main", to="/Report/Main.csv")["code"] == "bad_path"
+    assert c.post(f"/api/projects/{pid}/convert", json={"path": "data.csv"}).status_code == 400
 
 
 def test_conversions_keep_the_folder(solo):
     c, pid, a = solo
     did = doc(c, pid, "Layout", "#let x = 1\n", folder="Archiv")
-    r = c.post(f"/api/projects/{pid}/convert", json={"doc_id": did, "document": True, "to": "module"})
-    assert r.status_code == 200 and r.json()["name"] == "Archiv/Layout.typ"
-    paths = {e["path"] for e in a("ls", path="/Report", depth=0)["entries"]}
-    assert "/Report/.library/Archiv/Layout.typ" in paths and "/Report/Archiv" in paths  # the emptied folder survives
-    r = c.post(f"/api/projects/{pid}/convert", json={"name": "Archiv/Layout.typ", "to": "document"})
+    r = c.post(f"/api/projects/{pid}/convert", json={"doc_id": did})
+    assert r.status_code == 200 and r.json()["path"] == "Archiv/Layout.typ"
+    entries = {e["path"]: e["kind"] for e in a("ls", path="/Report", depth=0)["entries"]}
+    assert entries["/Report/Archiv/Layout.typ"] == "file"
+    assert a("ls", path="/Report/Archiv")["path"] == "/Report/Archiv"
+    r = c.post(f"/api/projects/{pid}/convert", json={"path": "Archiv/Layout.typ"})
     assert r.status_code == 200
     assert a("read", path="/Report/Archiv/Layout")["content"] == "#let x = 1\n"
-    main = doc(c, pid, "Main", "= Main\n", folder="Kapitel")
-    a("write", path="/Report/Kapitel/Main/part.typ", content="= Part\n")
-    r = c.post(f"/api/projects/{pid}/convert", json={"doc_id": main, "name": "part.typ", "to": "document"})
-    assert r.status_code == 200
-    assert a("read", path="/Report/Kapitel/part")["content"] == "= Part\n"  # lands next to its document
 
 
 def test_paths_are_returned_as_stored_and_junk_is_refused(solo):
@@ -290,35 +302,32 @@ def test_paths_are_returned_as_stored_and_junk_is_refused(solo):
     assert a("read", path=made["path"])["content"] == "x"  # the echoed path is the one that works
     a("write", path="/Report/Doc", content="d")
     pic = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
-    assert a.fail("write", path="/Report/Typo/a.png", content_base64=pic)["code"] == "not_found"  # no junk document
-    assert a("write", path="/Report/Doc/ü bild.png", content_base64=pic)["path"].endswith("/_ bild.png")
+    assert a("write", path="/Report/ü bild.png", content_base64=pic)["path"] == "/Report/_ bild.png"
+    assert a.fail("write", path="/Report/x/__doc__.typ", content="x")["code"] == "bad_request"
     assert a.fail("delete", path="/Report/Nowhere/")["code"] == "not_found"
     assert a.fail("read", path="/Report/Doc", limit=-1)["code"] == "bad_request"
+    assert a.fail("read", path="/Report/../Doc")["code"] == "bad_path"
     assert a.fail("write", path="/Report/Doc", content="y")["message"].startswith("base_version is missing")
 
 
-def test_comment_validates_anchors_and_search_finds_modules(solo):
+def test_comment_validates_anchors_and_search_finds_file_names(solo):
     c, pid, a = solo
     doc(c, pid, "Notes", "alpha\nbeta\n")
     assert a.fail("comment", path="/Report/Notes", text="x", quote="nope")["code"] == "bad_request"
     assert a.fail("comment", path="/Report/Notes", text="x", line=99)["code"] == "bad_request"
     cid = a("comment", path="/Report/Notes", text="ok", line=2)["id"]
     assert a.fail("comment", path="/Report/Notes", text="edit?", id=cid)["code"] == "bad_request"
-    a("write", path="/Report/.library/helper.typ", content="#let h = 1")
-    assert {"path": "/Report/.library/helper.typ", "kind": "module", "count": 0, "line": 0, "snippet": ""} in a("search", query="helper")["hits"]
+    a("write", path="/Report/lib/helper.typ", content="#let h = 1")
+    assert {"path": "/Report/lib/helper.typ", "kind": "file", "count": 0, "line": 0, "snippet": ""} in a("search", query="helper")["hits"]
     assert a.fail("search", query="helper", kind="bogus")["code"] == "bad_request"
     assert a.fail("search", query="helper", path="/Nope")["code"] == "not_found"
 
 
-def test_conversions_honour_names_and_refuse_attachment_loss(solo):
+def test_deleting_a_folder_trashes_documents_and_files_below(solo):
     c, pid, a = solo
-    doc(c, pid, "Main", "= M\n")
-    a("write", path="/Report/Main/part.typ", content="p")
-    assert a("move", path="/Report/Main/part.typ", to="/Report/.library/renamed.typ")["converted"] == "file to module"
-    assert a("read", path="/Report/.library/renamed.typ")["content"] == "p"
-    doc(c, pid, "Solo", "s")
-    a("write", path="/Report/Solo/pic.txt", content="t")
-    assert a.fail("move", path="/Report/Solo", to="/Report/.library/sub/Solo.typ")["code"] == "conflict"  # attachments would be left behind
-    a("delete", path="/Report/Solo/pic.txt")
-    assert a("move", path="/Report/Solo", to="/Report/.library/sub/Teil.typ")["converted"] == "document to module"
-    assert a("read", path="/Report/.library/sub/Teil.typ")["content"] == "s"
+    doc(c, pid, "Part", "p", folder="Old")
+    a("write", path="/Report/Old/img/a.png", content_base64=base64.b64encode(b"x").decode())
+    a("delete", path="/Report/Old/")
+    assert a.fail("read", path="/Report/Old/Part")["code"] == "not_found"
+    assert a.fail("read", path="/Report/Old/img/a.png")["code"] == "not_found"
+    assert {e["name"] for e in a("ls", path="/.trash")["entries"]} >= {"Part", "Old/img/a.png"}

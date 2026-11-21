@@ -24,9 +24,10 @@ from backend import mcp_fs as fs
 
 log = logging.getLogger("typst.mcp")
 
-INSTRUCTIONS = """Typst documents in projects. A path is /{Project}/{folder}/{Document}; a document IS its title.
-Attachments live under their document (/P/Doc/img/a.png), shared modules under /P/.library/, proposals under /P/.proposals/,
-private templates under /.templates/, deleted things under /.trash/. Foreign projects are "Title@owner". Start with ls.
+INSTRUCTIONS = """Typst documents in projects. Each project is one file tree: documents (/{Project}/{folder}/{Document}; a document IS
+its title) and files at their paths (/P/Chapters/part.typ, /P/img/a.png). Quoted paths in a document or .typ file are
+relative to its folder ("../img/a.png"; "/img/a.png" from the project root). Proposals live under /P/.proposals/, private
+templates under /.templates/, deleted things under /.trash/. Foreign projects are "Title@owner". Start with ls.
 Work: ls -> read(outline=true) -> edit/write -> render (errors) -> render(pages=...) to look -> export.
 Pass base_version (from read) when overwriting. Send related changes as ONE package: in shared projects and for reviewer keys
 edit/write/move/delete become proposals; reuse package=<id> to add to it. Humans accept single hunks. You may delete your own
@@ -122,13 +123,13 @@ async def _run(tool: str, path: str, call):
 
 @mcp.tool(annotations=READ_ONLY)
 async def ls(path: str = "/", depth: int = 1, versions: bool = False) -> dict:
-    """List a path. / = projects; a project or folder = its documents, folders, attachments, modules, proposals (depth 0 = everything below). A document shows its version and, with versions=true, saved snapshots."""
+    """List a path. / = projects; a project or folder = its documents, files, folders, proposals (depth 0 = everything below). A document shows its version and, with versions=true, saved snapshots."""
     return await _run("ls", path, lambda c, b: fs.ls(c, path, depth, versions))
 
 
 @mcp.tool(annotations=READ_ONLY, output_schema=None)
 async def read(path: str, offset: int = 1, limit: int = 0, outline: bool = False, version: str = "") -> ToolResult | dict:
-    """Read a document, text attachment, module, template or proposal. Returns content, version (pass it as base_version when writing), total_lines and for documents the open comments (id, line, quote, text). outline=true adds headings, labels, #let names and imports with what they resolve to. version=<snapshot id> reads an older document version. Images come back as images."""
+    """Read a document, text file, template or proposal. Returns content, version (pass it as base_version when writing), total_lines and for documents the open comments (id, line, quote, text). outline=true adds headings, labels, #let names and imports with what they resolve to. version=<snapshot id> reads an older document version. Images come back as images."""
     out, image = await _run("read", path, lambda c, b: fs.read(c, path, offset, limit, outline, version))
     if image is None:
         return out
@@ -139,31 +140,31 @@ async def read(path: str, offset: int = 1, limit: int = 0, outline: bool = False
 @mcp.tool()
 async def write(path: str, content: str | None = None, content_base64: str = "", copy_from: str = "", base_version: str = "",
                 force: bool = False, package: str = "") -> dict:
-    """Create or overwrite. /Project = new project; /P/Folder/ = folder; /P/Folder/Name = document; /P/Doc/file.png = attachment (content_base64 for binaries); /P/.library/x.typ = module; /.templates/x.typ = template. copy_from=<path> copies server-side (also across projects). Overwriting needs base_version from read (or force=true). In shared projects this becomes a proposal."""
+    """Create or overwrite. /Project = new project; /P/Folder/ = folder; /P/Folder/Name (no suffix) = document; /P/Folder/file.typ or /P/img/a.png = project file (content_base64 for binaries); /.templates/x.typ = template. copy_from=<path> copies server-side (also across projects). Overwriting needs base_version from read (or force=true). In shared projects this becomes a proposal."""
     return await _run("write", path, lambda c, b: fs.write(c, path, content, content_base64, copy_from, base_version, force, package))
 
 
 @mcp.tool()
 async def edit(path: str, edits: list[Edit], base_version: str = "", package: str = "") -> dict:
-    """Exact-text edits on a document, text attachment, module or template, all applied atomically against the text as it is now. old must match once (2-3 lines of context) or set all=true. Errors list the matches or the closest line. Edits keep concurrent typing of people in the open editor."""
+    """Exact-text edits on a document, text file or template, all applied atomically against the text as it is now. old must match once (2-3 lines of context) or set all=true. Errors list the matches or the closest line. Edits keep concurrent typing of people in the open editor."""
     return await _run("edit", path, lambda c, b: fs.edit(c, path, [e.model_dump() for e in edits], base_version, package))
 
 
 @mcp.tool()
 async def move(path: str, to: str, fix_refs: bool = True, package: str = "") -> dict:
-    """Rename or move inside one project: a document (new title and/or folder), an attachment (inside its document), a module, a folder (end both paths with /), a project (/NewTitle), a template, or restore /.trash/<id> (to="/"; it returns to its original place). Quoted references to a moved file or module are rewritten when fix_refs is true."""
+    """Rename or move inside one project: a document (new title and/or folder), a file, a folder (end both paths with /; to a folder path keeps the name), a project (/NewTitle), a template, or restore /.trash/<id> (to="/"; it returns to its original place). A .typ file moved to a document path (no suffix) becomes a document, a document moved to a .typ path becomes a file. Quoted references to a moved file are rewritten when fix_refs is true."""
     return await _run("move", path, lambda c, b: fs.move(c, path, to, fix_refs, package))
 
 
 @mcp.tool()
 async def delete(path: str, package: str = "") -> dict:
-    """Delete to the trash (recoverable under /.trash): document, attachment, module, template, project, empty folder (path ends with /), or one of your own proposals (/P/.proposals/<id>). Comments are deleted with the comment tool."""
+    """Delete to the trash (recoverable under /.trash): document, file, template, project, folder with everything below it (path ends with /), or one of your own proposals (/P/.proposals/<id>). Comments are deleted with the comment tool."""
     return await _run("delete", path, lambda c, b: fs.delete(c, path, package))
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def search(query: str, path: str = "/", kind: str = "") -> dict:
-    """Search titles and text of documents, attachments, modules, templates and the trash you can see. Hits carry path, kind, line, snippet and match count. path limits to a project or folder, kind to doc|file|module|template|trash."""
+    """Search titles and text of documents, file names and texts, templates and the trash you can see. Hits carry path, kind, line, snippet and match count. path limits to a project or folder, kind to doc|file|template|trash."""
     return await _run("search", path, lambda c, b: fs.find(c, query, path, kind))
 
 
@@ -175,13 +176,13 @@ async def render(path: str, pages: str = "", scale: float = 1.0) -> ToolResult |
 
 @mcp.tool(annotations=READ_ONLY)
 async def export(path: str, format: str = "pdf", pdf_standard: str = "none", pages: str = "", ppi: int = 0) -> dict:
-    """Export a document as pdf, svg, png (several pages arrive as a zip) or zip (sources), or fetch any file/module/template. ppi 72-300 for png. Returns a download url valid for 5 minutes (curl it) and, when small, content_base64."""
+    """Export a document as pdf, svg, png (several pages arrive as a zip) or zip (sources), or fetch any file/template. ppi 72-300 for png. Returns a download url valid for 5 minutes (curl it) and, when small, content_base64."""
     return await _run("export", path, lambda c, b: mcp_render.export(c, path, b, format, pdf_standard, pages, ppi))
 
 
 @mcp.tool()
 async def upload(path: str) -> dict:
-    """Get a one-time upload url for a file of up to 10 MB: curl -T <local-file> <url> writes it to path (document, attachment, module or template, new or existing; replaces it). Use this instead of content_base64 for anything big."""
+    """Get a one-time upload url for a file of up to 10 MB: curl -T <local-file> <url> writes it to path (document, file or template, new or existing; replaces it). Use this instead of content_base64 for anything big."""
     return await _run("upload", path, lambda c, b: mcp_render.upload(c, path, b))
 
 

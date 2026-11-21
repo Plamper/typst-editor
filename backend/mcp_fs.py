@@ -1,16 +1,16 @@
-"""Agent filesystem: one path grammar over projects, documents, attachments, modules and templates.
+"""Agent filesystem: one path grammar over projects, their file trees and templates.
 
     /                                  projects ("Title"; foreign ones "Title@owner"), /.templates, /.trash
-    /{Project}/{folder}/{Document}     a document, its text (a trailing .typ is accepted)
-    /{Project}/{folder}/{Document}/{file}   an attachment of that document
-    /{Project}/.library/{module}       shared project module
+    /{Project}/{folder}/{Document}     a document, its text (a trailing .typ is accepted unless a file has that name)
+    /{Project}/{path}                  a project file (Chapters/part.typ, img/logo.png)
     /{Project}/.proposals/{id}         proposal package
     /.templates/{name}                 private template
     /.trash/{id}                       deleted entry
 
-A document is its title; folders exist by use. Versions are content hashes of the live text.
-Writes go through the same routes as the UI (quota, locks, trash, notifications); documents
-are edited in the live Yjs room as minimal spans so concurrent typing survives.
+A document is its title; folders exist by use. Versions are content hashes. A document in folder F
+compiles as F/__doc__.typ, so its quoted paths are relative to F. Writes go through the same services
+as the UI (quota, locks, trash, notifications); documents are edited in the live Yjs room as minimal
+spans so concurrent typing survives.
 """
 from __future__ import annotations
 
@@ -18,27 +18,24 @@ import asyncio
 import base64
 import difflib
 import hashlib
-import io
 import posixpath
 import re
 from dataclasses import dataclass
-from typing import Literal
 
-from fastapi import HTTPException, Request, UploadFile
+from fastapi import HTTPException, Request
 
 from backend import db, deps, search, sync
-from backend.constants import MAX_TXT, TITLE_MAX, UPLOAD_MAX
-from backend.services import apikeys, projects, quota, resources, trash
+from backend.constants import MAX_TXT, TITLE_MAX
+from backend.services import apikeys, project_files, projects, quota, resources, trash
 from backend.services import snapshots as snapsvc
-from backend.services.docfiles import safe_name, store
 
 TEXT = deps.TEXT_SUFFIX
 IMAGES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-LIB, TPL, PROP, TRASH = ".library", ".templates", ".proposals", ".trash"
+TPL, PROP, TRASH = ".templates", ".proposals", ".trash"
+FILE_NAME = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,7}$")  # a new path with a suffix is a file, without one a document
 LIST_MAX = 500
 SEARCH_MAX = 30
 CONTEXT = 2  # lines around an ambiguous anchor
-
 
 @dataclass
 class Ctx:
@@ -114,18 +111,13 @@ def _doc_row(con, pid: str, folder: str, title: str):
                 return row
 
 
-def _find_doc(con, pid: str, rest: list[str]):
-    """Longest document path wins; an attachment path only counts while that file exists."""
-    for i in range(len(rest), 0, -1):
-        row = _doc_row(con, pid, "/".join(rest[:i - 1]), rest[i - 1])
-        if row and (i == len(rest) or con.execute("SELECT 1 FROM files WHERE doc_id=? AND path=? COLLATE NOCASE",
-                                                  (row["id"], "/".join(rest[i:]))).fetchone()):
-            return row, "/".join(rest[i:])
-    return None, ""
-
-
 def _fmt(p: dict, rest: list[str]) -> str:
     return "/" + "/".join([p["name"], *rest])
+
+
+def _new_file(base: dict, raw: str) -> dict:
+    name = project_files.clean(raw)
+    return {**base, "kind": "new_file", "name": name, "path": "/" + base["pname"] + "/" + name}
 
 
 def resolve(ctx: Ctx, path: str, create: bool = False) -> dict:
@@ -148,63 +140,46 @@ def resolve(ctx: Ctx, path: str, create: bool = False) -> dict:
                     raise err(400, "bad_path", f"Project name: 1-{TITLE_MAX} characters, no @") from None
                 return {"kind": "new_project", "title": title, "path": "/" + title}
             raise
-        rest = segs[1:]
-        base = {"project_id": p["id"], "owner": p["owner"], "pname": p["name"], "role": _project_role(con, ctx, p["id"])}
+        rest, pid = segs[1:], p["id"]
+        base = {"project_id": pid, "owner": p["owner"], "pname": p["name"], "role": _project_role(con, ctx, pid)}
         if not rest:
             return {**base, "kind": "project", "path": _fmt(p, [])}
-        if rest[0] == LIB:
-            name = "/".join(rest[1:])
-            node = {**base, "kind": "library" if not name else "module", "name": name, "path": _fmt(p, rest)}
-            if name and not con.execute("SELECT 1 FROM project_resources WHERE project_id=? AND name=?", (p["id"], name)).fetchone():
-                if not create:
-                    raise err(404, "not_found", f"No module {name!r}", hint=f"ls {_fmt(p, [LIB])}")
-                node["kind"] = "new_module"
-                node["name"] = clean = safe_name(name, new=True)
-                node["path"] = _fmt(p, [LIB, clean])
-            return node
         if rest[0] == PROP:
-            node = {**base, "kind": "proposals" if len(rest) == 1 else "proposal", "id": "/".join(rest[1:]), "path": _fmt(p, rest)}
-            return node
-        row, attach = _find_doc(con, p["id"], rest)
+            return {**base, "kind": "proposals" if len(rest) == 1 else "proposal", "id": "/".join(rest[1:]), "path": _fmt(p, rest)}
+        full = "/".join(rest)
+        hit = con.execute("SELECT path FROM project_files WHERE project_id=? AND path=? COLLATE NOCASE", (pid, full)).fetchone()
+        if hit and (base["role"] != "guest" or hit[0] in (project_files.visible(con, pid, ctx.user) or set())):
+            return {**base, "kind": "file", "name": hit[0], "path": _fmt(p, hit[0].split("/"))}
+        row = _doc_row(con, pid, "/".join(rest[:-1]), rest[-1])
         if row:
             role = apikeys.cap_min(ctx.cap, db.role_on(con, ctx.user, row["id"]) or "")
             if not role:
-                raise err(404, "not_found", f"No document {'/'.join(rest)!r}")
-            dpath = _fmt(p, [x for x in [row["folder"], row["title"]] if x])
-            node = {**base, "role": role, "doc_id": row["id"], "title": row["title"], "folder": row["folder"] or "",
-                    "doc_owner": row["owner"], "kind": "file" if attach else "doc", "path": dpath + ("/" + attach if attach else ""),
-                    "name": attach}
-            return node
-        folder = "/".join(rest)
+                raise err(404, "not_found", f"No document {full!r}")
+            return {**base, "role": role, "doc_id": row["id"], "title": row["title"], "folder": row["folder"] or "",
+                    "doc_owner": row["owner"], "kind": "doc", "path": _fmt(p, [x for x in [row["folder"], row["title"]] if x])}
         is_folder = con.execute("SELECT 1 FROM project_folders WHERE project_id=? AND path=? UNION ALL SELECT 1 FROM docs WHERE project_id=? "
-                                "AND trashed=0 AND (folder=? OR folder LIKE ?) LIMIT 1", (p["id"], folder, p["id"], folder, folder + "/%")).fetchone()
+                                "AND trashed=0 AND (folder=? OR folder LIKE ?) UNION ALL SELECT 1 FROM project_files WHERE project_id=? "
+                                "AND substr(path,1,?)=? LIMIT 1", (pid, full, pid, full, full + "/%", pid, len(full) + 1, full + "/")).fetchone()
         if slash or (is_folder and not create):
             if not (create or is_folder):
-                raise err(404, "not_found", f"No folder {folder!r}")
+                raise err(404, "not_found", f"No folder {full!r}")
+            folder = full
             if not is_folder:
                 from backend.routers.project_folders import folder_path
                 folder = folder_path(folder)
             return {**base, "kind": "folder" if is_folder else "new_folder", "folder": folder, "path": _fmt(p, folder.split("/"))}
         if not create:
             raise err(404, "not_found", f"Nothing at {path!r}", hint=f"ls {_fmt(p, rest[:-1])}")
-        for i in range(len(rest) - 1, 0, -1):  # the longest existing document in front of the name owns the file
-            parent = _doc_row(con, p["id"], "/".join(rest[:i - 1]), rest[i - 1])
-            if parent and not con.execute("SELECT 1 FROM project_folders WHERE project_id=? AND path=?", (p["id"], "/".join(rest[:i]))).fetchone():
-                role = apikeys.cap_min(ctx.cap, db.role_on(con, ctx.user, parent["id"]) or "")
-                name = safe_name("/".join(rest[i:]), new=True)
-                return {**base, "role": role, "kind": "new_file", "doc_id": parent["id"], "name": name, "title": parent["title"],
-                        "path": _fmt(p, [x for x in [parent["folder"], parent["title"]] if x] + [name])}
-        ext = posixpath.splitext(rest[-1])[1].lower()
-        if ext in deps.ALLOWED_IMG and ext != ".typ":
-            raise err(404, "not_found", f"No document {'/'.join(rest[:-1])!r} to attach {rest[-1]!r} to", hint="create the document first, then write the file under it")
-        title = rest[-1][:-4] if rest[-1].lower().endswith(".typ") else rest[-1]
-        if not title.strip() or len(title) > TITLE_MAX:
+        if FILE_NAME.search(rest[-1]):
+            return _new_file(base, full)
+        title = rest[-1].strip()
+        if not title or len(title) > TITLE_MAX:
             raise err(400, "bad_path", f"Document title: 1-{TITLE_MAX} characters")
         folder = "/".join(rest[:-1])
         if folder:
             from backend.routers.project_folders import folder_path
             folder = folder_path(folder)
-        return {**base, "kind": "new_doc", "title": title.strip(), "folder": folder, "path": _fmt(p, [*([folder] if folder else []), title.strip()])}
+        return {**base, "kind": "new_doc", "title": title, "folder": folder, "path": _fmt(p, [*([folder] if folder else []), title])}
     finally:
         con.close()
 
@@ -263,18 +238,12 @@ def read_bytes(node: dict, user: str = "") -> bytes:
     if kind == "doc":
         return doc_text(node["doc_id"]).encode()
     if kind == "file":
-        try:
-            return store.get(node["doc_id"], node["name"])
-        except FileNotFoundError:
-            raise err(404, "not_found", "File gone") from None
+        return project_files.read(node["project_id"], node["name"])
+    if kind != "template":
+        raise err(400, "not_readable", f"{node['path']} is not a file", hint="ls it instead")
     con = db.connect()
     try:
-        if kind == "module":
-            row = con.execute("SELECT content FROM project_resources WHERE project_id=? AND name=?", (node["project_id"], node["name"])).fetchone()
-        elif kind == "template":
-            row = con.execute("SELECT content FROM templates WHERE owner=? AND name=?", (user, node["name"])).fetchone()
-        else:
-            raise err(400, "not_readable", f"{node['path']} is not a file", hint="ls it instead")
+        row = con.execute("SELECT content FROM templates WHERE owner=? AND name=?", (user, node["name"])).fetchone()
     finally:
         con.close()
     if not row:
@@ -295,11 +264,10 @@ IMPORT = re.compile(r'#?(?:include|import|image|bibliography|csv|json|yaml|toml|
 
 
 def outline(node: dict, text: str) -> dict:
-    """Headings, labels, lets and imports (with what they resolve to) of a document."""
+    """Headings, labels, lets and imports (with the project file they resolve to) of a document."""
     con = db.connect()
     try:
-        local = {r[0].lower(): r[0] for r in con.execute("SELECT path FROM files WHERE doc_id=?", (node["doc_id"],))}
-        mods = {r[0].lower(): r[0] for r in con.execute("SELECT name FROM project_resources WHERE project_id=?", (node["project_id"],))}
+        paths = {r[0] for r in con.execute("SELECT path FROM project_files WHERE project_id=?", (node["project_id"],))}
     finally:
         con.close()
     out: dict = {"headings": [], "labels": [], "lets": [], "imports": []}
@@ -310,10 +278,9 @@ def outline(node: dict, text: str) -> dict:
         if m := LET.match(line):
             out["lets"].append({"line": n, "name": m[1]})
         for ref in IMPORT.findall(line):
-            key = posixpath.normpath(ref.replace("\\", "/")).lstrip("/").lower()
-            hit = (f"file {local[key]}" if key in local else f"module {mods[key]}" if key in mods else
-                   "package" if ref.startswith("@") else "")
-            out["imports"].append({"line": n, "ref": ref, "resolves_to": hit or None})
+            hit = resources.resolve(node["folder"], ref)
+            to = f"/{node['pname']}/{hit}" if hit in paths else "package" if ref.startswith("@") else None
+            out["imports"].append({"line": n, "ref": ref, "resolves_to": to})
     return out
 
 
@@ -387,24 +354,20 @@ def read(ctx: Ctx, path: str, offset: int = 1, limit: int = 0, want_outline: boo
 def _entries(con, ctx: Ctx, node: dict) -> list[dict]:
     pid = node["project_id"]
     guest = node["role"] == "guest"
-    docs, out = {}, []
+    out = []
     open_c = {r[0]: r[1] for r in con.execute(
         "SELECT c.doc_id,COUNT(*) FROM comments c JOIN docs d ON d.id=c.doc_id WHERE d.project_id=? AND c.resolved=0 AND c.parent_id IS NULL GROUP BY c.doc_id", (pid,))}
     for r in con.execute("SELECT id,title,folder,length(content) AS size,updated_at FROM docs WHERE project_id=? AND trashed=0 ORDER BY folder,title", (pid,)):
         if guest and not db.role_on(con, ctx.user, r["id"]):
             continue
-        path = "/".join(x for x in (r["folder"], r["title"]) if x)
-        docs[r["id"]] = path
-        e = {"path": path, "kind": "doc", "size": r["size"], "updated_at": r["updated_at"]}
+        e = {"path": "/".join(x for x in (r["folder"], r["title"]) if x), "kind": "doc", "size": r["size"], "updated_at": r["updated_at"]}
         if open_c.get(r["id"]):
             e["open_comments"] = open_c[r["id"]]
         out.append(e)
-    for r in con.execute("SELECT f.doc_id,f.path,f.size FROM files f JOIN docs d ON d.id=f.doc_id WHERE d.project_id=? AND d.trashed=0 ORDER BY f.path", (pid,)):
-        if r["doc_id"] in docs:
-            out.append({"path": f"{docs[r['doc_id']]}/{r['path']}", "kind": "file", "size": r["size"]})
+    allowed = project_files.visible(con, pid, ctx.user) if guest else None
+    out += [{"path": f["path"], "kind": "file", "size": f["size"], "version": f["version"]}
+            for f in project_files.listing(con, pid) if allowed is None or f["path"] in allowed]
     if not guest:
-        for r in con.execute("SELECT name,length(content) AS size,updated_at FROM project_resources WHERE project_id=? ORDER BY name", (pid,)):
-            out.append({"path": f"{LIB}/{r['name']}", "kind": "module", "size": r["size"], "updated_at": r["updated_at"]})
         out += [{"path": r[0], "kind": "folder"} for r in con.execute("SELECT path FROM project_folders WHERE project_id=?", (pid,))]
         n = con.execute("SELECT COUNT(*) FROM suggestion_packages WHERE project_id=? AND json_array_length(files)>0", (pid,)).fetchone()[0]
         out.append({"path": PROP, "kind": "proposals", "count": n})
@@ -446,7 +409,7 @@ def ls(ctx: Ctx, path: str = "/", depth: int = 1, versions: bool = False) -> dic
         if kind in ("proposals", "proposal"):
             from backend.mcp_review import list_proposals
             return list_proposals(ctx, node)
-        if kind in ("project", "folder", "doc", "library", "new_folder"):
+        if kind in ("project", "folder", "doc", "new_folder"):
             ents = _entries(con, ctx, node)
             prefix = "" if kind == "project" else node["path"].split("/", 2)[2] if node["path"].count("/") > 1 else ""
             top = "/" + node["pname"] + "/"
@@ -468,8 +431,7 @@ def ls(ctx: Ctx, path: str = "/", depth: int = 1, versions: bool = False) -> dic
 def _trash_entries(con, ctx: Ctx) -> list[dict]:
     out = [{"path": f"/{TRASH}/{r['id']}", "kind": "doc", "name": r["title"], "deleted_at": r["updated_at"]}
            for r in con.execute("SELECT id,title,updated_at FROM docs WHERE owner=? AND trashed=1 ORDER BY updated_at DESC", (ctx.user,))]
-    out += [{"path": f"/{TRASH}/{r['id']}", "kind": {"resource": "module", "personal": "template"}.get(r["kind"], r["kind"]),
-             "name": r["name"], "deleted_at": r["created_at"]}
+    out += [{"path": f"/{TRASH}/{r['id']}", "kind": "template" if r["kind"] == "personal" else r["kind"], "name": r["name"], "deleted_at": r["created_at"]}
             for r in con.execute("SELECT id,kind,name,created_at FROM trash_entries WHERE owner=? ORDER BY created_at DESC", (ctx.user,))]
     return out
 
@@ -539,29 +501,20 @@ async def set_doc(ctx: Ctx, doc_id: str, fn) -> tuple[str, str]:
     return old, new
 
 
-def _save_text(ctx: Ctx, node: dict, text: str) -> None:
-    """Overwrite or create a file, module or template through the UI's save routes."""
-    from backend.routers import projects as rp
+def _save_template(ctx: Ctx, node: dict, text: str) -> None:
     from backend.routers import templates as rt
-    from backend.routers.files import upload_file
     from backend.schemas import TplSave
 
-    req, kind = fake_request(ctx.user), node["kind"]
     if len(text.encode()) > MAX_TXT:
         raise err(413, "too_large", f"Text files hold at most {MAX_TXT // 1000} KB")
-    if kind in ("file", "new_file"):
-        upload_file(node["doc_id"], UploadFile(file=io.BytesIO(text.encode()), filename=node["name"]), req, ctx.user)
-    elif kind in ("module", "new_module"):
-        ver = None
-        if kind == "module":
-            con = db.connect()
-            try:
-                ver = con.execute("SELECT updated_at FROM project_resources WHERE project_id=? AND name=?", (node["project_id"], node["name"])).fetchone()[0]
-            finally:
-                con.close()
-        rp.save_resource(node["project_id"], rp.ResourceSave(name=node["name"], content=text, version=ver), req, ctx.user)
-    else:
-        rt.save_template(TplSave(name=node["name"], content=text), req, ctx.user)
+    rt.save_template(TplSave(name=node["name"], content=text), fake_request(ctx.user), ctx.user)
+
+
+async def _save_file(ctx: Ctx, node: dict, data: bytes, seen: bytes | None) -> str:
+    """Write a project file; seen = the bytes the caller checked (the write fails if they changed since)."""
+    r = await asyncio.to_thread(project_files.write, node["project_id"], node["name"], data, ctx.user,
+                                version_=None if seen is None else version(seen))
+    return r["version"]
 
 
 def _proposing(ctx: Ctx, node: dict) -> bool:
@@ -617,13 +570,13 @@ async def write(ctx: Ctx, path: str, content: str | None = None, content_base64:
         from backend.routers.project_folders import FolderPath, create_folder
         create_folder(node["project_id"], FolderPath(path=node["folder"]), fake_request(ctx.user), ctx.user)
         return {"path": node["path"], "created": True}
-    if kind not in ("doc", "new_doc", "file", "new_file", "module", "new_module", "template", "new_template"):
-        raise err(400, "bad_path", f"{node['path']} cannot be written", hint="name a document, file, module, template or folder")
+    if kind not in ("doc", "new_doc", "file", "new_file", "template", "new_template"):
+        raise err(400, "bad_path", f"{node['path']} cannot be written", hint="name a document, file, template or folder")
     if _proposing(ctx, node):
-        return await propose(ctx, node, {"op": "write", "path": path, "data": data, "text": as_text, "base_version": base_version}, package)
+        return await propose(ctx, node, {"op": "write", "path": path, "node": node, "data": data, "text": as_text, "base_version": base_version}, package)
     need_write(node)
     data = b"" if data is None else data
-    binary = kind in ("file", "new_file") and not (as_text and is_text(node["name"]))
+
     def check(current: bytes) -> None:
         if not force and base_version != version(current):
             raise err(409, "stale_version", "It changed since you read it" if base_version else "base_version is missing: overwriting needs the version from read",
@@ -633,14 +586,13 @@ async def write(ctx: Ctx, path: str, content: str | None = None, content_base64:
         check(old.encode())
         return text
 
-    if not created and kind != "doc":
-        check(read_bytes(node, ctx.user))
-    if binary or len(data) > MAX_TXT:
-        if not binary or len(data) > UPLOAD_MAX:
-            raise err(413, "too_large", f"Text holds at most {MAX_TXT // 1000} KB, files 10 MB; use upload for large files")
-        from backend.routers.files import upload_file
-        upload_file(node["doc_id"], UploadFile(file=io.BytesIO(data), filename=node["name"]), fake_request(ctx.user), ctx.user)
-        return {"path": node["path"], "created": created, "version": version(data)}
+    if kind in ("file", "new_file"):
+        current = read_bytes(node) if kind == "file" else None
+        if current is not None:
+            check(current)
+        return {"path": node["path"], "created": created, "version": await _save_file(ctx, node, data, current)}
+    if len(data) > MAX_TXT:
+        raise err(413, "too_large", f"Text holds at most {MAX_TXT // 1000} KB, files 10 MB; use upload for large files")
     text = data.decode("utf-8", errors="replace")
     if kind == "new_doc":
         from backend.routers.projects import ProjectDoc, create_document
@@ -649,13 +601,15 @@ async def write(ctx: Ctx, path: str, content: str | None = None, content_base64:
     if kind == "doc":
         await set_doc(ctx, node["doc_id"], replaced)
     else:
-        _save_text(ctx, node, text)
+        if kind == "template":
+            check(read_bytes(node, ctx.user))
+        _save_template(ctx, node, text)
     return {"path": node["path"], "created": created, "version": version(text)}
 
 
 async def edit(ctx: Ctx, path: str, edits: list[dict], base_version: str = "", package: str = "") -> dict:
     node = resolve(ctx, path)
-    if node["kind"] not in ("doc", "file", "module", "template"):
+    if node["kind"] not in ("doc", "file", "template"):
         raise err(400, "bad_path", f"{node['path']} is not an editable text")
     if _proposing(ctx, node):
         return await propose(ctx, node, {"op": "edit", "path": path, "edits": edits, "base_version": base_version}, package)
@@ -669,9 +623,13 @@ async def edit(ctx: Ctx, path: str, edits: list[dict], base_version: str = "", p
 
     if node["kind"] == "doc":
         _, new = await set_doc(ctx, node["doc_id"], run)
+    elif node["kind"] == "file":
+        old = text_of(ctx, node)
+        new = run(old)
+        await _save_file(ctx, node, new.encode(), old.encode())
     else:
         new = run(text_of(ctx, node))
-        _save_text(ctx, node, new)
+        _save_template(ctx, node, new)
     out = {"path": node["path"], "replaced": done["replaced"], "version": version(new)}
     if done["changed"]:
         out["changed_since"] = True
@@ -680,81 +638,70 @@ async def edit(ctx: Ctx, path: str, edits: list[dict], base_version: str = "", p
 
 # --- move / delete ---------------------------------------------------------------------------
 
-def ref_edits(ctx: Ctx, node: dict, new_name: str) -> list[dict]:
-    """Texts that quote the old name of a moved file or module, with the quoted path rewritten."""
-    old = node["name"]
+def ref_edits(node: dict, new_path: str) -> list[tuple[dict, str]]:
+    """(text, rewritten content) for every document and .typ file that quotes a moved file."""
+    pid, old = node["project_id"], node["name"]
     con = db.connect()
     try:
-        if node["kind"] == "file":
-            scope = [(node["doc_id"], node["title"])]
-        else:
-            scope = [(r[0], r[1]) for r in con.execute("SELECT id,title FROM docs WHERE project_id=? AND trashed=0", (node["project_id"],))]
-        mods = [(r[0], r[1]) for r in con.execute("SELECT name,content FROM project_resources WHERE project_id=?", (node["project_id"],))]
+        docs = con.execute("SELECT id,folder FROM docs WHERE project_id=? AND trashed=0", (pid,)).fetchall()
+        typ = project_files.texts(con, pid)
     finally:
         con.close()
-    targets = []
-    for doc_id, title in scope:
-        targets.append(({"kind": "doc", "doc_id": doc_id, "path": title}, "", doc_text(doc_id)))
-        for e in store.list(doc_id):
-            if e.path.lower().endswith(".typ") and not (node["kind"] == "file" and e.path == old):
-                targets.append(({"kind": "file", "doc_id": doc_id, "name": e.path}, e.path, store.get(doc_id, e.path).decode("utf-8", errors="replace")))
-    for name, content in mods:
-        if name.lower().endswith(".typ") and not (node["kind"] == "module" and name == old):
-            targets.append(({"kind": "module", "project_id": node["project_id"], "name": name}, name, content or ""))
     out = []
-    for target, referrer, text in targets:
-        here = posixpath.dirname(referrer)
-
-        def fix(m: re.Match, here: str = here) -> str:
-            ref = m.group(1).replace("\\", "/")
-            hit = posixpath.normpath(ref.lstrip("/")) if ref.startswith("/") else posixpath.normpath(posixpath.join(here, ref))
-            if hit != old:
-                return m.group(0)
-            return '"' + ("/" + new_name if ref.startswith("/") else posixpath.relpath(new_name, here or ".")) + '"'
-
-        new = resources.REF_RE.sub(fix, text)
-        if new != text:
-            out.append({"target": target, "old": text, "new": new})
+    for d in docs:
+        text = doc_text(d["id"])
+        if (new := project_files.rewrite(text, d["folder"], old, new_path)) != text:
+            out.append(({"kind": "doc", "doc_id": d["id"]}, new))
+    for p, text in typ.items():
+        if p != old and (new := project_files.rewrite(text, posixpath.dirname(p), old, new_path)) != text:
+            out.append(({"kind": "file", "name": p}, new))
     return out
 
 
-def _check_move(ctx: Ctx, node: dict, dest: dict, fix_refs: bool) -> list[dict]:
-    """Validate a move inside one project; returns the reference rewrites it needs."""
+def _dest(ctx: Ctx, node: dict, to: str) -> dict:
+    """Move target; a folder path (ending in /) keeps the name, Doc -> Doc.typ next to it is the conversion."""
+    dest = resolve(ctx, to, create=True)
+    if dest["kind"] in ("folder", "new_folder") and node["kind"] in ("doc", "file"):
+        return resolve(ctx, dest["path"] + "/" + (node["title"] if node["kind"] == "doc" else posixpath.basename(node["name"])), create=True)
+    if dest["kind"] == "doc" and dest["doc_id"] == node.get("doc_id") and to.lower().endswith(".typ"):
+        return _new_file({k: dest[k] for k in ("project_id", "owner", "pname", "role")}, posixpath.join(dest["folder"], dest["title"] + ".typ"))
+    return dest
+
+
+def _check_move(node: dict, dest: dict) -> None:
     kind = node["kind"]
     if dest.get("project_id") != node["project_id"]:
         raise err(400, "bad_path", "Moves stay inside one project; copy with write(copy_from=...) and delete across projects")
     if kind == "doc" and dest["kind"] != "new_doc":
-        raise err(400, "bad_path", "A document moves to another document path")
-    if kind == "file" and (dest["kind"] != "new_file" or dest["doc_id"] != node["doc_id"]):
-        raise err(400, "bad_path", "An attachment is renamed inside its own document")
-    if kind == "module" and dest["kind"] != "new_module":
-        raise err(400, "bad_path", f"A module is renamed to /{node['pname']}/{LIB}/name")
-    if kind not in ("doc", "file", "module"):
+        raise err(400, "bad_path", "A document moves to another document path (no suffix), or to a .typ path to become a file")
+    if kind == "file" and dest["kind"] != "new_file":
+        raise err(400, "bad_path", "A file moves to another file path")
+    if kind not in ("doc", "file"):
         raise err(400, "bad_path", f"{node['path']} cannot be moved")
-    return ref_edits(ctx, node, dest["name"]) if fix_refs and kind != "doc" else []
-
-
-CONVERSIONS = (("file", "new_doc"), ("doc", "new_file"), ("file", "new_module"), ("module", "new_doc"), ("doc", "new_module"))
 
 
 def _is_convert(node: dict, dest: dict) -> bool:
-    return (node["kind"], dest["kind"]) in CONVERSIONS and dest.get("project_id") == node["project_id"]
+    return (node["kind"], dest["kind"]) in (("file", "new_doc"), ("doc", "new_file")) and dest.get("project_id") == node["project_id"]
 
 
 def _need_typ(node: dict, dest: dict) -> None:
-    """Only .typ files and modules turn into documents or modules; data files stay what they are."""
-    if node["kind"] in ("file", "module") and dest["kind"] in ("new_doc", "new_module") and not node["name"].lower().endswith(".typ"):
-        raise err(400, "bad_path", "Only .typ files can be converted to a document or module; rename other files with a path inside their document or .library")
+    """Only .typ files and documents turn into each other; data files stay files."""
+    name = node["name"] if node["kind"] == "file" else dest.get("name", "")
+    if _is_convert(node, dest) and not name.lower().endswith(".typ"):
+        raise err(400, "bad_path", "Only .typ files and documents convert into each other; give other files a path with their suffix")
 
 
 def move_ops(ctx: Ctx, path: str, to: str, fix_refs: bool = True) -> list[dict]:
     """The move plus the reference rewrites it needs, as proposal operations."""
-    node, dest = resolve(ctx, path), resolve(ctx, to, create=True)
+    node = resolve(ctx, path)
+    dest = _dest(ctx, node, to)
     _need_typ(node, dest)
     if _is_convert(node, dest):  # a conversion is the new text plus the removal of the old one
-        return [{"op": "write", "path": to, "data": text_of(ctx, node).encode(), "text": True}, {"op": "delete", "path": path}]
-    refs = _check_move(ctx, node, dest, fix_refs)
-    return [{"op": "move", "path": path, "to": to}] + [{"op": "replace", "target": r["target"], "new": r["new"]} for r in refs]
+        return [{"op": "write", "path": dest["path"], "node": dest, "data": text_of(ctx, node).encode(), "text": True},
+                {"op": "delete", "path": node["path"]}]
+    _check_move(node, dest)
+    refs = ref_edits(node, dest["name"]) if fix_refs and node["kind"] == "file" else []
+    return [{"op": "move", "path": node["path"], "to": dest["path"], "dest": dest}] + [{"op": "replace", "target": t, "new": new} for t, new in refs]
 
 
 async def move(ctx: Ctx, path: str, to: str, fix_refs: bool = True, package: str = "") -> dict:
@@ -768,8 +715,8 @@ async def move(ctx: Ctx, path: str, to: str, fix_refs: bool = True, package: str
     if kind == "trash_item":
         need_write({"role": ctx.cap})
         return await asyncio.to_thread(_restore, ctx, node)
-    dest = resolve(ctx, to, create=True)
-    if dest["kind"] in ("doc", "file", "module", "template", "project"):
+    dest = _dest(ctx, node, to)
+    if dest["kind"] in ("doc", "file", "template", "project"):
         raise err(409, "exists", f"{dest['path']} already exists")
     req = fake_request(ctx.user)
     if kind == "project":
@@ -791,68 +738,39 @@ async def move(ctx: Ctx, path: str, to: str, fix_refs: bool = True, package: str
         await asyncio.to_thread(rename_folder, node["project_id"], FolderRename(path=node["folder"], target=dest["folder"]), req, ctx.user)
         return {"path": dest["path"], "note": "References to files inside are not rewritten"}
     _need_typ(node, dest)
-    if _is_convert(node, dest):
-        if not _proposing(ctx, node):
-            return await _convert(ctx, node, dest)
-        from backend import mcp_review
-
-        return await mcp_review.propose(ctx, node["project_id"], move_ops(ctx, path, to, fix_refs), package=package)
-    refs = _check_move(ctx, node, dest, fix_refs)
+    if not _is_convert(node, dest):
+        _check_move(node, dest)
     if _proposing(ctx, node):
         from backend import mcp_review
 
         return await mcp_review.propose(ctx, node["project_id"], move_ops(ctx, path, to, fix_refs), package=package)
     need_write(node)
+    if _is_convert(node, dest):
+        return await _convert(ctx, node, dest, fix_refs)
     if kind == "doc":
         _move_doc(ctx, node, dest)
-    else:
-        await asyncio.to_thread(_rename_entry, ctx, node, dest)
-    for r in refs:
-        await replace_text(ctx, r["target"], r["new"])
-    return {"path": dest["path"], "updated_references": len(refs)}
+        return {"path": dest["path"]}
+    r = await project_files.move(node["project_id"], node["name"], dest["name"], ctx.user, force=True, fix_refs=fix_refs)
+    return {"path": dest["path"], "updated_references": r["updated_references"]}
 
 
-async def _convert(ctx: Ctx, node: dict, dest: dict) -> dict:
-    """A .typ file or module becomes a document or module, or a document becomes an attachment of another one."""
-    from backend.routers import projects as rp
-
-    need_write(node)
-    req = fake_request(ctx.user)
-    if node["kind"] == "doc" and dest["kind"] == "new_module":
-        await rp.convert_entry(node["project_id"], rp.ConvertEntry(doc_id=node["doc_id"], document=True, to="module", target=dest["name"]), req, ctx.user)
-        return {"path": dest["path"], "converted": "document to module"}
+async def _convert(ctx: Ctx, node: dict, dest: dict, fix_refs: bool) -> dict:
+    """A document becomes a .typ file or a .typ file a document; the old entry goes to the trash."""
+    pid = node["project_id"]
     if node["kind"] == "doc":
-        await rp.demote_doc(node["project_id"], rp.Demote(doc_id=node["doc_id"], target_doc_id=dest["doc_id"], name=dest["name"]), req, ctx.user)
+        made = await project_files.doc_to_file(pid, node["doc_id"], ctx.user)
+        if made["path"] != dest["name"]:
+            await project_files.move(pid, made["path"], dest["name"], ctx.user, force=True, fix_refs=fix_refs)
         return {"path": dest["path"], "converted": "document to file"}
-    if not node["name"].lower().endswith(".typ"):
-        raise err(400, "bad_path", "Only .typ files can be converted")
-    to: Literal["document", "module"] = "module" if dest["kind"] == "new_module" else "document"
-    broken = [] if to == "module" else sorted({_ref_path(r["target"], node) for r in ref_edits(ctx, node, "gone.typ")})
-    body = rp.ConvertEntry(doc_id=node.get("doc_id", "") if node["kind"] == "file" else "", name=node["name"], to=to,
-                           title=dest.get("title", ""), folder=dest.get("folder", ""), target=dest.get("name", "") if to == "module" else "")
-    r = await rp.convert_entry(node["project_id"], body, req, ctx.user)
-    out = {"path": dest["path"], "converted": f"{node['kind']} to {to}", **{k: v for k, v in r.items() if k == "id"}}
-    if broken:
-        out["broken_references"] = broken
-        out["hint"] = "These texts still include the file, which is no longer an attachment; edit them"
+    src = posixpath.join(dest["folder"], dest["title"] + ".typ")
+    if src != node["name"]:
+        await project_files.move(pid, node["name"], src, ctx.user, force=True, fix_refs=fix_refs)
+    r = await asyncio.to_thread(project_files.file_to_doc, pid, src, ctx.user)
+    out = {"path": dest["path"], "converted": "file to document", "id": r["id"]}
+    if r["broken"]:
+        out["broken_references"] = sorted({f"/{node['pname']}/{b.split(': ', 1)[0]}" for b in r["broken"]})
+        out["hint"] = "These texts still include the file, which is now a document (documents cannot be included); edit them"
     return out
-
-
-def _ref_path(target: dict, node: dict) -> str:
-    if target["kind"] == "doc":
-        return doc_path_of(target["doc_id"], node)
-    if target["kind"] == "file":
-        return f"{doc_path_of(target['doc_id'], node)}/{target['name']}"
-    return f"/{node['pname']}/{LIB}/{target['name']}"
-
-
-def doc_path_of(doc_id: str, node: dict) -> str:
-    con = db.connect()
-    try:
-        r = con.execute("SELECT title,folder FROM docs WHERE id=?", (doc_id,)).fetchone()
-    finally:
-        con.close()
-    return "/" + "/".join(x for x in (node["pname"], r["folder"], r["title"]) if x) if r else ""
 
 
 def _move_doc(ctx: Ctx, node: dict, dest: dict) -> None:
@@ -865,32 +783,6 @@ def _move_doc(ctx: Ctx, node: dict, dest: dict) -> None:
         rename_doc(node["doc_id"], TitleSet(title=dest["title"]), req, ctx.user)
     if dest["folder"] != node["folder"]:
         move_document(node["project_id"], node["doc_id"], DocFolder(folder=dest["folder"]), req, ctx.user)
-
-
-def _module_version(node: dict) -> str:
-    con = db.connect()
-    try:
-        return con.execute("SELECT updated_at FROM project_resources WHERE project_id=? AND name=?", (node["project_id"], node["name"])).fetchone()[0]
-    finally:
-        con.close()
-
-
-def _rename_entry(ctx: Ctx, node: dict, dest: dict) -> None:
-    from backend.routers.projects import EntryRename, rename_entry
-
-    if node["kind"] == "file":
-        body = EntryRename(name=node["name"], target=dest["name"], doc_id=node["doc_id"], version=hashlib.sha256(read_bytes(node)).hexdigest())
-    else:
-        body = EntryRename(name=node["name"], target=dest["name"], version=_module_version(node))
-    rename_entry(node["project_id"], body, fake_request(ctx.user), ctx.user)
-
-
-async def replace_text(ctx: Ctx, target: dict, new: str) -> None:
-    """Overwrite a text that ref_edits rewrote (documents live, the rest through the save routes)."""
-    if target["kind"] == "doc":
-        await set_doc(ctx, target["doc_id"], lambda old: new)
-    else:
-        _save_text(ctx, target, new)
 
 
 def _restore(ctx: Ctx, node: dict) -> dict:
@@ -918,7 +810,6 @@ async def delete(ctx: Ctx, path: str, package: str = "") -> dict:
     from backend.routers import templates as rt
     from backend.routers.change_packages import delete_package
     from backend.routers.docs import trash_doc
-    from backend.routers.files import delete_file
     from backend.routers.project_folders import delete_folder
 
     node = resolve(ctx, path, create=path.endswith("/") and path != "/")
@@ -931,8 +822,8 @@ async def delete(ctx: Ctx, path: str, package: str = "") -> dict:
         raise err(404, "not_found", f"No folder {node['path']!r}")
     if kind == "folder":
         need_write(node)
-        delete_folder(node["project_id"], node["folder"], req, ctx.user)
-    elif kind in ("doc", "file", "module") and _proposing(ctx, node):
+        await delete_folder(node["project_id"], node["folder"], req, ctx.user)
+    elif kind in ("doc", "file") and _proposing(ctx, node):
         return await propose(ctx, node, {"op": "delete", "path": path}, package)
     elif kind == "template":
         need_write(node)
@@ -946,10 +837,7 @@ async def delete(ctx: Ctx, path: str, package: str = "") -> dict:
         await trash_doc(node["doc_id"], req, ctx.user)
     elif kind == "file":
         need_write(node)
-        delete_file(node["doc_id"], node["name"], req, ctx.user)
-    elif kind == "module":
-        need_write(node)
-        rp.delete_resource(node["project_id"], node["name"], _module_version(node), req, ctx.user)
+        await asyncio.to_thread(project_files.delete, node["project_id"], node["name"], ctx.user, force=True)
     else:
         raise err(400, "bad_path", f"{node['path']} cannot be deleted")
     return {"deleted": node["path"], "recover": f"/{TRASH}"}
@@ -968,8 +856,8 @@ def find(ctx: Ctx, query: str, path: str = "/", kind: str = "") -> dict:
     q = search.normalize_query(query)
     if len(q) < search.MIN_Q:
         raise err(400, "bad_request", "Search needs at least 2 characters")
-    if kind and kind not in ("doc", "file", "module", "template", "trash"):
-        raise err(400, "bad_request", "kind is one of doc, file, module, template, trash")
+    if kind and kind not in ("doc", "file", "template", "trash"):
+        raise err(400, "bad_request", "kind is one of doc, file, template, trash")
     prefix = resolve(ctx, path, create=path.endswith("/"))["path"].rstrip("/") if path.strip("/") else ""
     con = db.connect()
     try:
@@ -990,16 +878,10 @@ def find(ctx: Ctx, query: str, path: str = "/", kind: str = "") -> dict:
             k = e["kind"]
             if k == "doc":
                 p, text = doc_path(e["doc_id"]), doc_text(e["doc_id"])
-            elif k == "file":
-                d = doc_path(e["doc_id"])
-                try:
-                    p, text = (d + "/" + e["name"]) if d else "", store.get(e["doc_id"], e["name"]).decode("utf-8", errors="replace")
-                except FileNotFoundError:
+            elif k == "file":  # content_visible lists the files of owners and members only
+                if e["project_id"] not in names:
                     continue
-            elif k == "resource":
-                p = f"/{names.get(e['project_id'], '')}/{LIB}/{e['name']}"
-                row = con.execute("SELECT content FROM project_resources WHERE project_id=? AND name=?", (e["project_id"], e["name"])).fetchone()
-                text, k = (row[0] if row else ""), "module"
+                p, text = f"/{names[e['project_id']]}/{e['name']}", project_files.read(e["project_id"], e["name"]).decode("utf-8", errors="replace")
             elif k == "template":
                 p = f"/{TPL}/{e['name']}"
                 row = con.execute("SELECT content FROM templates WHERE owner=? AND name=?", (ctx.user, e["name"])).fetchone()
@@ -1010,18 +892,17 @@ def find(ctx: Ctx, query: str, path: str = "/", kind: str = "") -> dict:
                 continue
             line, snippet = _hit(text, q)
             seen.add(p)
-            hits.append({"path": p, "kind": "doc" if k == "trash_doc" else k, "count": e["count"], "line": line, "snippet": snippet})
+            hits.append({"path": p, "kind": k, "count": e["count"], "line": line, "snippet": snippet})
         for pid, pname in names.items():
-            if _project_role(con, ctx, pid) == "guest":
-                continue
-            for r in con.execute("SELECT name FROM project_resources WHERE project_id=? AND name LIKE ? ESCAPE '\\'", (pid, "%" + q.replace("%", "").replace("_", "") + "%")):
-                p = f"/{pname}/{LIB}/{r['name']}"
-                if p not in seen:
+            allowed = project_files.visible(con, pid, ctx.user)
+            for f in project_files.listing(con, pid):
+                p = f"/{pname}/{f['path']}"
+                if q.lower() in f["path"].lower() and p not in seen and (allowed is None or f["path"] in allowed):
                     seen.add(p)
-                    hits.append({"path": p, "kind": "module", "count": 0, "line": 0, "snippet": ""})
-        for h in named:
+                    hits.append({"path": p, "kind": "file", "count": 0, "line": 0, "snippet": ""})
+        for h in named:  # title hits only: search_visible also matches any file name of the project, which guests may not see
             p = doc_path(h["id"])
-            if p and p not in seen:
+            if p and p not in seen and q.lower() in docs[h["id"]]["title"].lower():
                 hits.append({"path": p, "kind": "doc", "count": 0, "line": 0, "snippet": h["snippet"]})
     finally:
         con.close()

@@ -138,17 +138,18 @@ def test_migration_allowance_and_case_collisions(c):
     assert info['migration_allowance'] == 6
 
 
-@pytest.mark.skip(reason="stage 2: MCP listing moves to project files")
 def test_mcp_shared_listing_uses_project_role_without_per_doc_queries(c, monkeypatch):
     pid, did = project(c)
     register_user(c, 'bob')
     login(c, 'alice')
     c.post(f'/api/projects/{pid}/members', json={'username': 'bob', 'role': 'reviewer'})
+    assert c.put(f'/api/projects/{pid}/files/img/a.png', content=b'x').status_code == 200
     monkeypatch.setattr(db, 'role_on', lambda *args: pytest.fail('per-document role query'))
     from backend import mcp_fs
     ctx = mcp_fs.Ctx('bob', 'editor')
     assert mcp_fs.ls(ctx, '/')['entries'][0] == {'path': '/First@alice', 'kind': 'project', 'role': 'reviewer'}
     assert [e['path'] for e in mcp_fs.ls(ctx, '/First@alice')['entries'] if e['kind'] == 'doc']
+    assert '/First@alice/img/a.png' in {e['path'] for e in mcp_fs.ls(ctx, '/First@alice', depth=0)['entries']}
 
 
 def test_hard_delete_invalidates_quota_cache(c):

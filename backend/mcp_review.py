@@ -57,10 +57,11 @@ def hunks(base: str, new: str) -> list[dict]:
 
 
 def _stub(node: dict) -> dict:
-    kind = {"doc": "document", "file": "file", "module": "resource"}.get(node["kind"])
-    if not kind:
-        raise err(400, "bad_path", f"{node['path']} cannot be part of a proposal")
-    return {"kind": kind, "doc_id": node.get("doc_id", ""), "path": "" if kind == "document" else node["name"]}
+    if node["kind"] == "doc":
+        return {"kind": "document", "doc_id": node["doc_id"], "path": ""}
+    if node["kind"] == "file":
+        return {"kind": "file", "path": node["name"]}
+    raise err(400, "bad_path", f"{node.get('path', '')} cannot be part of a proposal")
 
 
 def _b64(data: str | bytes) -> str:
@@ -104,11 +105,9 @@ def _working(con, pid: str, files: dict, stub: dict) -> str:
 def _apply_op(con, ctx: Ctx, pid: str, op: dict, files: dict) -> None:
     kind = op["op"]
     if kind == "replace":  # rewritten reference from a move
-        t = op["target"]
-        node = {"kind": t["kind"], "doc_id": t.get("doc_id", ""), "name": t.get("name", ""), "path": t.get("path", t.get("name", ""))}
-        _modify(con, pid, files, _stub(node), op["new"], False)
+        _modify(con, pid, files, _stub(op["target"]), op["new"], False)
         return
-    node = resolve(ctx, op["path"], create=kind == "write")
+    node = op.get("node") or resolve(ctx, op["path"], create=kind == "write")
     if node.get("project_id") != pid:
         raise err(400, "bad_path", f"{op['path']} is not in this project", hint="every op path starts with the project path")
     if kind == "write":
@@ -127,7 +126,7 @@ def _apply_op(con, ctx: Ctx, pid: str, op: dict, files: dict) -> None:
         base = cur["base"] if cur and cur.get("base") is not None else _original(con, pid, stub, binary)
         files[cp.key(stub)] = {**stub, "action": "delete", "base": base, **({"binary": True} if binary else {})}
     elif kind == "move":
-        dest = resolve(ctx, op["to"], create=True)
+        dest = op.get("dest") or resolve(ctx, op["to"], create=True)
         stub = _stub(node)
         binary = node["kind"] == "file" and not is_text(node["name"])
         cur = files.get(cp.key(stub))
@@ -160,7 +159,7 @@ def _write_op(con, pid: str, op: dict, node: dict, files: dict) -> None:
         return
     binary = kind in ("file", "new_file") and not (as_text and is_text(node["name"]))
     if kind.startswith("new_"):
-        stub = {"kind": "file" if kind == "new_file" else "resource", "doc_id": node.get("doc_id", ""), "path": node["name"]}
+        stub = {"kind": "file", "path": node["name"]}
         content = _b64(data) if binary else data.decode("utf-8", errors="replace")
         files[cp.key(stub)] = {**stub, "action": "add", "content": content, **({"binary": True} if binary else {})}
         return
@@ -216,14 +215,13 @@ def read_proposal(ctx: Ctx, node: dict):
         con.close()
     files = []
     for f in pkg["files"]:
-        where = docs.get(f.get("doc_id", ""), "")
         name = f["path"] or f.get("target", "")
         entry = {"action": f["action"], "kind": f["kind"],
-                 "path": f"/{node['pname']}/" + (where if f["kind"] == "document" else f"{LIB_DIR}/{f['path']}" if f["kind"] == "resource" else f"{where}/{f['path']}")}
+                 "path": f"/{node['pname']}/" + (docs.get(f.get("doc_id", ""), "") if f["kind"] == "document" else f["path"])}
         if f["kind"] == "document" and f["action"] in ("add", "rename"):
             entry["path"] = f"/{node['pname']}/" + "/".join(x for x in (f.get("folder"), f.get("target")) if x)
         if f["action"] == "rename" and f["kind"] != "document":
-            entry["to"] = f["target"]
+            entry["to"] = f"/{node['pname']}/{f['target']}"
         if f.get("changes"):
             entry["changes"] = [{"id": c["id"], "old": c["old_string"][:CLIP], "new": c["new_string"][:CLIP]} for c in f["changes"]]
         if name and f["action"] == "add" and f["kind"] != "document":
@@ -231,9 +229,6 @@ def read_proposal(ctx: Ctx, node: dict):
         files.append(entry)
     return {"path": node["path"], "title": pkg["title"], "by": pkg["author_name"] or pkg["author"], "revision": pkg["revision"],
             "accepted_changes": pkg["accepted"], "files": files}, None
-
-
-LIB_DIR = ".library"
 
 
 def list_proposals(ctx: Ctx, node: dict) -> dict:
