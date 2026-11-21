@@ -122,3 +122,14 @@ def test_zip_preview_suggests_roots_and_import_takes_any_number_of_documents(c):
     assert sorted(d["title"] for d in project["documents"]) == ["book", "notes"]
     assert [f["path"] for f in project["files"]] == ["ch1.typ"]
     assert c.post("/api/docs/import-zip", files={"f": ("s.zip", data)}, data={"documents": "not json"}).status_code == 400
+
+
+def test_zip_import_into_a_folder_puts_root_documents_in_that_folder(c):
+    register_user(c, "zipintofolder")
+    pid = c.post("/api/projects", json={"title": "Target"}).json()["id"]
+    data = bundle([("main.typ", "= Hi"), ("sub/part.typ", "Part")])
+    result = c.post(f"/api/projects/{pid}/import-zip", files={"f": ("b.zip", data, "application/zip")},
+                    data={"folder": "sub", "documents": json.dumps(["main.typ", "sub/part.typ"])})
+    assert result.status_code == 200, result.text
+    folders = sorted(d["folder"] for d in c.get(f"/api/projects/{pid}").json()["documents"])
+    assert folders == ["sub", "sub/sub"]  # never "sub/" for an entry at the ZIP root

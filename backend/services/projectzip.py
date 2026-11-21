@@ -109,7 +109,7 @@ def import_project_zip(user: str, data: bytes, documents: list[str], *, folder: 
     names = {n for n, _ in files}
     if any(d not in names or not d.lower().endswith(".typ") for d in documents):
         raise HTTPException(400, "A chosen document is not a .typ file of the ZIP")
-    docs = [(posixpath.join(folder, posixpath.dirname(n)), PurePosixPath(n).stem, content.decode("utf-8")) for n, content in files if n in documents]
+    docs = [(posixpath.join(folder, posixpath.dirname(n)).strip("/"), PurePosixPath(n).stem, content.decode("utf-8")) for n, content in files if n in documents]
     if any(not title or len(title) > TITLE_MAX for _, title, _ in docs):
         raise HTTPException(400, f"Title: 1-{TITLE_MAX} chars")
     backups: project_files.Backups = {}
