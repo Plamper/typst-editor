@@ -1825,13 +1825,20 @@ async function loadDocResources(force) {
   const r = await api('GET', `/api/docs/${id}/resources`)
   if (id !== docId || epoch !== openN || n !== docResN) return false
   docResReadonly = r.readonly !== false
+  const oldRows = window.docTpl || []
   window.docTpl = Object.entries(r.resources || {}).map(([name, content]) => ({ name, content, updated_at: r.versions?.[name] || '' }))
+  for (const row of window.docTpl) { // a late snapshot must not replace the row text a tab switch would load
+    const old = oldRows.find(x => x.name === row.name)
+    const seen = old && [old.updated_at, tabVersions.get(TPLK + row.name)].filter(Boolean).sort().pop()
+    if (old && row.updated_at && seen > row.updated_at) { row.content = old.content; row.updated_at = seen }
+  }
   if (isTplKey(activeFile) && !window.changeSession) {
     const row = window.docTpl.find(x => x.name === tabName(activeFile))
+    const stale = row && row.updated_at && (tabVersions.get(activeFile) || '') > row.updated_at // a late snapshot from before our save
     if (row && (tabDirty || tabSaveFlight)) row.content = getT()
-    else if (row) {
+    else if (row && !stale) {
       if (getT() !== row.content) { setT(row.content); gutter(); refreshHl(); paintOutline() }
-      tabVersions.set(activeFile, row.updated_at)
+      if (row.updated_at) tabVersions.set(activeFile, row.updated_at)
     }
   }
   docResAt = Date.now(); docResRefs = refs
@@ -2281,6 +2288,7 @@ function spellCodeMarks(state) {
 }
 const languageComp = new Compartment()
 const wrapComp = new Compartment() // F26: line wrapping (settings, persisted)
+const spellComp = new Compartment() // spelling/grammar content attributes (account setting)
 const cmExtensions = [keymap.of([ // first: highest priority before minimalSetup defaults
       { key: 'ArrowDown', run: v => { if (currentCompletions(v.state).length) return moveCompletionSelection(true)(v); return false } }, // creator call: (forward)(view), else cursor moves along
       { key: 'ArrowUp', run: v => { if (currentCompletions(v.state).length) return moveCompletionSelection(false)(v); return false } },
@@ -2294,7 +2302,7 @@ const cmExtensions = [keymap.of([ // first: highest priority before minimalSetup
       ...foldKeymap]), // F10: fold shortcuts alongside completion keys
     minimalSetup, languageComp.of(typstSupport), Prec.high(syntaxHighlighting(typstTheme)), typstSupport.language.data.of({ autocomplete: typstComplete }), wrapComp.of(wrapOn ? EditorView.lineWrapping : []), tabComp.of([EditorState.tabSize.of(tabW), indentUnit.of(' '.repeat(tabW))]),
     autocompletion({ defaultKeymap: false }), closeBrackets(), bracketMatching(), hoverTooltip(hoverAll), // F10 bracket-match; vendor Typst source + project source (files/labels/bib); Enter stays newline, Tab/Shift-Tab and Ctrl-Space come from the shortcut registry; arrows navigate
-    editableComp.of(EditorView.editable.of(true)), hlComp.of(hlField), peerField, findField, errLineField, syncLineField,
+    editableComp.of(EditorView.editable.of(true)), spellComp.of([]), hlComp.of(hlField), peerField, findField, errLineField, syncLineField,
     linter(null, { tooltipFilter: () => [] }), // F1: compiler errors only (setDiagnostics below); null source: lint never overwrites them, positions map across edits; no lint tooltip (line hover shows the message, no aim needed), no gutter lane
     spellCode, markField, lineNumbers(), foldGutter({ markerDOM: open => { const s = document.createElement('span'); s.className = 'foldMk ' + (open ? 'fold-open' : 'fold-closed'); s.title = open ? t('editor.fold') : t('editor.unfold'); s.innerHTML = open ? '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6l4.5 4.5L12.5 6"/></svg>' : '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5L10.5 8 6 12.5"/></svg>'; return s } }), // F10 fold lane right of numbers: hover-revealed chevrons, folded stays visible
     EditorView.theme({ '&': { height: '100%' }, '.cm-scroller': { overflow: 'auto' }, '.cm-content': { padding: '12px 0' } }),
@@ -5916,7 +5924,7 @@ async function switchTab(name, nosave, preserveView = false) { // true = switche
     if (my !== tabSeq || dk !== docId) return false
     if (!tp) { toast(t('files.tplGone')); return false }
     tabPins.add(tp.name); text = tp.content || ''
-    if (tp.updated_at) tabVersions.set(name, tp.updated_at)
+    if (tp.updated_at && (tabVersions.get(name) || '') < tp.updated_at) tabVersions.set(name, tp.updated_at) // late snapshot: never rewind a save
   } else if (!TEXT_EXT.test(name)) {
     const file = lastFiles.find(f => f.name === name)
     text = t('files.binaryInfo', { name, kb: Math.round((file?.size || 0) / 1024) })
@@ -13360,18 +13368,26 @@ function loadSpell(value, who = user) {
   try { localStorage.setItem('typst_spell_user_' + who, value || 'auto') } catch (e) {}
   applySpell()
 }
+function spellAttrs() { // CodeMirror defaults these off on .cm-content; grammar extensions opt in per element (data-lt-active is LanguageTool's flag)
+  const v = spellStored(), on = v !== 'off' && /\.typ$/i.test(tplName || tabName(activeFile))
+  const attrs = { spellcheck: on ? 'true' : 'false', autocorrect: on ? 'on' : 'off', writingsuggestions: on ? 'true' : 'false', 'data-lt-active': on ? 'true' : 'false' }
+  if (on && v !== 'auto') attrs.lang = v
+  return EditorView.contentAttributes.of(attrs)
+}
+let spellOffAttrs = null // off: LanguageTool restores spellcheck="true" when it detaches; enforce ours after it
+const spellDomObs = new MutationObserver(() => {
+  if (!spellOffAttrs) return
+  const dom = cm.contentDOM
+  for (const [name, value] of Object.entries(spellOffAttrs)) {
+    if (value === null) { if (dom.hasAttribute(name)) dom.removeAttribute(name) }
+    else if (dom.getAttribute(name) !== value) dom.setAttribute(name, value)
+  }
+})
+spellDomObs.observe(cm.contentDOM, { attributes: true, attributeFilter: ['spellcheck', 'autocorrect', 'writingsuggestions', 'data-lt-active', 'lang'] })
 function applySpell() { // the account preference applies to each text editor
-  const v = spellStored(), dom = cm.contentDOM
-  if (v === 'off') { dom.setAttribute('spellcheck', 'false'); dom.removeAttribute('lang') }
-  else {
-    dom.setAttribute('spellcheck', /\.typ$/i.test(tplName || tabName(activeFile)) ? 'true' : 'false')
-    if (v === 'auto') dom.removeAttribute('lang'); else dom.setAttribute('lang', v)
-  }
-  if (window.suggestionDraft?.view) {
-    const draft = window.suggestionDraft.view.contentDOM
-    draft.setAttribute('spellcheck', v === 'off' ? 'false' : 'true')
-    if (v === 'auto' || v === 'off') draft.removeAttribute('lang'); else draft.setAttribute('lang', v)
-  }
+  const v = spellStored(), on = v !== 'off' && /\.typ$/i.test(tplName || tabName(activeFile))
+  spellOffAttrs = on ? null : { spellcheck: 'false', autocorrect: 'off', writingsuggestions: 'false', 'data-lt-active': 'false', lang: null }
+  cm.dispatch({ effects: spellComp.reconfigure(spellAttrs()) })
   const sel = $('spellSel')
   if (sel && sel.value !== v) sel.value = v
 }
