@@ -655,3 +655,89 @@ function smHitAt(pos) { // cursor in the open tab -> {pi, it, items} of its word
   const t = M.toks[f.ti], it = M.pages[t.pi][t.li[Math.min(f.k, t.li.length - 1)]]
   return { pi: t.pi, it, items: [it] }
 }
+
+// --- scroll link: a reader scroll in one pane moves the other in step, interpolated between anchored words ---
+const SM_LINK_LINES = 60 // source lines searched up and down for an anchored neighbour
+let smLinkMemo = null // { M, key, lines: Map line -> {pi, y} | null, pages: [] per page sorted anchors }
+function smLinkData(M) {
+  const key = activeFile || ''
+  if (smLinkMemo && smLinkMemo.M === M && smLinkMemo.key === key) return smLinkMemo
+  const si = M.srcs.findIndex(s => s.key === key), pages = M.pages.map(() => [])
+  if (si >= 0) M.toks.forEach((t, ti) => {
+    const o = M.own[ti]
+    if (!o || o.si !== si || o.p !== 1) return // flow words of the open file: headers and footnotes sit out of order
+    const it = M.pages[t.pi][t.li[0]]
+    pages[t.pi].push({ y: it.y, pos: M.srcs[si].words[o.wi].raw, x0: it.x0, x1: it.x0 + (it.w || 0) })
+  })
+  for (const a of pages) a.sort((p, q) => p.y - q.y)
+  return (smLinkMemo = { M, key, lines: new Map(), pages })
+}
+function smPageBox(pv, pi, pr) { // page -> its top in preview scroll coordinates and the CSS px per page unit
+  const slot = pvSlots[pi], items = pvTexts[pi]
+  if (!slot || !slot.isConnected) return null
+  const r = slot.getBoundingClientRect(), vh = (items && items[0] && items[0].vh) || (+slot.dataset.w || 1) * (+slot.dataset.r || 1)
+  return { top: pv.scrollTop + r.top - (pr || pv.getBoundingClientRect()).top, k: r.height / (vh || 1), vw: (items && items[0] && items[0].vw) || 0 }
+}
+function smPageAt(pv, y, pr) { // first page whose bottom lies below scroll coordinate y (binary search: a few layout reads per frame)
+  let lo = 0, hi = pvSlots.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1, box = smPageBox(pv, mid, pr)
+    if (box && box.top + (pvSlots[mid].getBoundingClientRect().height || 0) <= y) lo = mid + 1; else hi = mid
+  }
+  return lo
+}
+function smMapQuick() { // scroll frames: the map of this frame's paper and text without rescanning every source
+  const m = smMemo, done = pvTextDone.filter(Boolean).length
+  if (m && m.doc === cm.state.doc && m.active === (activeFile || '') && m.gen === pvMetaGen && m.done === done && m.seen > Date.now() - 500) return m.M
+  const M = smMap()
+  Object.assign(smMemo, { doc: cm.state.doc, active: activeFile || '', seen: Date.now() })
+  return M
+}
+function smLineSpot(L, M, line) { // source line -> {pi, y} of its first word on paper (memo per map)
+  if (L.lines.has(line)) return L.lines.get(line)
+  const doc = cm.state.doc
+  let spot = null
+  if (line >= 1 && line <= doc.lines && doc.line(line).text.trim()) {
+    const f = smFind(M, L.key, doc.line(line).from)
+    if (f) { const t = M.toks[f.ti]; spot = { pi: t.pi, y: M.pages[t.pi][t.li[0]].y } }
+  }
+  L.lines.set(line, spot)
+  return spot
+}
+function smScrollPv() { // editor middle -> preview middle (null: no anchor near, the caller falls back)
+  const M = smMapQuick(), L = smLinkData(M), pv = $('preview'), sc = cm.scrollDOM, doc = cm.state.doc
+  const mid = sc.scrollTop + sc.clientHeight / 2, at = cm.lineBlockAtHeight(mid), line = doc.lineAt(at.from).number
+  let a = null, b = null
+  for (let l = line; l >= Math.max(1, line - SM_LINK_LINES) && !a; l--) { const s = smLineSpot(L, M, l); if (s) a = { l, s } }
+  for (let l = line + 1; l <= Math.min(doc.lines, line + SM_LINK_LINES) && !b; l++) { const s = smLineSpot(L, M, l); if (s) b = { l, s } }
+  if (!a && !b) return null
+  if ((!a || !b) && pvTextDone.some(d => !d)) return null // the other side may sit on a page that is still being indexed
+  const pr = pv.getBoundingClientRect(), abs = s => { const box = smPageBox(pv, s.pi, pr); return box ? box.top + s.y * box.k : null }
+  const top = l => { const blk = cm.lineBlockAt(doc.line(l).from); return blk.top + blk.height / 2 }
+  const ya = a && abs(a.s), yb = b && abs(b.s)
+  if (ya == null && yb == null) return null
+  let y = ya != null ? ya : yb
+  if (ya != null && yb != null && yb > ya) { const ta = top(a.l), tb = top(b.l); y = ya + Math.max(0, Math.min(1, (mid - ta) / Math.max(1, tb - ta))) * (yb - ya) }
+  return y - pv.clientHeight / 2
+}
+function smScrollEd(off, share) { // preview reading point -> editor middle (null: no anchor near, the caller falls back); share: reading column as a share of the page width
+  const M = smMapQuick(), L = smLinkData(M), pv = $('preview'), sc = cm.scrollDOM, pr = pv.getBoundingClientRect()
+  const mid = pv.scrollTop + pv.clientHeight / 2 + (off || 0), here = smPageAt(pv, mid, pr)
+  if (!pvTextDone[here]) return null // the page under the reading point is still being indexed: the page follow retries once it is
+  let a = null, b = null // nearest anchors above and below the reading point, across page breaks
+  for (let pi = Math.max(0, here - 3); pi <= Math.min(L.pages.length - 1, here + 3); pi++) {
+    const list = L.pages[pi], box = list.length ? smPageBox(pv, pi, pr) : null
+    if (!box) continue
+    const rx = share != null && box.vw ? share * box.vw : null, w = box.vw * 0.04 // two columns: words of the reading column, a gutter's width of slack
+    const col = rx != null ? list.filter(o => o.x0 - w <= rx && rx <= o.x1 + w) : []
+    for (const o of col.length ? col : list) {
+      const y = box.top + o.y * box.k
+      if (y <= mid) { if (!a || y >= a.y) a = { y, pos: o.pos } } else if (!b || y < b.y) b = { y, pos: o.pos }
+    }
+  }
+  if (!a && !b) return null
+  const len = cm.state.doc.length, top = p => { const blk = cm.lineBlockAt(Math.min(p, len)); return blk.top + blk.height / 2 }
+  let t = top((a || b).pos)
+  if (a && b && b.y > a.y && b.pos >= a.pos) { const ta = top(a.pos), tb = top(b.pos); t = ta + (mid - a.y) / (b.y - a.y) * (tb - ta) } // source order against paper order (a float, the other column): hold the word above
+  return t - sc.clientHeight / 2
+}

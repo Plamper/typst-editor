@@ -661,16 +661,53 @@ function queueSyncPv(at, edge) { // throttle: continuous cursor/scroll movement 
   if (syncT) return // a run is already scheduled and reads the latest position
   syncT = setTimeout(() => { syncT = 0; syncToPv() }, SYNC_MS)
 }
-try { // wheel over the editor: the preview follows what is on screen, not only the cursor
+const SCROLL_LEAD_MS = 400 // the pane the reader touched last leads; the other one only follows it
+let scrollLead = '', scrollLeadT = 0, linkPvRaf = 0, linkEdRaf = 0
+function leadBy(pane) { scrollLead = pane; scrollLeadT = Date.now() }
+function leads(pane) { return scrollLead === pane && Date.now() - scrollLeadT < SCROLL_LEAD_MS }
+function queueLinkPv() { if (!linkPvRaf) linkPvRaf = requestAnimationFrame(() => { linkPvRaf = 0; linkPv() }) } // one step per frame: the preview moves with the editor, not after it
+function linkPv() { // reader scroll in the editor: the preview stands on the same spot, between the anchored lines around the middle
+  const fileTab = syncEdTab(), sc = cm.scrollDOM, pv = $('preview')
+  if (!followAll || !docId || tplName || (activeFile && !fileTab) || (scrollRestore && !scrollRestore.pv)) return
+  if (!pv.scrollHeight || document.body.classList.contains('editonly')) return
+  const edge = scrollEdge(sc)
+  let y = null
+  if (edge && !fileTab) y = edge < 0 ? 0 : pv.scrollHeight - pv.clientHeight // the first or last line on screen: so is the first or last page
+  else try { y = smScrollPv() } catch (e) { y = null }
+  if (y == null) { try { queueSyncPv(cm.elementAtHeight(sc.scrollTop + sc.clientHeight / 2).from, edge) } catch (e) {} return } // no word on paper nearby: the line follow
+  smoothStop(pv)
+  syncMiss = false
+  syncEdOff = 0
+  pv.scrollTop = Math.max(0, Math.min(pv.scrollHeight - pv.clientHeight, y))
+  pvSelfWrite(pv)
+}
+function queueLinkEd() { if (!linkEdRaf) linkEdRaf = requestAnimationFrame(() => { linkEdRaf = 0; linkEd() }) }
+function linkEd() { // reader scroll in the preview: the editor stands on the same spot, between the anchored words around the reading point
+  const fileTab = syncEdTab(), pv = $('preview'), sc = cm.scrollDOM
+  if (!followAll || !docId || tplName || (activeFile && !fileTab)) return
+  if (!pv.clientHeight || document.body.classList.contains('editonly')) return
+  if (!fileTab && scrollEdge(pv)) { syncToEd(); return } // the first or last page: the first or last line
+  let y = null
+  try { y = smScrollEd(syncEdOff, syncEdX >= 0 ? syncEdX : null) } catch (e) { y = null }
+  if (y == null) { queueSyncEd(); return } // no word of this file near the reading point: the page follow
+  smoothStop(sc)
+  syncEdMiss = false
+  sc.scrollTop = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, y))
+  pvSelfWrite(sc)
+}
+try { // the editor view: a reader scroll moves the preview in step, not only the cursor
   const sc = cm.scrollDOM
-  sc.addEventListener('wheel', () => smoothStop(sc), { passive: true })
+  sc.addEventListener('wheel', () => { smoothStop(sc); leadBy('ed') }, { passive: true })
+  for (const ev of ['pointerdown', 'touchstart', 'keydown']) sc.addEventListener(ev, () => leadBy('ed'), { passive: true })
   sc.addEventListener('scroll', () => {
     if (!followAll || syncSkip) return
     if (smoothWrote(sc)) return // our own glide/follow wrote it
     if (Date.now() - cmSelT < 150) return // a cursor move already synced the cursor
+    if (leads('pv')) return // the preview leads: CodeMirror settling under our follow is no reader scroll
     smoothStop(sc) // scrollbar drag/touch/page key: the reader owns the editor view
     syncEdMiss = false // a pending follow from the preview must not pull the editor back
-    try { queueSyncPv(cm.elementAtHeight(sc.scrollTop + sc.clientHeight / 2).from, scrollEdge(sc)) } catch (e) {}
+    leadBy('ed')
+    queueLinkPv()
   }, { passive: true })
 } catch (e) {}
 let syncEdT = 0
@@ -726,7 +763,9 @@ function syncToEd() {
   if (fileTab && !at.sec) return // main-document text at the reading point: the chapter tab stays where it is
   smoothFollow(cm.scrollDOM, cmTop(posOfLine(getT(), line)))
 }
+try { for (const ev of ['pointerdown', 'touchstart', 'keydown']) $('preview').addEventListener(ev, () => leadBy('pv'), { passive: true }) } catch (e) {}
 try { $('preview').addEventListener('wheel', () => { // a reader wheel wins over a pending sync retry
+  leadBy('pv')
   if (syncT) { clearTimeout(syncT); syncT = 0 } // no pending cursor sync may yank the preview back
   syncMiss = false // nor the retry from a render that started before the reader scrolled
   syncEdge = 0
@@ -734,11 +773,13 @@ try { $('preview').addEventListener('wheel', () => { // a reader wheel wins over
 try { $('preview').addEventListener('scroll', () => { // reader scroll: the editor view moves along
   const pv = $('preview')
   if (Math.abs(pv.scrollTop - pvSelfTop) < 2) return // this app wrote it: follow or a jump, not the reader
+  if (leads('ed')) return // the editor leads: a page settling under our follow is no reader scroll
   smoothStop(pv) // scrollbar drag/touch/keyboard: the reader wins over a running animation
   if (syncT) { clearTimeout(syncT); syncT = 0 } // the reader took over: no pending cursor sync may yank the preview back
   syncMiss = false // nor the retry from a render that started before the reader scrolled
   syncEdge = 0
-  queueSyncEd()
+  leadBy('pv')
+  queueLinkEd()
 }, { passive: true }) } catch (e) {}
 function pvPageHint(pi, total, n, at, frac) { // click page -> source line: section window first, then layout ratio
   const f0 = typeof frac === 'number' && isFinite(frac) ? Math.max(0, Math.min(1, frac)) : 0.5
