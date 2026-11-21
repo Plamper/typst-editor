@@ -1,11 +1,10 @@
 """Round 4 fixes: checkpoint retention (#5), stale selections instead of hard
 409 (#4), project-unique entry names (#7) and the open-packages summary (#6)."""
 import datetime
-import hashlib
 import io
 import zipfile
 
-from conftest import login, make_doc, register_user
+from conftest import login, make_doc, put_file, register_user
 
 from backend import constants, db
 from backend.services import project_history
@@ -174,59 +173,44 @@ def test_draft_validation_reports_zero_occurrences(c):
 
 # --- #7 project-wide unique entry names --------------------------------------
 
-def test_filename_unique_across_sibling_docs(c):
+def test_file_names_unique_case_insensitively(c):
     pid, did = project(c)
-    other = c.post(f"/api/projects/{pid}/docs", json={"title": "Second"}).json()["id"]
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("fdgbdf.txt", b"x")}).status_code == 200
-    assert c.post(f"/api/docs/{other}/files", files={"f": ("fdgbdf.txt", b"x")}).status_code == 409
-    assert c.post(f"/api/docs/{other}/files", files={"f": ("FDGBDF.txt", b"x")}).status_code == 409
-    # replacing the entry in its own doc never regresses
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("fdgbdf.txt", b"y")}).status_code == 200
+    v = put_file(c, pid, "fdgbdf.txt", b"x").json()["version"]
+    assert put_file(c, pid, "FDGBDF.txt", b"x").status_code == 409
+    assert put_file(c, pid, "fdgbdf.txt", b"x").status_code == 409  # existing file needs its version
+    assert put_file(c, pid, "fdgbdf.txt", b"y", version=v).status_code == 200
+    assert put_file(c, pid, "fdgbdf.txt/inner.txt", b"y").status_code == 409  # file and folder cannot share a name
 
 
-def test_text_file_create_collision_and_rename(c):
+def test_file_move_collision(c):
     pid, did = project(c)
-    other = c.post(f"/api/projects/{pid}/docs", json={"title": "Second"}).json()["id"]
-    assert c.post(f"/api/docs/{did}/files/a.csv/text", json={"content": "1,2"}).status_code == 200
-    assert c.post(f"/api/docs/{other}/files/A.CSV/text", json={"content": "x"}).status_code == 409
-    c.post(f"/api/docs/{other}/files/new.csv/text", json={"content": "z"})
-    # renaming a doc entry needs the sha256 version guard (optimistic lock)
-    version = hashlib.sha256(b"1,2").hexdigest()
-    r = c.post(f"/api/projects/{pid}/rename-entry",
-               json={"name": "a.csv", "target": "b.csv", "doc_id": did, "version": version})
+    v = put_file(c, pid, "a.csv", b"1,2").json()["version"]
+    put_file(c, pid, "new.csv", b"z")
+    r = c.post(f"/api/projects/{pid}/files-move", json={"path": "a.csv", "target": "b.csv", "version": v})
     assert r.status_code == 200, r.text
-    # renaming onto a sibling doc's live name is a real collision (409 even
-    # though the version string is wrong yet - the name check fires first)
-    assert c.post(f"/api/projects/{pid}/rename-entry",
-                  json={"name": "b.csv", "target": "new.csv", "doc_id": did,
-                        "version": "x"}).status_code == 409
+    # moving onto another file's name is a real collision
+    assert c.post(f"/api/projects/{pid}/files-move", json={"path": "b.csv", "target": "NEW.csv", "version": v}).status_code == 409
 
 
-def test_module_names_unique_case_insensitively(c):
+def test_case_only_rename_of_a_file_is_allowed(c):
     pid, _did = project(c)
-    assert c.post(f"/api/projects/{pid}/resources", json={"name": "module.typ", "content": "a"}).status_code == 200
-    assert c.post(f"/api/projects/{pid}/resources", json={"name": "Module.typ", "content": "b"}).status_code == 409
-    assert c.post(f"/api/projects/{pid}/resources", json={"name": "module.typ", "content": "c"}).status_code == 409
-    # updating the existing row without a fresh version stays rejected as before
-    c.post(f"/api/projects/{pid}/resources", json={"name": "other.typ", "content": "d"})
-    assert c.post(f"/api/projects/{pid}/rename-entry",
-                  json={"name": "other.typ", "target": "MODULE.typ"}).status_code == 409
+    v = put_file(c, pid, "module.typ", b"a").json()["version"]
+    r = c.post(f"/api/projects/{pid}/files-move", json={"path": "module.typ", "target": "Module.typ", "version": v})
+    assert r.status_code == 200, r.text
+    assert [f["path"] for f in c.get(f"/api/projects/{pid}/files").json()["files"]] == ["Module.typ"]
 
 
-def test_zip_import_respects_sibling_doc_names(c):
+def test_zip_import_respects_existing_file_names(c):
     pid, did = project(c)
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("im.png", b"img")}).status_code == 200
+    assert put_file(c, pid, "im.png", b"img").status_code == 200
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w") as archive:
         archive.writestr("main.typ", "x")
         archive.writestr("IM.PNG", b"other")
     response = c.post(f"/api/projects/{pid}/import-zip",
-                      data={"title": "Imported"}, files={"f": ("src.zip", data.getvalue(), "application/zip")})
+                      data={"documents": '["main.typ"]'}, files={"f": ("src.zip", data.getvalue(), "application/zip")})
     assert response.status_code == 409, response.text
-
-
-# Trash restore keeps its own collision flow (reference:
-# tests/test_project_transfer.py::test_document_names_are_project_local_and_restore_never_overwrites).
+    assert c.get(f"/api/projects/{pid}/files/im.png").content == b"img"
 
 
 # --- #6 open review packages in the topbar summary ---------------------------

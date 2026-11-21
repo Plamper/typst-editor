@@ -10,7 +10,7 @@ log = logging.getLogger("typst.main")
 
 
 def reap_trash_dirs() -> dict[str, int]:
-    # B8: delete_me renames FILES_DIR/<id> aside to .trash-<id> before the DB
+    # B8: delete_me renames FILES_DIR/<id> (project file trees) aside to .trash-<id> before the DB
     # tx. A crash between the steps leaves orphans that user_bytes never
     # counts (and backup still tars). Sweep them at startup (shallow, fast).
     counts = {"restored": 0, "removed": 0, "skipped": 0}
@@ -53,7 +53,7 @@ def reap_trash_dirs() -> dict[str, int]:
                     counts["removed"] += 1
                 continue
             live = deps.get_files_dir() / did
-            row = con.execute("SELECT 1 FROM docs WHERE id=?", (did,)).fetchone()
+            row = con.execute("SELECT 1 FROM docs WHERE id=? UNION SELECT 1 FROM projects WHERE id=?", (did, did)).fetchone()
             if row is not None and not live.exists():
                 try:
                     dst.rename(live)

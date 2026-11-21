@@ -1,13 +1,14 @@
-"""Project checkpoints include document sources, shared modules and binary files."""
+"""Project checkpoints include document sources and every project file."""
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
 import logging
+import posixpath
 import sqlite3
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
@@ -16,15 +17,14 @@ from backend import db, sync
 from backend.constants import AUTO_SNAP_KEEP, AUTO_SNAP_KEEP_WEEKS
 from backend.services import quota
 from backend.services.docfiles import store
-from backend.services.locks import _named_lock
 
 log = logging.getLogger("typst.main")
 
 
 def stamp(con: sqlite3.Connection, project_id: str) -> tuple:
     docs = tuple(tuple(r) for r in con.execute("SELECT id,owner,title,folder,content,yjs,trashed,updated_at FROM docs WHERE project_id=? ORDER BY id", (project_id,)))
-    modules = tuple(tuple(r) for r in con.execute("SELECT name,content,updated_at FROM project_resources WHERE project_id=? ORDER BY name", (project_id,)))
-    return docs, modules
+    files = tuple(tuple(r) for r in con.execute("SELECT path,version FROM project_files WHERE project_id=? ORDER BY path", (project_id,)))
+    return docs, files
 
 
 def unchanged(con: sqlite3.Connection, project_id: str, expected: tuple) -> None:
@@ -34,24 +34,19 @@ def unchanged(con: sqlite3.Connection, project_id: str, expected: tuple) -> None
 
 @contextmanager
 def prepared(project_id: str, user: str) -> Iterator[tuple[dict, tuple]]:
-    from backend.services import projects
+    from backend.services import project_files, projects
 
     con = db.connect()
     try:
         projects.require(con, project_id, user)
-        ids = [r[0] for r in con.execute("SELECT id FROM docs WHERE project_id=? ORDER BY id", (project_id,))]
     finally:
         con.close()
-    with ExitStack() as locks:
-        for did in ids:
-            locks.enter_context(_named_lock(f"upload:{did}"))
+    with project_files.lock(project_id):
         con = db.connect()
         try:
             con.execute("BEGIN")
             projects.require(con, project_id, user)
             expected = stamp(con, project_id)
-            if [r[0] for r in expected[0]] != ids:
-                raise HTTPException(409, "Project changed; retry checkpoint operation")
             state = capture(con, project_id)
         finally:
             con.close()
@@ -60,22 +55,49 @@ def prepared(project_id: str, user: str) -> Iterator[tuple[dict, tuple]]:
 
 def capture(con: sqlite3.Connection, project_id: str) -> dict:
     documents = []
-    for row in con.execute("SELECT id,title,folder,content,created_at FROM docs WHERE project_id=? AND trashed=0 ORDER BY id", (project_id,)):
+    for row in con.execute("SELECT id,title,folder,content FROM docs WHERE project_id=? AND trashed=0 ORDER BY id", (project_id,)):
         doc = dict(row)
         live = sync.room_text(doc['id'])
         if live is not None:
             doc['content'] = live
-        doc['files'] = {f.path: base64.b64encode(store.get(doc['id'], f.path)).decode('ascii') for f in store.list(doc['id'])}
         documents.append(doc)
-    resources = {r['name']: r['content'] for r in con.execute("SELECT name,content FROM project_resources WHERE project_id=? ORDER BY name", (project_id,))}
-    return {'documents': documents, 'resources': resources}
+    files = {r[0]: base64.b64encode(store.get(project_id, r[0])).decode('ascii')
+             for r in con.execute("SELECT path FROM project_files WHERE project_id=? ORDER BY path", (project_id,))}
+    return {'documents': documents, 'files': files}
+
+
+def load(content: str) -> dict:
+    """A stored checkpoint; the format before project files ({documents: [{..., files}], resources}) is converted
+    with the rules of migration v34 (attachments below their document's folder, references kept working)."""
+    from backend.services import project_files as pf
+
+    state = json.loads(content)
+    if 'resources' not in state:
+        return state
+    modules = state.pop('resources')
+    module_map, doc_maps = pf.legacy_paths(set(), list(modules), [(d['id'], d.get('folder') or '', list(d.get('files') or {})) for d in state['documents']])
+    files = {}
+    for name, new in module_map.items():
+        text = modules[name]
+        files[new] = base64.b64encode(pf.legacy_refs(text, posixpath.dirname(name), posixpath.dirname(new), {}, module_map).encode()).decode('ascii')
+    for d in state['documents']:
+        local = doc_maps[d['id']]
+        for old, encoded in (d.pop('files', None) or {}).items():
+            new = local[old]
+            if new.lower().endswith('.typ'):
+                text = base64.b64decode(encoded).decode('utf-8', errors='surrogateescape')
+                fixed = pf.legacy_refs(text, posixpath.dirname(old), posixpath.dirname(new), local, module_map)
+                encoded = base64.b64encode(fixed.encode('utf-8', errors='surrogateescape')).decode('ascii')
+            files[new] = encoded
+        d['content'] = pf.legacy_refs(d['content'], '', d.get('folder') or '', local, module_map)
+    state['files'] = files
+    return state
 
 
 def _retain(con: sqlite3.Connection, project_id: str) -> None:
     """Retention for automatic checkpoints (runs inside every save tx).
 
-    Each checkpoint embeds document contents, all attachments base64 and
-    the module library - pruning a checkpoint frees those bytes for real
+    Each checkpoint embeds document contents and all project files base64 - pruning a checkpoint frees those bytes for real
     (asset bytes are per-checkpoint copies, not deduped). Policy: keep the
     newest AUTO_SNAP_KEEP automatic checkpoints, plus one per older week
     within AUTO_SNAP_KEEP_WEEKS weeks. Manual checkpoints (kind='manual')
@@ -116,20 +138,16 @@ def save(con: sqlite3.Connection, project_id: str, state: dict, label: str = '',
     return sid
 
 
+def _readable(data: bytes) -> str:
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        return f"Binary: {len(data)} bytes, SHA256 {hashlib.sha256(data).hexdigest()}"
+
+
 def diff_files(state: dict) -> dict[str, str]:
-    files = {}
-    for d in state['documents']:
-        prefix = f"{d['title']} [{d['id']}]"
-        files[prefix + '.typ'] = d['content']
-        for name, encoded in d['files'].items():
-            data = base64.b64decode(encoded)
-            try:
-                value = data.decode('utf-8')
-            except UnicodeDecodeError:
-                value = f"Binary: {len(data)} bytes, SHA256 {hashlib.sha256(data).hexdigest()}"
-            files[prefix + '/' + name] = value
-    for name, content in state['resources'].items():
-        files['Modules/' + name] = content
+    files = {f"{d['title']} [{d['id']}].typ": d['content'] for d in state['documents']}
+    files.update({path: _readable(base64.b64decode(encoded)) for path, encoded in state['files'].items()})
     return files
 
 
@@ -149,10 +167,8 @@ def diff_entries(state: dict) -> dict[str, dict]:
     for d in state["documents"]:
         folder = (d.get("folder") or "").strip("/")
         put(f"d:{d['id']}", (folder + "/" if folder else "") + d["title"] + ".typ", d["content"])
-        for name, encoded in d["files"].items():
-            put(f"f:{d['id']}/{name}", name, base64.b64decode(encoded))
-    for name, content in state["resources"].items():
-        put(f"r:{name}", name, content)
+    for path, encoded in state["files"].items():
+        put(f"f:{path}", path, base64.b64decode(encoded))
     return out
 
 

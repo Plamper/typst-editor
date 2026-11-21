@@ -18,8 +18,7 @@ from pycrdt import Doc, Text
 
 from backend import config, db, deps, sync
 from backend.constants import MAX_TXT, TITLE_MAX
-from backend.services import projects, quota, resources, trash
-from backend.services.docfiles import file_type, safe_name, store
+from backend.services import project_files, projects, quota, resources, trash
 from backend.services.locks import _named_lock
 
 log = logging.getLogger("typst.main")
@@ -45,7 +44,7 @@ def key(file: dict) -> tuple[str, str, str]:
 
 def snapshot(con, project: str, file: dict) -> str | None:
     kind, document, path = key(file)
-    if kind not in ("document", "resource", "file"):
+    if kind not in ("document", "file"):
         raise HTTPException(400, "Invalid proposal file kind")
     if kind == "document":
         row = con.execute(
@@ -57,25 +56,14 @@ def snapshot(con, project: str, file: dict) -> str | None:
             raise HTTPException(404, "Document gone")
         live = sync.room_text(document)
         return live if live is not None else row[0]
-    safe_name(path)
-    if kind == "resource":
-        from backend.routers.projects import resource_name
-
-        resource_name(path)
-        row = con.execute(
-            "SELECT content FROM project_resources WHERE project_id=? AND name=?", (project, path)
-        ).fetchone()
-        return row[0] if row else None
-    if not con.execute("SELECT 1 FROM docs WHERE id=? AND project_id=? AND trashed=0", (document, project)).fetchone():
-        raise HTTPException(404, "Source document gone")
-    try:
-        data = store.get(document, path)
-    except FileNotFoundError:
+    project_files.clean(path, new=False)
+    if not con.execute("SELECT 1 FROM project_files WHERE project_id=? AND path=?", (project, path)).fetchone():
         return None
+    data = project_files.read(project, path)
     try:
         return base64.b64encode(data).decode() if file.get("binary") else data.decode("utf-8")
     except UnicodeDecodeError as error:
-        raise HTTPException(400, "Use a binary proposal for this attachment") from error
+        raise HTTPException(400, "Use a binary proposal for this file") from error
 
 
 def apply_changes(text: str, changes: list[dict]) -> str:
@@ -98,7 +86,7 @@ def apply_changes(text: str, changes: list[dict]) -> str:
 
 
 def validate_file(file: dict) -> None:
-    if file["kind"] in ("document", "file"):
+    if file["kind"] == "document":
         deps.check_doc_id(file.get("doc_id", ""))
     if file.get("folder") is not None:
         if file["kind"] != "document" or file["action"] not in ("add", "rename"):
@@ -106,8 +94,8 @@ def validate_file(file: dict) -> None:
         from backend.routers.project_folders import folder_path
 
         file["folder"] = folder_path(file["folder"]) if file["folder"].strip("/") else ""
-    if file["kind"] == "resource" and file.get("doc_id"):
-        raise HTTPException(400, "Project resources have no document scope")
+    if file["kind"] == "file" and file.get("doc_id"):
+        raise HTTPException(400, "Project files have no document scope")
     if file["action"] not in ("modify", "add", "delete", "rename"):
         raise HTTPException(400, "Invalid file action")
     if file["kind"] != "document" and not file["path"]:
@@ -119,7 +107,7 @@ def validate_file(file: dict) -> None:
         if file["action"] == "rename" and not file.get("original_title"):
             raise HTTPException(400, "Missing original document title")
     if file.get("binary") and file["kind"] != "file":
-        raise HTTPException(400, "Only attachments may be binary")
+        raise HTTPException(400, "Only files may be binary")
     if file["action"] == "add" and file.get("base") is not None:
         raise HTTPException(400, "Added file already has a base")
     if file["action"] != "add" and file.get("base") is None:
@@ -130,7 +118,7 @@ def validate_file(file: dict) -> None:
             try:
                 size = len(base64.b64decode(value, validate=True)) if file.get("binary") else len(value.encode())
             except ValueError as error:
-                raise HTTPException(400, "Invalid binary attachment") from error
+                raise HTTPException(400, "Invalid binary file") from error
             if size > (10 * 1024 * 1024 if file.get("binary") else MAX_TXT):
                 raise HTTPException(413, "Proposal file too large")
     if (file["action"] == "modify" or file["action"] == "rename" and file.get("changes")) and not file.get("binary"):
@@ -139,11 +127,7 @@ def validate_file(file: dict) -> None:
     if file["action"] != "delete" and file.get("content") is None:
         raise HTTPException(400, "Missing proposed content")
     if file["action"] == "rename" and file["kind"] != "document":
-        safe_name(file.get("target", ""), new=True)
-        if file["kind"] == "resource":
-            from backend.routers.projects import resource_name
-
-            resource_name(file["target"], new=True)
+        project_files.clean(file.get("target", ""))
 
 
 def get(con, project: str, package: str) -> dict:
@@ -257,32 +241,28 @@ def dependencies(con, project: str, pending: list[dict], writes: list[tuple[dict
     texts: dict[tuple[str, str, str], str] = {}
     available = set()
     deleting = {f['doc_id'] for f, _ in writes if f['kind'] == 'document' and f['action'] == 'delete'}
-    for row in con.execute("SELECT id,content FROM docs WHERE project_id=? AND trashed=0", (project,)):
+    folders: dict[str, str] = {}
+    for row in con.execute("SELECT id,folder,content FROM docs WHERE project_id=? AND trashed=0", (project,)):
         if row['id'] in deleting:
             continue
         identity = ("document", row["id"], "")
+        folders[row["id"]] = row["folder"]
         # room_text() returns "" for an emptied live room (not None) - only
         # a missing room falls back to the DB text, like snapshot().
         live = sync.room_text(row["id"])
         texts[identity] = live if live is not None else row["content"]
         available.add(identity)
-        for attachment in store.list(row["id"]):
-            identity = ("file", row["id"], attachment.path)
-            available.add(identity)
-            if resources.kind_of(attachment.path):
-                try:
-                    texts[identity] = store.get(row["id"], attachment.path).decode()
-                except UnicodeDecodeError:
-                    pass
-    for row in con.execute("SELECT name,content FROM project_resources WHERE project_id=?", (project,)):
-        identity = ("resource", "", row["name"])
+    for (path,) in con.execute("SELECT path FROM project_files WHERE project_id=?", (project,)):
+        identity = ("file", "", path)
         available.add(identity)
-        texts[identity] = row["content"]
+        if resources.kind_of(path):
+            try:
+                texts[identity] = project_files.read(project, path).decode()
+            except UnicodeDecodeError:
+                pass
     sensitive = {key(f) for f in pending if f["action"] == "delete" or f["action"] == "rename"}
     sensitive.update((f["kind"], f.get("doc_id", ""), f.get("target", f["path"])) for f in pending if f["action"] in ("add", "rename"))
     for file, content in writes:
-        if file['kind'] == 'file' and file.get('doc_id') in deleting:
-            continue
         identity = key(file)
         if file["action"] in ("delete", "rename"):
             available.discard(identity)
@@ -293,19 +273,19 @@ def dependencies(con, project: str, pending: list[dict], writes: list[tuple[dict
             if not file.get("binary"):
                 texts[target] = content
     for identity, content in texts.items():
-        _kind, document, path = identity
-        parent = posixpath.dirname(path)
-        for ref in set(resources.refs_in_text(content)) | set(re.findall(r'"([^"\n]+)"', content)):
-            for resolved in {ref, posixpath.normpath(posixpath.join(parent, ref))}:
-                local = ("file", document, resolved)
-                shared = ("resource", "", resolved)
-                if local in available or shared in available:
+        kind, document, path = identity
+        parent = folders.get(document, "") if kind == "document" else posixpath.dirname(path)
+        for ref in set(re.findall(r'"([^"\n]+)"', content)):
+            resolved = resources.resolve(parent, ref)
+            if resolved:
+                local = ("file", "", resolved)
+                if local in available:
                     continue
-                if local in sensitive or shared in sensitive:
+                if local in sensitive:
                     if include_related:
                         for file in pending:
                             target = (file["kind"], file.get("doc_id", ""), file.get("target", file["path"]))
-                            if file["action"] in ("add", "rename") and target in (local, shared):
+                            if file["action"] in ("add", "rename") and target == local:
                                 return [(file["id"], "@rename" if file["action"] == "rename" else "")]
                         source = next((f for f in pending if key(f) == identity or
                                        f["action"] == "rename" and (f["kind"], f.get("doc_id", ""), f.get("target")) == identity), None)
@@ -386,7 +366,7 @@ def accept(
 ) -> tuple[dict, list, list[str]]:
     updates = []
     deleted_documents: list[str] = []
-    backups: dict[tuple[str, str], bytes | None] = {}
+    backups: project_files.Backups = {}
     with ExitStack() as locks:
         locks.enter_context(_named_lock("packages:" + project))
         con = db.connect()
@@ -396,8 +376,7 @@ def accept(
         finally:
             con.close()
         documents = sorted({f["doc_id"] for f in preliminary["files"] if f.get("doc_id")})
-        for document in documents:
-            locks.enter_context(_named_lock("upload:" + document))
+        locks.enter_context(project_files.lock(project))
         for document in documents:
             if any(f["kind"] == "document" and f.get("doc_id") == document and f["action"] != "add" for f in preliminary["files"]):
                 locks.enter_context(sync._doc_lock(sync.room(document)))
@@ -530,21 +509,7 @@ def accept(
                                 extended = True
                     if not extended:
                         raise HTTPException(409, "Dependent proposal changed; refresh the package")
-                deleting = {f['doc_id'] for f, _ in writes if f['kind'] == 'document' and f['action'] == 'delete'}
-                if any(f['kind'] == 'file' and f.get('doc_id') in deleting for f in remaining):
-                    raise HTTPException(409, "Accept document deletion and its attachment changes together")
                 writes.sort(key=lambda item: item[0]['kind'] == 'document' and item[0]['action'] == 'delete')
-                for document in documents:
-                    names = {entry.path for entry in store.list(document)}
-                    for file, content in writes:
-                        if file["kind"] != "file" or file.get("doc_id") != document:
-                            continue
-                        if file["action"] in ("delete", "rename"):
-                            names.discard(file["path"])
-                        if content is not None:
-                            names.add(file.get("target", file["path"]) if file["action"] == "rename" else file["path"])
-                    if len(names) > config.load().MAX_FILES_PER_DOC:
-                        raise HTTPException(413, "Too many document attachments")
                 for file, content in writes:
                     original = snapshot(con, project, file)
                     binary = file.get("binary")
@@ -552,13 +517,8 @@ def accept(
                         raise HTTPException(413, "Accepted file too large")
                     if file["action"] == "delete" and file["kind"] != "document":
                         payload = base64.b64decode(original or "") if binary else (original or "").encode()
-                        trash.archive(con, owner, file["kind"], file["path"], payload, project_id=project, doc_id=file.get("doc_id", ""))
+                        trash.archive(con, owner, "file", file["path"], payload, project_id=project)
                     name = file["target"] if file["action"] == "rename" or file["kind"] == "document" and file["action"] == "add" else file["path"]
-                    if file["action"] in ("add", "rename"):
-                        if file["kind"] == "resource":
-                            projects.assert_resource_name_free(con, project, name, exempt_name=file["path"] if file["action"] == "rename" else "")
-                        elif file["kind"] == "file":
-                            projects.assert_file_name_free(con, project, name, exempt_files={(file["doc_id"], file["path"])} if file["action"] == "rename" else set())
                     if file["action"] == "rename" and file["kind"] != "document" and snapshot(con, project, {**file, "path": name}) is not None:
                         raise HTTPException(409, "Rename target exists")
                     if file["kind"] == "document":
@@ -603,36 +563,11 @@ def accept(
                             (content, update, db.now_iso(), file["doc_id"]),
                         )
                         updates.append((room, update, content))
-                    elif file["kind"] == "resource":
-                        if file["action"] in ("delete", "rename"):
-                            con.execute(
-                                "DELETE FROM project_resources WHERE project_id=? AND name=?", (project, file["path"])
-                            )
-                        if content is not None:
-                            con.execute(
-                                "INSERT INTO project_resources VALUES (?,?,?,?) ON CONFLICT(project_id,name) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at",
-                                (project, name, content, db.now_iso()),
-                            )
                     else:
-                        paths = [file["path"]] + ([name] if name != file["path"] else [])
-                        for path in paths:
-                            at = (file["doc_id"], path)
-                            if at not in backups:
-                                try:
-                                    backups[at] = store.get(*at)
-                                except FileNotFoundError:
-                                    backups[at] = None
                         if file["action"] in ("delete", "rename"):
-                            store.delete(file["doc_id"], file["path"])
-                            con.execute("DELETE FROM files WHERE doc_id=? AND path=?", (file["doc_id"], file["path"]))
+                            project_files.remove(con, project, file["path"], backups)
                         if content is not None:
-                            data = base64.b64decode(content) if binary else content.encode()
-                            store.put(file["doc_id"], name, data)
-                            stat = store.doc_path(file["doc_id"], name).stat()
-                            con.execute(
-                                "INSERT OR REPLACE INTO files VALUES (?,?,?,?,?)",
-                                (file["doc_id"], name, stat.st_size, stat.st_mtime, file_type(name)),
-                            )
+                            project_files.put(con, project, name, base64.b64decode(content) if binary else content.encode(), backups)
                 con.execute(
                     "UPDATE suggestion_packages SET files=?,revision=revision+1,accepted=accepted+?,updated_at=? WHERE id=?",
                     (encode(remaining), accepted, db.now_iso(), package),
@@ -640,11 +575,7 @@ def accept(
                 quota.check_quota(owner, 0, con)
                 result = get(con, project, package)
         except Exception:
-            for at, backup in backups.items():
-                if backup is None:
-                    store.delete(*at)
-                else:
-                    store.put(*at, backup)
+            project_files.undo(backups)
             raise
         for room, update, content in updates:
             room["doc"].apply_update(update)

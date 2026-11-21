@@ -1,6 +1,7 @@
-"""Project membership and path-aware shared libraries."""
+"""Project membership, creation and the sidebar payload."""
 from __future__ import annotations
 
+import posixpath
 import sqlite3
 
 from fastapi import HTTPException
@@ -65,63 +66,10 @@ def create(con, owner: str, title: str, archived: bool = False) -> str:
     return pid
 
 
-def assert_file_name_free(
-    con: sqlite3.Connection, project_id: str, name: str, *,
-    exempt_files: set[tuple[str, str]] | None = None,
-) -> None:
-    """#7: one project must never show two entries with the same name in the
-    merged attachment namespace - a name may exist in exactly one sibling
-    doc (case-insensitive). Rows the write replaces or frees (upload over
-    its own row, rename of its own row) are exempt; routes list them.
-    Standalone docs (no project) keep the old account-wide freedom; trash
-    restore has its own collision flow. A doc-local file shadowing a module
-    of the same name stays legal by design ("local wins")."""
-    if not project_id:
-        return
-    own = sorted(exempt_files or set())
-    clauses: list[str] = []
-    row_params: list[str] = []
-    for doc_id, path in own:
-        clauses.append("(f.doc_id = ? AND f.path = ?)")
-        row_params.extend((doc_id, path))
-    sql = (
-        "SELECT 1 FROM files f JOIN docs d ON d.id=f.doc_id"
-        " WHERE d.project_id=? AND d.trashed=0 AND f.path=? COLLATE NOCASE"
-        + (" AND NOT (" + " OR ".join(clauses) + ")" if clauses else "")
-        + " LIMIT 1"
-    )
-    if con.execute(sql, (project_id, name, *row_params)).fetchone():
-        raise HTTPException(409, "Name already exists in this project")
-
-
-def assert_resource_name_free(
-    con: sqlite3.Connection, project_id: str, name: str, *, exempt_name: str = "",
-) -> None:
-    """#7 resource namespace: the project_modules PK is case-sensitive, so
-    'Layout.typ' vs 'layout.typ' would still render two rows. The row being
-    renamed/replaced (exempt_name) is free."""
-    if not project_id:
-        return
-    sql = "SELECT 1 FROM project_resources WHERE project_id=? AND name=? COLLATE NOCASE"
-    args: list[object] = [project_id, name]
-    if exempt_name:
-        sql += " AND name <> ?"
-        args.append(exempt_name)
-    sql += " LIMIT 1"
-    if con.execute(sql, args).fetchone():
-        raise HTTPException(409, "Name already exists in this project")
-
-
-def local_texts(doc_id: str) -> dict[str, str]:
-    from backend.services import resources
-    from backend.services.docfiles import store
-    return {e.path: store.get(doc_id, e.path).decode("utf-8", errors="replace")
-            for e in store.list(doc_id) if resources.kind_of(e.path)}
-
-
-def attach_doc(con, doc_id: str, project_id: str | None = None, *, check_quota: bool = True,
-               local: dict | None = None) -> str:
-    from backend.services import quota, resources
+def attach_doc(con, doc_id: str, project_id: str | None = None, *, check_quota: bool = True) -> str:
+    """Put a document into a project (a new one named after it unless given). Private templates it
+    quotes are snapshotted as project files where the reference resolves; existing files win."""
+    from backend.services import project_files, quota, resources
     d = con.execute("SELECT * FROM docs WHERE id=?", (doc_id,)).fetchone()
     if d["project_id"] and not project_id:
         return d["project_id"]
@@ -137,17 +85,28 @@ def attach_doc(con, doc_id: str, project_id: str | None = None, *, check_quota: 
         pid = pid or create(con, d["owner"], title, bool(d["trashed"]))
     if d["folder"] and not project_id:
         con.execute("INSERT OR IGNORE INTO legacy_project_folders VALUES (?,?,?)", (d["owner"], d["folder"].split("/")[0], pid))
-    local = local_texts(doc_id) if local is None else local
+    folder = d["folder"].partition("/")[2] if not project_id else d["folder"]
     shelf = {r[0]: r[1] for r in con.execute("SELECT name,content FROM templates WHERE owner=?", (d["owner"],))}
-    existing = {r[0]: r[1] for r in con.execute("SELECT name,content FROM project_resources WHERE project_id=?", (pid,))}
-    needed = {n: c for n, c in resources.reachable_closure(shelf, local, d["content"]).items() if n not in local}
-    added = {n: c for n, c in needed.items() if n not in existing}
+    present = {r[0].casefold() for r in con.execute("SELECT path FROM project_files WHERE project_id=?", (pid,))}
+    added: dict[str, str] = {}
+    queue = [(folder, d["content"] or "")]
+    while queue and len(added) < resources.REACHABLE_MAX:
+        base, text = queue.pop()
+        for m in resources.REF_RE.finditer(text):
+            name, path = m.group(1).strip().lstrip("/"), resources.resolve(base, m.group(1))
+            if name in shelf and path and path.casefold() not in present and path not in added:
+                added[path] = shelf[name]
+                if path.lower().endswith(".typ"):
+                    queue.append((posixpath.dirname(path), shelf[name]))
     if check_quota:
         quota.check_quota(d["owner"], sum(len(c.encode("utf-8")) for c in added.values()), con)
-    # Existing project snapshots remain authoritative over changed private originals.
-    con.executemany("INSERT INTO project_resources VALUES (?,?,?,?)",
-                    [(pid, n, c, db.now_iso()) for n, c in added.items()])
-    folder = d["folder"].partition("/")[2] if not project_id else d["folder"]
+    backups: project_files.Backups = {}
+    try:
+        for path, content in added.items():
+            project_files.put(con, pid, project_files.clean(path, new=False), content.encode(), backups)
+    except Exception:
+        project_files.undo(backups)
+        raise
     con.execute("UPDATE docs SET project_id=?,folder=? WHERE id=?", (pid, folder, doc_id))
     if not d["trashed"]:
         con.execute("UPDATE projects SET archived=0 WHERE id=?", (pid,))
@@ -155,7 +114,7 @@ def attach_doc(con, doc_id: str, project_id: str | None = None, *, check_quota: 
 
 
 def payload(con, project_id: str, user: str) -> dict:
-    from backend.services import resources
+    from backend.services import project_files
     p = con.execute("SELECT * FROM projects WHERE id=? AND archived=0", (project_id,)).fetchone()
     if not p:
         raise HTTPException(404, "Project not found")
@@ -163,24 +122,15 @@ def payload(con, project_id: str, user: str) -> dict:
         r = role(con, project_id, user)
     except HTTPException:
         r = "guest"
-    docs = [dict(d) for d in con.execute("SELECT id,title,folder,content FROM docs WHERE project_id=? AND trashed=0 ORDER BY folder,title", (project_id,))
+    docs = [dict(d) for d in con.execute("SELECT id,title,folder FROM docs WHERE project_id=? AND trashed=0 ORDER BY folder,title", (project_id,))
             if r != "guest" or db.role_on(con, user, d["id"])]
     if r == "guest" and not docs:
         raise HTTPException(404, "Project not found")
-    library = [dict(x) for x in con.execute("SELECT name,content,updated_at FROM project_resources WHERE project_id=? ORDER BY name", (project_id,))]
-    if r == "guest":
-        shelf = {x["name"]: x["content"] for x in library}
-        allowed: set[str] = set()
-        for d in docs:
-            local = local_texts(d["id"])
-            allowed.update(n for n in resources.reachable_closure(shelf, local, d["content"]) if n not in local)
-        library = [x for x in library if x["name"] in allowed]
-    files: list[dict] = []
     for d in docs:
-        files.extend(dict(x) for x in con.execute("SELECT doc_id,path AS name,size FROM files WHERE doc_id=? ORDER BY path", (d["id"],)))
-        d.pop("content")
         d["role"] = db.role_on(con, user, d["id"])
+    allowed = project_files.visible(con, project_id, user)
+    files = [{k: f[k] for k in ("path", "size", "version")} for f in project_files.listing(con, project_id)
+             if allowed is None or f["path"] in allowed]
     folders = [x[0] for x in con.execute("SELECT path FROM project_folders WHERE project_id=? ORDER BY path", (project_id,))] if r != "guest" else []
     return {**dict(p), "role": r, "can_edit_library": r in ("owner", "editor"),
-            "folders": folders, "documents": docs, "resources": [{"name": x["name"], "updated_at": x["updated_at"]} for x in library],
-            "files": files}
+            "folders": folders, "documents": docs, "files": files}

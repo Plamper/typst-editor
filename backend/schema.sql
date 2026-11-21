@@ -152,19 +152,6 @@ CREATE TRIGGER IF NOT EXISTS docs_fts_au AFTER UPDATE ON docs
   INSERT INTO docs_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
 END;
 
--- files: one row per on-disk attachment (doc_id, relative path, size,
--- mtime, type). Quota and search read this table, never the filesystem.
--- FK CASCADE: hard doc delete drops the rows (docs.py owns that path).
-CREATE TABLE IF NOT EXISTS files (
-    doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
-    path TEXT NOT NULL,
-    size INTEGER NOT NULL DEFAULT 0,
-    mtime REAL NOT NULL DEFAULT 0,
-    type TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (doc_id, path)
-);
-CREATE INDEX IF NOT EXISTS idx_files_doc ON files(doc_id);
-
 -- notifications: minimal backend write path (services/notifications.py),
 -- inbox UI follows in Wave 3D (owns routers/notifications.py). No FK to
 -- docs on purpose: the inbox keeps its text snapshot after doc delete.
@@ -204,11 +191,15 @@ CREATE TABLE IF NOT EXISTS project_members (
  role TEXT NOT NULL CHECK(role IN ('editor','reviewer')),
  PRIMARY KEY(project_id, username)
 );
-CREATE TABLE IF NOT EXISTS project_resources (
+-- project_files: one file tree per project, bytes on disk at <files>/<project_id>/<path>.
+-- Quota and listings read this table, never the filesystem. version = sha256(bytes)[:16].
+CREATE TABLE IF NOT EXISTS project_files (
  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
- name TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
- PRIMARY KEY(project_id, name)
+ path TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, mtime REAL NOT NULL DEFAULT 0,
+ type TEXT NOT NULL DEFAULT '', version TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+ PRIMARY KEY(project_id, path)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_project_files_nocase ON project_files(project_id, path COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS project_folders (
  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

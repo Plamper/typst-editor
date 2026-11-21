@@ -27,7 +27,7 @@ class Change(BaseModel):
 
 class ProposalFile(BaseModel):
     id: str = ""
-    kind: Literal["document", "resource", "file"]
+    kind: Literal["document", "file"]  # file = project file at `path`, never with doc_id
     doc_id: str = Field(default="", max_length=100)
     path: str = Field(default="", max_length=240)
     action: Literal["modify", "add", "delete", "rename"]

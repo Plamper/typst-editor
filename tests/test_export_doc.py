@@ -9,7 +9,7 @@ import shutil
 import zipfile
 
 import pytest
-from conftest import login, make_doc, register_user
+from conftest import login, make_doc, project_of, put_file, register_user
 
 from backend import main as backend_main
 from backend import render as t
@@ -102,14 +102,20 @@ def test_export_doc_svg_multi_is_zip(c, monkeypatch):
 def test_export_doc_zip_source_bundle(c):
     register_user(c, "alice")
     did = make_doc(c, "Rpt", content="= Hi")
-    c.post(f"/api/docs/{did}/files", files={"f": ("notes.csv", b"a,b")})
+    pid = project_of(c, did)
+    put_file(c, pid, "notes.csv", b"a,b")
+    c.post(f"/api/projects/{pid}/docs", json={"title": "Sub", "folder": "ch", "content": "= Sub"})
     r = c.post(f"/api/docs/{did}/export", params={"format": "zip"})
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("application/zip")
     assert "Rpt.zip" in r.headers.get("content-disposition", "")
     z = zipfile.ZipFile(io.BytesIO(r.content))
+    assert sorted(z.namelist()) == ["Rpt.typ", "notes.csv"]  # other documents are not part of this document's bundle
     assert z.read("Rpt.typ").decode() == "= Hi"
     assert z.read("notes.csv").decode() == "a,b"
+    sub = next(d["id"] for d in c.get(f"/api/projects/{pid}").json()["documents"] if d["title"] == "Sub")
+    z = zipfile.ZipFile(io.BytesIO(c.post(f"/api/docs/{sub}/export", params={"format": "zip"}).content))
+    assert sorted(z.namelist()) == ["ch/Sub.typ", "notes.csv"]  # the document at its folder path
 
 
 def test_export_doc_bad_format_400(c):
@@ -223,7 +229,7 @@ def test_export_doc_oversize_413(c, monkeypatch):
 def test_export_doc_skipped_txt(c, monkeypatch):
     register_user(c, "alice")
     did = make_doc(c, "Rpt", content="= Hi")
-    c.post(f"/api/docs/{did}/files", files={"f": ("notes.csv", b"a,b")})
+    put_file(c, project_of(c, did), "notes.csv", b"a,b")
     monkeypatch.setattr(t, "UPLOAD_MAX", 1)
     r = c.post(f"/api/docs/{did}/export", params={"format": "zip"})
     assert r.status_code == 200, r.text
@@ -259,7 +265,7 @@ def test_export_doc_filename_sanitized(c):
 def test_export_pages_keep_page_order_and_skip_uploaded_page_files(c, monkeypatch):
     register_user(c, "alice")
     did = make_doc(c, "Rpt", content="= Hi")
-    up = c.post(f"/api/docs/{did}/files", files={"f": ("page-1.svg", b"<svg>upload</svg>")})
+    up = put_file(c, project_of(c, did), "page-1.svg", b"<svg>upload</svg>")
     assert up.status_code == 200, up.text
     _patch_typst(monkeypatch, pages=11)
     r = c.post(f"/api/docs/{did}/export", params={"format": "svg"})

@@ -25,11 +25,11 @@ from backend.routers import (
     docs,
     events,
     export,
-    files,
     frontend,
     library_copy,
     notifications,
     oidc,
+    project_files,
     project_folders,
     projects,
     readmode,
@@ -239,7 +239,7 @@ app.include_router(change_packages.router)
 app.include_router(library_copy.router)
 app.include_router(share.router)
 app.include_router(comments.router)
-app.include_router(files.router)
+app.include_router(project_files.router)
 app.include_router(snapshots.router)
 app.include_router(notifications.router)
 app.include_router(export.router)

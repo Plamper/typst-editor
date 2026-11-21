@@ -1,4 +1,4 @@
-from conftest import login, make_doc, register_user
+from conftest import login, make_doc, project_of, put_file, register_user
 
 
 def test_short_query_empty(c):
@@ -89,9 +89,7 @@ def test_snippet_from_fts(c):
 def test_search_filename(c):
     register_user(c, "alice")
     did = make_doc(c, "Dateisuche", content="ganz normaler Inhalt")
-    assert c.post(f"/api/docs/{did}/files",
-                  files={"f": ("literaturverzeichnis.bib",
-                                b"@book{AnderesWerk, author={X}}")}).status_code == 200
+    assert put_file(c, project_of(c, did), "literaturverzeichnis.bib", b"@book{AnderesWerk, author={X}}").status_code == 200
     hits = c.get("/api/search", params={"q": "literaturverz"}).json()["hits"]
     assert [h["id"] for h in hits] == [did]
     assert "literaturverzeichnis.bib" in hits[0]["snippet"]
@@ -100,9 +98,7 @@ def test_search_filename(c):
 def test_search_bib_key(c):
     register_user(c, "alice")
     did = make_doc(c, "Bibsuche", content="ganz normaler Inhalt")
-    assert c.post(f"/api/docs/{did}/files",
-                  files={"f": ("refs.bib",
-                                b"@article{Mueller2024quantenphysik, author={M}}")}).status_code == 200
+    assert put_file(c, project_of(c, did), "refs.bib", b"@article{Mueller2024quantenphysik, author={M}}").status_code == 200
     hits = c.get("/api/search", params={"q": "mueller2024quanten"}).json()["hits"]
     assert [h["id"] for h in hits] == [did]
     assert "mueller2024quantenphysik" in hits[0]["snippet"].lower()
@@ -156,22 +152,21 @@ def test_content_doc_counts_occurrences(c):
 def test_content_file_counts_text_only(c):
     register_user(c, "alice")
     did = make_doc(c, "Datei", content="ohne Treffer")
-    assert c.post(f"/api/docs/{did}/files",
-                  files={"f": ("assets/notizen.typ", b"alpha Alpha ALPHA")}).status_code == 200
-    assert c.post(f"/api/docs/{did}/files",
-                  files={"f": ("assets/bild.png", b"alpha alpha")}).status_code == 200
+    pid = project_of(c, did)
+    assert put_file(c, pid, "assets/notizen.typ", b"alpha Alpha ALPHA").status_code == 200
+    assert put_file(c, pid, "assets/bild.png", b"alpha alpha").status_code == 200
     rows = _content(c, "alpha")
-    assert _one(rows, "file", doc_id=did, name="assets/notizen.typ")["count"] == 3
+    assert _one(rows, "file", project_id=pid, name="assets/notizen.typ")["count"] == 3
     assert [e for e in rows if e["kind"] == "file" and e["name"].endswith(".png")] == []
 
 
-def test_content_project_resource(c):
+def test_content_project_file_without_documents(c):
     register_user(c, "alice")
     pid = c.post("/api/projects", json={"title": "Projekt"}).json()["id"]
-    assert c.post(f"/api/projects/{pid}/resources",
-                  json={"name": "lib/data.csv", "content": "eins,zwei\neins,drei"}).status_code == 200
+    assert put_file(c, pid, "lib/data.csv", b"eins,zwei\neins,drei").status_code == 200
     rows = _content(c, "eins")
-    assert _one(rows, "resource", project_id=pid, name="lib/data.csv")["count"] == 2
+    assert _one(rows, "file", project_id=pid, name="lib/data.csv")["count"] == 2
+    assert [e for e in rows if e["kind"] == "resource"] == []
 
 
 def test_content_template_and_trash(c):
@@ -234,14 +229,16 @@ def test_content_private_entries_stay_private(c):
     gone = make_doc(c, "Weg", content="Privatwort")
     c.delete(f"/api/docs/{gone}")
     shared = make_doc(c, "Geteilt", content="leer")
-    assert c.post(f"/api/docs/{shared}/files",
-                  files={"f": ("notes.txt", b"Privatwort Privatwort")}).status_code == 200
+    pid = project_of(c, shared)
+    assert put_file(c, pid, "notes.txt", b"Privatwort Privatwort").status_code == 200
     c.post(f"/api/docs/{shared}/share", json={"username": "bob", "role": "reviewer"})
     login(c, "bob")
     rows = _content(c, "privatwort")
-    assert [e for e in rows if e["kind"] in ("template", "trash", "trash_doc")] == []
-    # attachments of a document that is shared with bob are searchable for bob
-    assert _one(rows, "file", doc_id=shared, name="notes.txt")["count"] == 2
+    assert [e for e in rows if e["kind"] in ("template", "trash", "trash_doc", "file")] == []  # a document guest sees no project files
+    login(c, "alice")
+    c.post(f"/api/projects/{pid}/members", json={"username": "bob", "role": "reviewer"})
+    login(c, "bob")
+    assert _one(_content(c, "privatwort"), "file", project_id=pid, name="notes.txt")["count"] == 2
     login(c, "alice")
     assert _one(_content(c, "privatwort"), "template", name="mine.typ")["count"] == 1
 

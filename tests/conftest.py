@@ -91,3 +91,12 @@ def wait_for(pred, timeout=5.0, msg="condition not met"):
         if time.monotonic() >= deadline:
             raise AssertionError(msg)
         time.sleep(0.05)
+
+
+def project_of(c, did):
+    return c.get(f"/api/docs/{did}").json()["project_id"]
+
+
+def put_file(c, pid, path, data=b"abc", **params):
+    """PUT a project file (version/force as query params)."""
+    return c.put(f"/api/projects/{pid}/files/{path}", content=data, params=params)

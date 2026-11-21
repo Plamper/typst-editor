@@ -2,7 +2,7 @@
 
 docs_fts(title, content) is keyed by docs.rowid (docs.id is TEXT, so FTS
 content-sync is not an option); triggers in schema.sql / db._migrate_v12
-keep it in sync. Filenames live in the files table (db._migrate_v13);
+keep it in sync. Filenames live in the project_files table;
 .bib keys still need the file contents, read per .bib file (no walk).
 
 Matching:
@@ -83,21 +83,21 @@ def _like_escape(q: str) -> str:
 
 
 def scan_files(doc_id: str, files_dir: Path, q_lower: str) -> tuple[list[str], list[str]]:
-    """Filenames + .bib keys containing q (case-insensitive substring).
+    """Names + .bib keys containing q (case-insensitive substring) among the files of the doc's project.
 
-    Names come from the files table (1D), never from a directory walk;
-    only .bib *contents* are still read from disk (capped at 1 MB).
-    files_dir stays in the signature for that content read.
+    Names come from the project_files table, never from a directory walk;
+    only .bib *contents* are read from disk (capped at 1 MB).
     """
     from backend import db as _db
 
     con = _db.connect()
     try:
+        project = (con.execute("SELECT project_id FROM docs WHERE id=?", (doc_id,)).fetchone() or [""])[0] or ""
         rows = con.execute(
-            "SELECT path FROM files WHERE doc_id=? AND LOWER(path) LIKE ? ESCAPE '\\'",
-            (doc_id, _like_escape(q_lower))).fetchall()
+            "SELECT path FROM project_files WHERE project_id=? AND LOWER(path) LIKE ? ESCAPE '\\'",
+            (project, _like_escape(q_lower))).fetchall()
         bibs = con.execute(
-            "SELECT path FROM files WHERE doc_id=? AND type='.bib'", (doc_id,)).fetchall()
+            "SELECT path FROM project_files WHERE project_id=? AND type='.bib'", (project,)).fetchall()
     except sqlite3.OperationalError:
         return ([], [])  # half-migrated DB (no files table yet): degrade, never 500
     except Exception as e:
@@ -114,7 +114,7 @@ def scan_files(doc_id: str, files_dir: Path, q_lower: str) -> tuple[list[str], l
         rel = r["path"]
         if rel.startswith("/") or ".." in rel.split("/"):
             continue  # never trust a table row into a filesystem join
-        p = files_dir / doc_id / rel
+        p = files_dir / project / rel
         try:
             if not p.is_file() or p.stat().st_size > BIB_MAX_BYTES:
                 continue
@@ -270,13 +270,13 @@ def count_hits(text: str, q_lower: str) -> int:
         pos = i + len(q_lower)
 
 
-def _file_text(files_dir: Path, doc_id: str, rel: str) -> str | None:
-    """Read a text attachment for content search; never trust table paths."""
+def _file_text(files_dir: Path, project_id: str, rel: str) -> str | None:
+    """Read a text project file for content search; never trust table paths."""
     if rel.startswith("/") or ".." in rel.split("/"):
         return None
     if Path(rel).suffix.lower() not in CONTENT_EXTENSIONS:
         return None
-    p = files_dir / doc_id / rel
+    p = files_dir / project_id / rel
     try:
         if not p.is_file() or p.stat().st_size > CONTENT_MAX_BYTES:
             return None
@@ -292,10 +292,9 @@ def content_visible(user: str, raw_q: str, con: sqlite3.Connection,
     Entries are keyed for the sidebar:
       doc          d:<doc_id>            (own/shared/project document)
       trash_doc    td:<doc_id>           (document in the owner's trash)
-      file         f:<doc_id>/<path>     (project/document attachment)
-      resource     r:<project_id>/<name> (project module)
+      file         f:<project_id>/<path> (project file)
       template     t:<name>              (personal module)
-      trash        tr:<entry_id>         (resource/file in the trash)
+      trash        tr:<entry_id>         (template/file in the trash)
     """
     q = normalize_query(raw_q)
     if len(q) < CONTENT_MIN_Q:
@@ -312,41 +311,27 @@ def content_visible(user: str, raw_q: str, con: sqlite3.Connection,
                            (user, user, user, user, user)).fetchall()
     except sqlite3.OperationalError:
         docs = []
-    doc_project = {r["id"]: r["project_id"] or "" for r in docs}
     for r in docs:
         live = room_text(r["id"])
         text = live if live is not None else (r["content"] or "")
         add("doc", count_hits(text, q_lower), doc_id=r["id"],
             project_id=r["project_id"] or "")
-    # Attachments belong to visible documents; count text files only.
-    for r in docs:
-        try:
-            files = con.execute("SELECT path FROM files WHERE doc_id=?",
-                                (r["id"],)).fetchall()
-        except sqlite3.OperationalError:
-            files = []
-        for f in files:
-            text = _file_text(files_dir, r["id"], f["path"])
-            if text is None:
-                continue
-            add("file", count_hits(text, q_lower), doc_id=r["id"],
-                project_id=doc_project.get(r["id"], ""), name=f["path"])
-        if len(out) >= CONTENT_MAX_ENTRIES:
-            break
-    # Project modules: owners and members only (guests see just reachable
-    # resources in the sidebar, so a missing count there is harmless).
+    # Project files: owners and members only (guests see just reachable
+    # files in the sidebar, so a missing count there is harmless).
     try:
         rows = con.execute(
-            "SELECT p.id AS project_id, r.name, r.content FROM projects p "
+            "SELECT f.project_id, f.path FROM project_files f JOIN projects p ON p.id=f.project_id "
             "LEFT JOIN project_members m ON m.project_id=p.id AND m.username=? "
-            "JOIN project_resources r ON r.project_id=p.id "
-            "WHERE p.archived=0 AND (p.owner=? OR m.username IS NOT NULL)",
+            "WHERE p.archived=0 AND (p.owner=? OR m.username IS NOT NULL) ORDER BY f.project_id, f.path",
             (user, user)).fetchall()
     except sqlite3.OperationalError:
         rows = []
     for r in rows:
-        add("resource", count_hits(r["content"] or "", q_lower),
-            project_id=r["project_id"], name=r["name"])
+        if len(out) >= CONTENT_MAX_ENTRIES:
+            break
+        text = _file_text(files_dir, r["project_id"], r["path"])
+        if text is not None:
+            add("file", count_hits(text, q_lower), project_id=r["project_id"], name=r["path"])
     try:
         rows = con.execute("SELECT name, content FROM templates WHERE owner=?",
                            (user,)).fetchall()

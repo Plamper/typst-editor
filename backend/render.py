@@ -1,6 +1,6 @@
 """Typst compile sandbox: page renders (cached) and exports for REST and the agent tools.
 
-ENTRY is the compile entry file inside the temp dir; a document is its title, never a file name.
+A document in folder F compiles as F/__doc__.typ (ENTRY) inside a root holding every project file at its path.
 """
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import hashlib
 import io
 import logging
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -23,7 +24,7 @@ from fastmcp.tools import ToolResult
 from fastmcp.utilities.types import Image
 from mcp.types import Annotations
 
-from backend import db, sync
+from backend import db
 from backend.constants import ENTRY, EXPORT_FORMATS, EXPORT_MAX, UPLOAD_MAX
 from backend.services import quota as quota_svc
 
@@ -384,14 +385,14 @@ def _page_no(path: Path) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _typst_page_files(root: Path, typst: str) -> int | None:
+def _typst_page_files(root: Path, typst: str, entry: str = ENTRY) -> int | None:
     """Render every page as SVG and count the files: no PDF object parsing."""
     try:
         (root / "__pages__").mkdir(exist_ok=True)  # own output folder: a user file named out-1.svg is no rendered page
     except OSError as e:
         log.warning("svg pages dir failed: %s", e)
         return None
-    cmd = [typst, "compile", "--format", "svg", ENTRY, "__pages__/p-{p}.svg"]
+    cmd = [typst, "compile", "--root", ".", "--format", "svg", entry, "__pages__/p-{p}.svg"]
     try:
         proc = subprocess.run(cmd, cwd=root, capture_output=True,
                               timeout=VIEW_TIMEOUT, env=_typst_env(root),
@@ -423,18 +424,12 @@ def _compile_pngs(main_text: str, files: list[tuple[str, bytes]],
         with tempfile.TemporaryDirectory(prefix="mcp-view-") as tmp:
             root = Path(tmp)
             try:
-                (root / ENTRY).write_text(main_text, encoding="utf-8")
-                for name, data in files:
-                    if ".tmp." in name:
-                        continue
-                    dest = root / name
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(data)
+                entry = _write_root(root, main_text, files)
             except OSError as e:
                 raise _bad(f"compile failed: {e}", 500) from e
             (root / "__shots__").mkdir(exist_ok=True)  # own output folder: uploaded page-*.png files are never returned as pages
-            cmd = [typst, "compile", "--format", "png", "--ppi", str(ppi),
-                   "--pages", pages, ENTRY, "__shots__/page-{p}.png"]
+            cmd = [typst, "compile", "--root", ".", "--format", "png", "--ppi", str(ppi),
+                   "--pages", pages, entry, "__shots__/page-{p}.png"]
             env = _typst_env(root)
             try:
                 proc = subprocess.run(cmd, cwd=tmp, capture_output=True, timeout=VIEW_TIMEOUT, env=env,
@@ -478,20 +473,14 @@ def _compile_pdf_pages(main_text: str, files: list[tuple[str, bytes]]) -> int | 
         with tempfile.TemporaryDirectory(prefix="mcp-view-total-") as tmp:
             root = Path(tmp)
             try:
-                (root / ENTRY).write_text(main_text, encoding="utf-8")
-                for name, data in files:
-                    if ".tmp." in name:
-                        continue
-                    dest = root / name
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(data)
+                entry = _write_root(root, main_text, files)
             except OSError as e:
                 log.warning("pdf-pages write failed: %s", e)
                 return None
-            n = _typst_page_files(root, typst)
+            n = _typst_page_files(root, typst, entry)
             if n is not None:
                 return n
-            cmd = [typst, "compile", "--format", "pdf", ENTRY, "out.pdf"]
+            cmd = [typst, "compile", "--root", ".", "--format", "pdf", entry, "out.pdf"]
             try:
                 proc = subprocess.run(cmd, cwd=tmp, capture_output=True,
                                       timeout=VIEW_TIMEOUT, env=_typst_env(root),
@@ -625,89 +614,61 @@ def _export_stem(title: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", (title or "").strip())[:80].strip("._") or "document"
 
 
+def _entry(files: list[tuple[str, bytes]]) -> str:
+    """The document's compile path inside the file list (F/__doc__.typ); ENTRY for bare source lists."""
+    return next((n for n, _ in files if n == ENTRY or n.endswith("/" + ENTRY)), ENTRY)
+
+
+def _write_root(root: Path, main_text: str, files: list[tuple[str, bytes]]) -> str:
+    """Lay the compile root out on disk; returns the entry path to compile."""
+    entry = _entry(files)
+    for name, data in files:
+        if ".tmp." in name:
+            continue
+        dest = root / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+    (root / entry).parent.mkdir(parents=True, exist_ok=True)
+    (root / entry).write_text(main_text, encoding="utf-8")
+    return entry
+
+
 def _collect_export_source(doc_id: str, max_bytes: int | None = None,
-                             skip_oversize: bool = True,
-                             include_resources: bool = True) -> tuple[str, list[tuple[str, bytes]], list[str]]:
+                           skip_oversize: bool = True) -> tuple[str, list[tuple[str, bytes]], list[str]]:
     """(main_text, files, skipped) for one doc: live room text wins, then DB content.
 
-    Attachments are collected recursively (nested paths preserved as zip/compile
-    relative paths). Files over UPLOAD_MAX land in skipped when `skip_oversize`
-    (the zip bundle reports them via SKIPPED.txt, like the full backup);
-    symlinks are never followed. The total source size is capped at `max_bytes`
-    (default EXPORT_MAX, 413 beyond).
-
-    With `include_resources` (default) the owner's reachable resource closure
-    (transitive, doc-local wins) is merged into `files`, so ALL export/view
-    paths share one resolution: REST, MCP export and MCP view compile the
-    same set. Callers must not re-merge (the old REST wrapper did).
+    `files` is the compile root: the document itself at <folder>/__doc__.typ (first) and every
+    project file at its path, so references resolve folder-relative and "/x" from the project root.
+    Files over UPLOAD_MAX land in skipped when `skip_oversize`; the total is capped at `max_bytes`
+    (default EXPORT_MAX, 413 beyond). REST export, MCP export and view all compile this set.
     """
+    from backend.services import project_files
+
     cap = max_bytes if max_bytes is not None else EXPORT_MAX
-    live = sync.room_text(doc_id)
     con = db.connect()
     try:
-        row = con.execute("SELECT content, owner FROM docs WHERE id=?", (doc_id,)).fetchone()
+        row = con.execute("SELECT content, folder, project_id FROM docs WHERE id=?", (doc_id,)).fetchone()
+        if not row:
+            raise _bad("Doc gone", 404)
+        rows = project_files.listing(con, row["project_id"]) if row["project_id"] else []
     finally:
         con.close()
-    if not row:
-        raise _bad("Doc gone", 404)
-    main_text = live if live is not None else (row["content"] or "")
-    owner = row["owner"] or ""
-    files: list[tuple[str, bytes]] = []
+    main_text = project_files.doc_text(doc_id, row["content"] or "")
+    files: list[tuple[str, bytes]] = [(project_files.entry(row["folder"]), main_text.encode("utf-8"))]
     skipped: list[str] = []
-    src_bytes = len(main_text.encode("utf-8"))
-    d = _files_dir() / doc_id
-    if d.is_dir():
+    total = len(files[0][1])
+    for r in rows:
+        if skip_oversize and r["size"] > UPLOAD_MAX:
+            skipped.append(r["path"])
+            continue
         try:
-            entries = sorted(d.rglob("*"))
+            data = project_files.store.get(row["project_id"], r["path"])
         except OSError:
-            entries = []
-        for p in entries:
-            try:
-                name = p.relative_to(d).as_posix()
-            except ValueError:
-                continue
-            if not p.is_file() or p.is_symlink() or any(s.startswith(".") for s in p.relative_to(d).parts) or ".tmp." in p.name:
-                continue
-            try:
-                if skip_oversize and p.stat().st_size > UPLOAD_MAX:
-                    skipped.append(name)
-                    continue
-                data = p.read_bytes()
-            except OSError:
-                continue
-            src_bytes += len(data)
-            if src_bytes > cap:
-                raise _bad("Export too large (max 100 MB)", 413)
-            files.append((name, data))
-    if src_bytes > cap:
-        raise _bad("Export too large (max 100 MB)", 413)
-    if include_resources and owner:
-        try:
-            from backend.services import resources as _res
-        except ImportError:
-            return main_text, files, skipped
-        local_texts: dict[str, str] = {}
-        for n, data in files:
-            if _res.kind_of(n):
-                try:
-                    local_texts[n] = data.decode("utf-8", errors="replace")
-                except Exception:
-                    continue
-        try:
-            eff = _res.doc_effective(owner, main_text, local_texts, doc_id)
-        except Exception as e:
-            log.warning("export resource closure failed: %s", e)
-            return main_text, files, skipped
-        have = {n for n, _ in files}
-        for n, c in (eff.get("resources") or {}).items():
-            if n in have or ".tmp." in n:
-                continue
-            b = c.encode("utf-8")
-            src_bytes += len(b)
-            if src_bytes > cap:
-                raise _bad("Export too large (max 100 MB)", 413)
-            files.append((n, b))
-            have.add(n)
+            continue
+        total += len(data)
+        if total > cap:
+            raise _bad("Export too large (max 100 MB)", 413)
+        files.append((r["path"], data))
     return main_text, files, skipped
 
 
@@ -760,13 +721,15 @@ def _compile_export_doc(main_text: str, files: list[tuple[str, bytes]], fmt: str
     if f == "zip":
         buf = io.BytesIO()
         total = len(main_text.encode("utf-8"))
-        doc_name = doc_name or ENTRY
+        entry = _entry(files)
+        # The document sits at its folder as <Title>.typ: the unpacked folder compiles unchanged.
+        doc_name = posixpath.join(posixpath.dirname(entry), doc_name or ENTRY)
         seen: set[str] = {doc_name.lower()}
         skipped = list(skipped or [])
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr(doc_name, main_text)
             for name, data in files:
-                if ".tmp." in name:
+                if ".tmp." in name or name == entry:
                     continue
                 # Directly renderable bundle: every source at its original
                 # root-relative path (nested preserved), so an unchanged
@@ -791,19 +754,13 @@ def _compile_export_doc(main_text: str, files: list[tuple[str, bytes]], fmt: str
     with tempfile.TemporaryDirectory(prefix="export-doc-") as tmp:
         root = Path(tmp)
         try:
-            (root / ENTRY).write_text(main_text, encoding="utf-8")
-            for name, data in files:
-                if ".tmp." in name:
-                    continue
-                dest = root / name
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
+            entry = _write_root(root, main_text, files)
         except OSError as e:
             raise _bad(f"compile failed: {e}", 500) from e
         pg_args = ["--pages", pg] if pg else []
         if f == "pdf":
             std_args = ["--pdf-standard", std] if std else []
-            _typst_compile(["compile", "--format", "pdf", *std_args, *pg_args, ENTRY, "out.pdf"], tmp)
+            _typst_compile(["compile", "--root", ".", "--format", "pdf", *std_args, *pg_args, entry, "out.pdf"], tmp)
             try:
                 payload = (root / "out.pdf").read_bytes()
             except OSError as e:
@@ -815,11 +772,11 @@ def _compile_export_doc(main_text: str, files: list[tuple[str, bytes]], fmt: str
         except OSError as e:
             raise _bad(f"compile failed: {e}", 500) from e
         if f == "svg":
-            _typst_compile(["compile", "--format", "svg", *pg_args, ENTRY, "__export__/page-{p}.svg"], tmp)
+            _typst_compile(["compile", "--root", ".", "--format", "svg", *pg_args, entry, "__export__/page-{p}.svg"], tmp)
             shots = sorted(out.glob("page-*.svg"), key=_page_no)  # page-10 after page-9
             return _pages_or_zip(shots, EXPORT_MIMES["svg"])
-        _typst_compile(["compile", "--format", "png", "--ppi", str(res or EXPORT_PPI),
-                        *pg_args, ENTRY, "__export__/page-{p}.png"], tmp)
+        _typst_compile(["compile", "--root", ".", "--format", "png", "--ppi", str(res or EXPORT_PPI),
+                        *pg_args, entry, "__export__/page-{p}.png"], tmp)
         shots = sorted(out.glob("page-*.png"), key=_page_no)
         return _pages_or_zip(shots, EXPORT_MIMES["png"])
 
@@ -886,14 +843,10 @@ def check_source(main_text: str, files: list[tuple[str, bytes]]) -> dict:
     with tempfile.TemporaryDirectory(prefix="check-doc-") as tmp:
         root = Path(tmp)
         try:
-            (root / ENTRY).write_text(main_text, encoding="utf-8")
-            for name, data in files:
-                if ".tmp." not in name:
-                    (root / name).parent.mkdir(parents=True, exist_ok=True)
-                    (root / name).write_bytes(data)
+            entry = _write_root(root, main_text, files)
         except OSError as e:
             raise _bad(f"compile failed: {e}", 500) from e
-        stderr = _typst_compile(["compile", "--format", "pdf", ENTRY, "out.pdf"], tmp)
+        stderr = _typst_compile(["compile", "--root", ".", "--format", "pdf", entry, "out.pdf"], tmp)
         pages = _pdf_page_count((root / "out.pdf").read_bytes())
     result = {"pages": pages, "warnings": _parse_typst_diagnostics(stderr, "warning")}
     while len(_CHECKS) >= VIEW_CACHE_MAX:

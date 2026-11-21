@@ -10,7 +10,7 @@ def test_owner_rename_and_account_deletion_preserve_project_integrity(c):
     p = c.post("/api/projects/preview", json={"folder": "Team"}).json()
     pid = c.post("/api/projects/convert", json={"folder": "Team", "preview": p["preview"]}).json()["id"]
     did = c.post(f"/api/projects/{pid}/docs", json={"title": "Report"}).json()["id"]
-    c.post(f"/api/projects/{pid}/resources", json={"name": "module.typ", "content": "Shared"})
+    c.put(f"/api/projects/{pid}/files/module.typ", content=b"Shared")
     register_user(c, "bob")
     login(c, "alice")
     c.post(f"/api/projects/{pid}/members", json={"username": "bob", "role": "editor"})
@@ -29,7 +29,7 @@ def test_owner_rename_and_account_deletion_preserve_project_integrity(c):
     con = db.connect()
     try:
         assert con.execute("SELECT COUNT(*) FROM projects WHERE owner='alice_new'").fetchone()[0] == 0
-        assert con.execute("SELECT COUNT(*) FROM project_resources").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM project_files").fetchone()[0] == 0
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         con.close()

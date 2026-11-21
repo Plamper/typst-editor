@@ -1,4 +1,4 @@
-from conftest import login, register_user
+from conftest import login, put_file, register_user
 
 from backend import db
 
@@ -10,10 +10,10 @@ def test_creation_snapshots_private_and_guest_drawer(c):
     did = c.post('/api/docs/create', json={'title': 'First', 'content': '#include "used.typ"'}).json()['id']
     p = next(p for p in c.get('/api/projects').json()['projects'] if p['title'] == 'First')
     assert p['documents'][0]['id'] == did
-    assert [r['name'] for r in p['resources']] == ['used.typ']
+    assert [f['path'] for f in p['files']] == ['used.typ']
     pid = p['id']
     c.post(f'/api/projects/{pid}/docs', json={'title': 'Other'})
-    c.post(f'/api/projects/{pid}/resources', json={'name': 'other.typ', 'content': 'private project'})
+    put_file(c, pid, 'other.typ', b'private project')
     register_user(c, 'bob')
     login(c, 'alice')
     c.post(f'/api/docs/{did}/share', json={'username': 'bob', 'role': 'reviewer'})
@@ -22,7 +22,7 @@ def test_creation_snapshots_private_and_guest_drawer(c):
     assert p['role'] == 'guest'
     assert not p['can_edit_library']
     assert [d['id'] for d in p['documents']] == [did]
-    assert [r['name'] for r in p['resources']] == ['used.typ']
+    assert [f['path'] for f in p['files']] == ['used.typ']
     login(c, 'alice')
     c.post(f'/api/docs/{did}/share', json={'username': 'bob', 'role': 'editor'})
     login(c, 'bob')
@@ -31,10 +31,10 @@ def test_creation_snapshots_private_and_guest_drawer(c):
     copied = c.get('/api/projects').json()['projects']
     owned = [p for p in copied if p['role'] == 'owner']
     copied = next(p for p in owned if p['title'] != 'Tutorial')
-    assert [r['name'] for r in copied['resources']] == ['used.typ']
+    assert [f['path'] for f in copied['files']] == ['used.typ']
 
 
-def test_v16_migration_keeps_ids_shares_and_local_overrides(c, monkeypatch):
+def test_v16_migration_keeps_ids_and_snapshots_templates(c, monkeypatch):
     register_user(c, 'alice')
     from backend.services.docfiles import store
     with db.tx() as con:
@@ -55,7 +55,10 @@ def test_v16_migration_keeps_ids_shares_and_local_overrides(c, monkeypatch):
         assert con.execute('SELECT archived FROM projects WHERE id=?', (rows['legacy3']['project_id'],)).fetchone()[0] == 1
         assert con.execute("SELECT 1 FROM projects WHERE title='Empty'").fetchone()
         assert not con.execute('SELECT 1 FROM docs WHERE project_id IS NULL').fetchone()
-        assert con.execute('SELECT content FROM project_resources WHERE project_id=?', (rows['legacy1']['project_id'],)).fetchone()[0] == 'shelf'
+        # The template lands where the document in folder sub reaches it; the old attachment
+        # stays put until v34 moves it (it then gets sub/used-2.typ and the reference follows).
+        assert con.execute("SELECT path FROM project_files WHERE project_id=? ORDER BY path", (rows['legacy1']['project_id'],)).fetchall()[0][0] == 'sub/used.typ'
+    assert store.get(rows['legacy1']['project_id'], 'sub/used.typ') == b'shelf'
     assert store.get('legacy1', 'used.typ') == b'local'
 
 
@@ -93,5 +96,5 @@ def test_attach_to_existing_project_keeps_independent_module_snapshot(c):
         con.execute('INSERT INTO docs(id,owner,title,content,created_at,updated_at) VALUES (?,?,?,?,?,?)',
                     (added, 'alice', 'Second', '#include "layout.typ"', now, now))
         projects.attach_doc(con, added, project_id=pid)
-    assert not store.doc_path(added, 'layout.typ').exists()
-    assert c.get(f'/api/docs/{added}/resources').json()['resources']['layout.typ'] == 'Original'
+    assert store.get(pid, 'layout.typ') == b'Original'
+    assert [f['path'] for f in c.get(f'/api/docs/{added}/resources').json()['files']] == ['layout.typ']

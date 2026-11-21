@@ -3,10 +3,14 @@ import io
 import zipfile
 
 import pytest
-from conftest import login, register_user
+from conftest import login, put_file, register_user
 from pycrdt import Doc, Text
 
 from backend import db, sync
+
+
+def paths(c, pid):
+    return [f['path'] for f in c.get(f'/api/projects/{pid}').json()['files']]
 
 
 def setup_projects(c):
@@ -38,44 +42,41 @@ def test_document_names_are_folder_local_and_restore_never_overwrites(c):
 
 def test_same_project_document_copy_keeps_its_title_in_another_folder(c):
     ids, (pid, _target) = setup_projects(c)
-    did = c.post(f'/api/projects/{pid}/docs', json={'title': 'Chapter', 'folder': 'old', 'content': 'x'}).json()['id']
-    assert c.post(f'/api/docs/{did}/files', files={'f': ('bilder/pfeil.svg', b'<svg/>', 'image/svg+xml')}).status_code == 200
+    did = c.post(f'/api/projects/{pid}/docs', json={'title': 'Chapter', 'folder': 'old', 'content': '#image("/bilder/pfeil.svg")'}).json()['id']
+    assert put_file(c, pid, 'bilder/pfeil.svg', b'<svg/>').status_code == 200
     url = f'/api/projects/{pid}/transfer'
     body = {'kind': 'document', 'doc_id': did, 'target_project_id': pid, 'target_name': 'Chapter', 'target_folder': 'new'}
     copied = c.post(url, json=body)
     assert copied.status_code == 200, copied.text
     doc = c.get(f'/api/docs/{copied.json()["doc_id"]}').json()
     assert (doc['title'], doc['folder']) == ('Chapter', 'new')
-    assert c.get(f'/api/docs/{copied.json()["doc_id"]}/files').json()['files'] == []  # the project file stays shared
-    assert [f['name'] for f in c.get(f'/api/projects/{pid}').json()['files']] == ['bilder/pfeil.svg']
+    assert paths(c, pid) == ['bilder/pfeil.svg']  # the project file stays shared
     assert c.post(url, json={**body, 'target_folder': 'old'}).status_code == 409  # same folder needs a new title
     duplicate = c.post(url, json={**body, 'target_folder': 'old', 'duplicate': True})
     assert duplicate.status_code == 200, duplicate.text
     assert c.get(f'/api/docs/{duplicate.json()["doc_id"]}').json()['title'] == 'Chapter (copy)'
-    assert [f['name'] for f in c.get(f'/api/projects/{pid}').json()['files']] == ['bilder/pfeil.svg']  # no file copies
+    assert paths(c, pid) == ['bilder/pfeil.svg']  # no file copies
 
 
-def test_document_copy_rejects_a_case_only_attachment_conflict(c):
+def test_document_copy_rejects_a_conflicting_file_in_the_target(c):
     ids, (source, target) = setup_projects(c)
     did = c.post(f'/api/projects/{source}/docs', json={'title': 'Doc', 'content': '#image("img.png")'}).json()['id']
-    c.post(f'/api/docs/{did}/files', files={'f': ('img.png', b'\x89PNG', 'image/png')})
-    # The target project already shows a differently-cased attachment. On a
-    # case-sensitive disk the copied reference would point at no file, so the
-    # copy must fail up front instead of silently dropping the attachment.
-    c.post(f'/api/docs/{ids[1]}/files', files={'f': ('Img.PNG', b'other', 'image/png')})
+    put_file(c, source, 'img.png', b'\x89PNG')
+    put_file(c, target, 'Img.PNG', b'other')
     result = c.post(f'/api/projects/{source}/transfer', json={
         'kind': 'document', 'doc_id': did, 'target_project_id': target, 'target_name': 'Doc'})
     assert result.status_code == 409
-    assert 'case' in result.text.lower()
+    assert 'img.png' in result.text
     assert did in [d['id'] for d in c.get(f'/api/projects/{source}').json()['documents']]
     assert 'Doc' not in [d['title'] for d in c.get(f'/api/projects/{target}').json()['documents']]
 
 
-def test_document_transfer_preserves_resources_files_and_detects_conflicts(c):
+def test_document_transfer_brings_reached_files_and_detects_conflicts(c):
     ids, (source, target) = setup_projects(c)
-    c.post(f'/api/projects/{source}/resources', json={'name': 'layout.typ', 'content': 'snapshot'})
-    did = c.post(f'/api/projects/{source}/docs', json={'title': 'Shared name', 'folder': 'chapters/sub', 'content': '#include "layout.typ"'}).json()['id']
-    c.post(f'/api/docs/{did}/files', files={'f': ('pic.png', b'\x89PNG\xff', 'image/png')})
+    put_file(c, source, 'layout.typ', b'snapshot')
+    put_file(c, source, 'unused.typ', b'stays')
+    did = c.post(f'/api/projects/{source}/docs', json={'title': 'Shared name', 'folder': 'chapters/sub', 'content': '#include "/layout.typ"\n#image("pic.png")'}).json()['id']
+    put_file(c, source, 'chapters/sub/pic.png', b'\x89PNG\xff')
     body = {'kind': 'document', 'doc_id': did, 'target_project_id': target, 'target_name': 'Shared name'}
     url = f'/api/projects/{source}/transfer'
     result = c.post(url, json=body)
@@ -83,14 +84,16 @@ def test_document_transfer_preserves_resources_files_and_detects_conflicts(c):
     copied = result.json()['doc_id']
     assert copied != did
     assert c.get(f'/api/docs/{copied}').json()['folder'] == 'chapters/sub'
-    assert c.get(f'/api/docs/{copied}/files/pic.png').content == b'\x89PNG\xff'
-    assert c.get(f'/api/projects/{target}/resources').json()['resources'][0]['content'] == 'snapshot'
+    assert c.get(f'/api/projects/{target}/files/chapters/sub/pic.png').content == b'\x89PNG\xff'
+    assert c.get(f'/api/projects/{target}/files/layout.typ').content == b'snapshot'
+    assert 'unused.typ' not in paths(c, target)
     assert c.post(url, json={**body, 'move': True}).status_code == 409
     moved = c.post(url, json={**body, 'move': True, 'target_name': 'Moved'})
-    assert moved.status_code == 200, moved.text
+    assert moved.status_code == 200, moved.text  # identical files already there: no conflict
     assert c.get(f'/api/docs/{did}').json()['project_id'] == target
     assert c.get(f'/api/docs/{did}').json()['folder'] == 'chapters/sub'
     assert did not in [d['id'] for d in c.get(f'/api/projects/{source}').json()['documents']]
+    assert 'layout.typ' in paths(c, source)  # files stay where other documents may need them
 
 
 def test_document_transfer_can_choose_a_target_folder(c):
@@ -110,22 +113,20 @@ def test_document_transfer_can_choose_a_target_folder(c):
     assert c.get(f'/api/docs/{did}').json()['folder'] == 'archive'
 
 
-def test_resource_and_binary_transfer_acl_and_snapshot_independence(c):
+def test_file_transfer_acl_and_independence(c):
     ids, (source, target) = setup_projects(c)
-    c.post(f'/api/projects/{source}/resources', json={'name': 'sub/root.typ', 'content': '#include "leaf.typ"'})
-    c.post(f'/api/projects/{source}/resources', json={'name': 'sub/leaf.typ', 'content': 'original'})
+    put_file(c, source, 'sub/root.typ', b'#include "leaf.typ"')
     url = f'/api/projects/{source}/transfer'
-    body = {'kind': 'resource', 'name': 'sub/root.typ', 'target_project_id': target, 'target_name': 'copy/root.typ'}
+    body = {'kind': 'file', 'name': 'sub/root.typ', 'target_project_id': target, 'target_name': 'copy/root.typ'}
     result = c.post(url, json=body)
     assert result.status_code == 200, result.text
-    library = {r['name']: r['content'] for r in c.get(f'/api/projects/{target}/resources').json()['resources']}
-    assert library == {'copy/root.typ': '#include "leaf.typ"', 'copy/leaf.typ': 'original'}
+    assert c.get(f'/api/projects/{target}/files/copy/root.typ').content == b'#include "leaf.typ"'
     assert c.post(url, json=body).status_code == 409
-    c.post(f'/api/docs/{ids[0]}/files', files={'f': ('photo.png', b'bytes', 'image/png')})
-    binary = {'kind': 'file', 'doc_id': ids[0], 'name': 'photo.png', 'target_project_id': target, 'target_doc_id': ids[1], 'target_name': 'photo.png', 'move': True}
+    put_file(c, source, 'photo.png', b'bytes')
+    binary = {'kind': 'file', 'name': 'photo.png', 'target_project_id': target, 'target_name': 'photo.png', 'move': True}
     assert c.post(url, json=binary).status_code == 200
-    assert c.get(f'/api/docs/{ids[0]}/files/photo.png').status_code == 404
-    assert c.get(f'/api/docs/{ids[1]}/files/photo.png').content == b'bytes'
+    assert c.get(f'/api/projects/{source}/files/photo.png').status_code == 404
+    assert c.get(f'/api/projects/{target}/files/photo.png').content == b'bytes'
     register_user(c, 'bob')
     login(c, 'alice')
     c.post(f'/api/projects/{source}/members', json={'username': 'bob', 'role': 'reviewer'})
@@ -145,20 +146,20 @@ def test_zip_import_into_shared_project_bills_and_scopes_to_project_owner(c):
     with zipfile.ZipFile(data, 'w') as archive:
         archive.writestr('main.typ', '#include "module.typ"')
         archive.writestr('module.typ', 'ZIP module')
-    r = c.post(f'/api/projects/{target}/import-zip', data={'title': 'main.typ'}, files={'f': ('source.zip', data.getvalue(), 'application/zip')})
+    r = c.post(f'/api/projects/{target}/import-zip', data={'documents': '["main.typ"]'}, files={'f': ('source.zip', data.getvalue(), 'application/zip')})
     assert r.status_code == 200, r.text
     did = r.json()['id']
     with db.tx() as con:
         row = con.execute('SELECT owner,project_id FROM docs WHERE id=?', (did,)).fetchone()
         assert tuple(row) == ('alice', target)
-    assert c.get(f'/api/docs/{did}/files/module.typ/text').json()['content'] == 'ZIP module'
+    assert c.get(f'/api/projects/{target}/files/module.typ').content == b'ZIP module'
 
 
 def test_direct_duplicates_choose_copy_names_without_overwriting(c):
     ids, (source, _) = setup_projects(c)
-    c.post(f'/api/projects/{source}/resources', json={'name': 'layout.typ', 'content': 'original'})
-    c.post(f'/api/docs/{ids[0]}/files', files={'f': ('image.png', b'image', 'image/png')})
-    for kind, name, did in [('resource', 'layout.typ', ''), ('document', 'A', ids[0]), ('file', 'image.png', ids[0])]:
+    put_file(c, source, 'layout.typ', b'original')
+    put_file(c, source, 'image.png', b'image')
+    for kind, name, did in [('file', 'layout.typ', ''), ('document', 'A', ids[0]), ('file', 'image.png', '')]:
         body = {'kind': kind, 'name': name, 'doc_id': did, 'target_project_id': source, 'duplicate': True}
         first = c.post(f'/api/projects/{source}/transfer', json=body)
         second = c.post(f'/api/projects/{source}/transfer', json=body)
@@ -166,9 +167,9 @@ def test_direct_duplicates_choose_copy_names_without_overwriting(c):
         assert second.status_code == 200, second.text
         assert '(copy)' in first.json()['name']
         assert '(copy 2)' in second.json()['name']
-    assert c.get(f'/api/docs/{ids[0]}/files/image%20(copy).png').content == b'image'
-    resources = {r['name']: r['content'] for r in c.get(f'/api/projects/{source}/resources').json()['resources']}
-    assert resources['layout (copy).typ'] == resources['layout (copy 2).typ'] == resources['layout.typ'] == 'original'
+    assert c.get(f'/api/projects/{source}/files/image%20(copy).png').content == b'image'
+    for name in ('layout (copy).typ', 'layout (copy 2).typ', 'layout.typ'):
+        assert c.get(f'/api/projects/{source}/files/{name}').content == b'original'
 
 
 def test_private_module_copy_name_remains_usable_in_document_references(c):
@@ -181,15 +182,17 @@ def test_private_module_copy_name_remains_usable_in_document_references(c):
         assert c.get('/api/templates/' + expected).json()['content'] == 'Copied module'
     result = c.post('/api/docs/create', json={'title': 'Uses copy', 'content': '#include "module (copy).typ"'})
     assert result.status_code == 200, result.text
-    resources = c.get(f'/api/docs/{result.json()["id"]}/resources').json()['resources']
-    assert resources['module (copy).typ'] == 'Copied module'
+    pid = c.get(f'/api/docs/{result.json()["id"]}').json()['project_id']
+    assert c.get(f'/api/projects/{pid}/files/module%20(copy).typ').content == b'Copied module'
 
 
-def test_project_zip_contains_all_documents_modules_and_binary_files_for_readers(c):
+def test_project_zip_contains_the_tree_for_readers(c):
     ids, (source, _) = setup_projects(c)
-    c.post(f'/api/projects/{source}/docs', json={'title': 'Second', 'content': 'second'})
-    c.post(f'/api/projects/{source}/resources', json={'name': 'unused.typ', 'content': 'unused'})
-    c.post(f'/api/docs/{ids[0]}/files', files={'f': ('image.png', b'image', 'image/png')})
+    c.post(f'/api/projects/{source}/docs', json={'title': 'Second', 'folder': 'ch', 'content': 'second'})
+    put_file(c, source, 'unused.typ', b'unused')
+    put_file(c, source, 'img/image.png', b'image')
+    put_file(c, source, 'ch/Second.typ', b'clash')
+    c.post(f'/api/docs/{ids[0]}/save', json={'content': '#image("img/image.png")', 'force': True})
     register_user(c, 'bob')
     login(c, 'alice')
     c.post(f'/api/projects/{source}/members', json={'username': 'bob', 'role': 'reviewer'})
@@ -197,10 +200,11 @@ def test_project_zip_contains_all_documents_modules_and_binary_files_for_readers
     result = c.get(f'/api/projects/{source}/export-zip')
     assert result.status_code == 200, result.text
     with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
-        first = c.get(f'/api/docs/{ids[0]}').json()['title']
-        assert archive.read('documents/Second/Second.typ') == b'second'
-        assert archive.read(f'documents/{first}/image.png') == b'image'
-        assert archive.read('modules/unused.typ') == b'unused'
+        assert archive.read('ch/Second.typ') == b'second'
+        assert archive.read('A.typ') == b'#image("img/image.png")'
+        assert archive.read('img/image.png') == b'image'
+        assert archive.read('unused.typ') == b'unused'
+        assert 'ch/Second.typ' in archive.read('SKIPPED.txt').decode()
     login(c, 'alice')
     c.delete(f'/api/projects/{source}/members/bob')
     c.post(f'/api/docs/{ids[0]}/share', json={'username': 'bob', 'role': 'reviewer'})
@@ -208,23 +212,21 @@ def test_project_zip_contains_all_documents_modules_and_binary_files_for_readers
     result = c.get(f'/api/projects/{source}/export-zip')
     assert result.status_code == 200, result.text
     with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
-        assert 'documents/Second/Second.typ' not in archive.namelist()
-        assert 'modules/unused.typ' not in archive.namelist()
+        assert sorted(archive.namelist()) == ['A.typ', 'img/image.png']
 
 
-@pytest.mark.parametrize('kind', ['document', 'resource', 'file'])
+@pytest.mark.parametrize('kind', ['document', 'file'])
 def test_cross_owner_move_requires_source_owner_but_copy_is_allowed(c, kind):
     ids, (source, _) = setup_projects(c)
-    c.post(f'/api/projects/{source}/resources', json={'name': 'module.typ', 'content': 'shared'})
-    c.post(f'/api/docs/{ids[0]}/files', files={'f': ('photo.png', b'image', 'image/png')})
+    put_file(c, source, 'photo.png', b'image')
     register_user(c, 'bob')
     target_doc = c.post('/api/docs/create', json={'title': 'Bob'}).json()['id']
     target = c.get(f'/api/docs/{target_doc}').json()['project_id']
     login(c, 'alice')
     c.post(f'/api/projects/{source}/members', json={'username': 'bob', 'role': 'editor'})
     login(c, 'bob')
-    body = {'kind': kind, 'doc_id': ids[0], 'name': 'module.typ' if kind == 'resource' else 'photo.png',
-            'target_project_id': target, 'target_doc_id': target_doc, 'target_name': 'copied.typ' if kind != 'file' else 'copied.png'}
+    body = {'kind': kind, 'doc_id': ids[0], 'name': 'photo.png',
+            'target_project_id': target, 'target_name': 'copied.typ' if kind != 'file' else 'copied.png'}
     url = f'/api/projects/{source}/transfer'
     assert c.post(url, json={**body, 'move': True}).status_code == 403
     assert c.post(url, json=body).status_code == 200

@@ -2,7 +2,7 @@ import base64
 import sqlite3
 
 import pytest
-from conftest import login, make_doc, register_user
+from conftest import login, make_doc, put_file, register_user
 from fastapi import HTTPException
 from pycrdt import Text
 
@@ -26,8 +26,8 @@ def test_csv_cell_accept_preserves_other_values_and_raw_format(base, proposed, r
 def test_csv_cell_accept_keeps_other_proposals_pending(c):
     project, _ = setup(c)
     base, proposed = 'a,b\nold,keep\n', 'a,b\nnew,changed\n'
-    assert c.post(f'/api/projects/{project}/resources', json={'name': 'data.csv', 'content': base}).status_code == 200
-    package = submit(c, project, [{'kind': 'resource', 'path': 'data.csv', 'action': 'modify', 'base': base, 'content': proposed,
+    assert put_file(c, project, 'data.csv', (base).encode()).status_code == 200
+    package = submit(c, project, [{'kind': 'file', 'path': 'data.csv', 'action': 'modify', 'base': base, 'content': proposed,
                                   'changes': [{'old_string': base, 'new_string': proposed}]}])
     file = package['files'][0]
     response = accept(c, project, package, file_id=file['id'], cell={'row': 1, 'column': 0})
@@ -35,7 +35,7 @@ def test_csv_cell_accept_keeps_other_proposals_pending(c):
     partial = response.json()
     assert partial['files'][0]['base'] == 'a,b\nnew,keep\n'
     assert partial['files'][0]['content'] == proposed
-    resources = c.get(f'/api/projects/{project}/resources').json()['resources']
+    resources = resources_of(c, project)
     assert next(r for r in resources if r['name'] == 'data.csv')['content'] == 'a,b\nnew,keep\n'
     assert accept(c, project, package, file_id=file['id'], cell={'row': 1, 'column': 1}).status_code == 409
     assert accept(c, project, partial, file_id=file['id'], cell={'row': 1, 'column': 0}).status_code == 409
@@ -44,7 +44,7 @@ def test_csv_cell_accept_keeps_other_proposals_pending(c):
 
 def test_csv_added_file_cell_accept_and_permission_validation(c):
     project, _ = setup(c)
-    package = submit(c, project, [{'kind': 'resource', 'path': 'new.tsv', 'action': 'add', 'content': 'first\tsecond\n'}])
+    package = submit(c, project, [{'kind': 'file', 'path': 'new.tsv', 'action': 'add', 'content': 'first\tsecond\n'}])
     file = package['files'][0]
     assert accept(c, project, package, cell={'row': 0, 'column': 0}).status_code == 400
     assert accept(c, project, package, file_id=file['id'], cell={'row': -1, 'column': 0}).status_code == 400
@@ -67,8 +67,8 @@ def test_bib_field_edit_accept_preserves_other_pending_fields(c):
     base = '@book{key, title={Old 😀}, author={Jane}}\n'
     proposed = base.replace('Old 😀', 'New 😀').replace('Jane', 'Joan')
     selected = base.replace('Old 😀', 'New 😀')
-    assert c.post(f'/api/projects/{project}/resources', json={'name': 'sources.bib', 'content': base}).status_code == 200
-    package = submit(c, project, [{'kind': 'resource', 'path': 'sources.bib', 'action': 'modify', 'base': base, 'content': proposed,
+    assert put_file(c, project, 'sources.bib', (base).encode()).status_code == 200
+    package = submit(c, project, [{'kind': 'file', 'path': 'sources.bib', 'action': 'modify', 'base': base, 'content': proposed,
                                   'changes': [{'old_string': base, 'new_string': proposed}]}])
     file = package['files'][0]
     response = accept(c, project, package, file_id=file['id'], field_edit={'old_string': base, 'new_string': selected})
@@ -76,7 +76,7 @@ def test_bib_field_edit_accept_preserves_other_pending_fields(c):
     partial = response.json()
     assert partial['files'][0]['base'] == selected
     assert partial['files'][0]['content'] == proposed
-    resources = c.get(f'/api/projects/{project}/resources').json()['resources']
+    resources = resources_of(c, project)
     assert next(r for r in resources if r['name'] == 'sources.bib')['content'] == selected
     assert accept(c, project, partial, file_id=file['id'], field_edit={'old_string': base, 'new_string': selected}).status_code == 409
     assert accept(c, project, partial, file_id=file['id'], field_edit={'old_string': selected, 'new_string': proposed}).json()['files'] == []
@@ -89,7 +89,7 @@ def test_document_delete_proposal_is_recoverable_and_keeps_live_text_and_attachm
         text = sync.room(document)['doc'].get('typst', type=Text)
         del text[:]
         text.insert(0, current)
-    assert c.post(f'/api/docs/{document}/files', files={'f': ('image.png', b'image')}).status_code == 200
+    assert put_file(c, project, 'image.png', b'image').status_code == 200
     package = submit(c, project, [{'kind': 'document', 'doc_id': document, 'path': 'main.typ', 'action': 'delete', 'base': current}])
     assert c.get(f'/api/docs/{document}').status_code == 200
     assert accept(c, project, package).status_code == 200
@@ -97,22 +97,29 @@ def test_document_delete_proposal_is_recoverable_and_keeps_live_text_and_attachm
     assert any(d['id'] == document for d in c.get('/api/docs').json()['trash'])
     assert c.post(f'/api/docs/{document}/restore').status_code == 200
     assert c.get(f'/api/docs/{document}').json()['content'] == current
-    assert c.get(f'/api/docs/{document}/files/image.png').content == b'image'
+    assert c.get(f'/api/projects/{project}/files/image.png').content == b'image'
 
 
-def test_document_delete_with_pending_children_requires_combined_acceptance(c):
+def test_document_delete_and_file_delete_are_accepted_independently(c):
     project, document = setup(c, '#image("image.png")')
-    assert c.post(f'/api/docs/{document}/files', files={'f': ('image.png', b'old')}).status_code == 200
+    assert put_file(c, project, 'image.png', b'old').status_code == 200
     package = submit(c, project, [
         {'kind': 'document', 'doc_id': document, 'path': 'main.typ', 'action': 'delete', 'base': '#image("image.png")'},
-        {'kind': 'file', 'doc_id': document, 'path': 'image.png', 'action': 'delete', 'base': base64.b64encode(b'old').decode(), 'binary': True},
+        {'kind': 'file', 'path': 'image.png', 'action': 'delete', 'base': base64.b64encode(b'old').decode(), 'binary': True},
     ])
-    assert accept(c, project, package, file_id=package['files'][0]['id']).status_code == 409
-    assert c.get(f'/api/docs/{document}').status_code == 200
-    assert accept(c, project, package).status_code == 200
+    partial = accept(c, project, package, file_id=package['files'][0]['id'])
+    assert partial.status_code == 200, partial.text
+    assert c.get(f'/api/docs/{document}').status_code == 410
+    assert c.get(f'/api/projects/{project}/files/image.png').content == b'old'  # files belong to the project
+    assert accept(c, project, partial.json()).status_code == 200
     assert c.post(f'/api/docs/{document}/restore').status_code == 200
-    assert c.get(f'/api/docs/{document}/files/image.png').status_code == 404
+    assert c.get(f'/api/projects/{project}/files/image.png').status_code == 404
     assert any(d['title'] == 'image.png' for d in c.get('/api/docs').json()['trash'])
+
+
+def resources_of(c, project):
+    files = c.get(f"/api/projects/{project}/files").json()["files"]
+    return [{"name": f["path"], "content": c.get(f"/api/projects/{project}/files/{f['path']}").text} for f in files]
 
 
 def setup(c, content="first old\nlast old\n"):
@@ -176,11 +183,11 @@ def test_added_document_rejects_path_traversal_identity(c):
 def test_related_acceptance_keeps_independent_changes_in_same_document_pending(c, selected):
     base = '#import "old.typ": value\n#value\nUnrelated old text\n'
     project, document = setup(c, base)
-    assert c.post(f'/api/projects/{project}/resources', json={'name': 'old.typ', 'content': '#let value = 1'}).status_code == 200
+    assert put_file(c, project, 'old.typ', (b'#let value = 1')).status_code == 200
     package = submit(c, project, [
         document_change(document, base, [('"old.typ"', '"new.typ"'), ('Unrelated old text', 'Unrelated new text')]),
-        {'kind': 'resource', 'path': 'old.typ', 'action': 'rename', 'target': 'new.typ', 'base': '#let value = 1', 'content': '#let value = 1'},
-        {'kind': 'resource', 'path': 'unrelated.txt', 'action': 'add', 'content': 'Keep pending'},
+        {'kind': 'file', 'path': 'old.typ', 'action': 'rename', 'target': 'new.typ', 'base': '#let value = 1', 'content': '#let value = 1'},
+        {'kind': 'file', 'path': 'unrelated.txt', 'action': 'add', 'content': 'Keep pending'},
     ])
     text, rename, unrelated = package['files']
     selection = {'file_id': rename['id']} if selected == 'rename' else {'file_id': text['id'], 'change_id': text['changes'][0]['id']}
@@ -192,7 +199,7 @@ def test_related_acceptance_keeps_independent_changes_in_same_document_pending(c
     pending_text = next(f for f in remaining if f['id'] == text['id'])
     assert [change['id'] for change in pending_text['changes']] == [text['changes'][1]['id']]
     assert next(f for f in remaining if f['id'] == unrelated['id'])['action'] == 'add'
-    assert {f['name'] for f in c.get(f'/api/projects/{project}/resources').json()['resources']} == {'new.typ'}
+    assert {f['name'] for f in resources_of(c, project)} == {'new.typ'}
 
 
 def test_related_new_file_acceptance_keeps_other_proposals_pending(c):
@@ -200,7 +207,7 @@ def test_related_new_file_acceptance_keeps_other_proposals_pending(c):
     project, document = setup(c, base)
     package = submit(c, project, [
         document_change(document, base, [('= Heading', '#include "new.typ"'), ('Other old text', 'Other new text')]),
-        {'kind': 'resource', 'path': 'new.typ', 'action': 'add', 'content': '= Included heading'},
+        {'kind': 'file', 'path': 'new.typ', 'action': 'add', 'content': '= Included heading'},
     ])
     source = package['files'][0]
     response = accept(c, project, package, file_id=source['id'], change_id=source['changes'][0]['id'], include_dependencies=True)
@@ -215,16 +222,16 @@ def test_related_rename_leaves_renamed_file_contents_pending_at_new_path(c):
     project, document = setup(c, base)
     module = '#let value = 1\n#let footer = "Original"\n'
     proposed_module = module.replace('value = 1', 'value = 2')
-    assert c.post(f'/api/projects/{project}/resources', json={'name': 'old.typ', 'content': module}).status_code == 200
+    assert put_file(c, project, 'old.typ', (module).encode()).status_code == 200
     package = submit(c, project, [
         document_change(document, base, [('"old.typ"', '"new.typ"'), ('Unrelated old text', 'Unrelated new text')]),
-        {'kind': 'resource', 'path': 'old.typ', 'action': 'rename', 'target': 'new.typ', 'base': module, 'content': proposed_module,
+        {'kind': 'file', 'path': 'old.typ', 'action': 'rename', 'target': 'new.typ', 'base': module, 'content': proposed_module,
          'changes': [{'old_string': 'value = 1', 'new_string': 'value = 2'}]},
     ])
     source, rename = package['files']
     response = accept(c, project, package, file_id=source['id'], change_id=source['changes'][0]['id'], include_dependencies=True)
     assert response.status_code == 200, response.text
-    resources = c.get(f'/api/projects/{project}/resources').json()['resources']
+    resources = resources_of(c, project)
     assert next(f for f in resources if f['name'] == 'new.typ')['content'] == module
     partial = response.json()
     pending_module = next(f for f in partial['files'] if f['id'] == rename['id'])
@@ -234,7 +241,7 @@ def test_related_rename_leaves_renamed_file_contents_pending_at_new_path(c):
     final = accept(c, project, partial, file_id=rename['id'])
     assert final.status_code == 200, final.text
     assert len(final.json()['files']) == 1
-    resources = c.get(f'/api/projects/{project}/resources').json()['resources']
+    resources = resources_of(c, project)
     assert next(f for f in resources if f['name'] == 'new.typ')['content'] == proposed_module
 
 
@@ -255,7 +262,7 @@ def test_structural_document_rename_keeps_content_pending_at_document_path(c):
     assert c.get(f'/api/docs/{document}').json()['content'] == 'Proposed text'
 
 
-@pytest.mark.parametrize('kind,binary', [('resource', False), ('document', False), ('file', True)])
+@pytest.mark.parametrize('kind,binary', [('file', False), ('document', False), ('file', True)])
 def test_structural_add_keeps_later_content_edits_pending(c, kind, binary):
     project, document = setup(c)
     initial, proposed = ('Initial text', 'Proposed text') if not binary else (base64.b64encode(b'initial').decode(), base64.b64encode(b'proposed').decode())
@@ -263,8 +270,6 @@ def test_structural_add_keeps_later_content_edits_pending(c, kind, binary):
             'action': 'add', 'initial_content': initial, 'content': proposed, 'binary': binary}
     if kind == 'document':
         file['target'] = 'Added document'
-    elif kind == 'file':
-        file['doc_id'] = document
     package = submit(c, project, [file])
     saved = package['files'][0]
     response = accept(c, project, package, file_id=saved['id'], change_id='@action')
@@ -273,10 +278,10 @@ def test_structural_add_keeps_later_content_edits_pending(c, kind, binary):
     assert response.json()['files'][0]['base'] == initial
     if kind == 'document':
         assert c.get(f"/api/docs/{saved['doc_id']}").json()['content'] == initial
-    elif kind == 'resource':
-        assert next(f for f in c.get(f'/api/projects/{project}/resources').json()['resources'] if f['name'] == 'added.typ')['content'] == initial
+    elif not binary:
+        assert next(f for f in resources_of(c, project) if f['name'] == 'added.typ')['content'] == initial
     else:
-        assert c.get(f'/api/docs/{document}/files/added.png').content == b'initial'
+        assert c.get(f'/api/projects/{project}/files/added.png').content == b'initial'
     assert accept(c, project, response.json()).status_code == 200
 
 
@@ -381,23 +386,23 @@ def test_editor_corrects_proposal_but_cannot_delete_another_authors_package(c):
 def test_added_attachment_dependencies_require_combined_acceptance(c):
     project, document = setup(c, "old")
     text = document_change(document, "old", [("old", '#image("plot.png")')])
-    image = {"kind": "file", "doc_id": document, "path": "plot.png", "action": "add", "content": base64.b64encode(b"image").decode(), "binary": True}
+    image = {"kind": "file", "path": "plot.png", "action": "add", "content": base64.b64encode(b"image").decode(), "binary": True}
     package = submit(c, project, [text, image])
-    assert c.get(f"/api/docs/{document}/files/plot.png").status_code == 404
+    assert c.get(f"/api/projects/{project}/files/plot.png").status_code == 404
     assert accept(c, project, package, file_id=package["files"][0]["id"]).status_code == 409
     response = accept(c, project, package)
     assert response.status_code == 200, response.text
-    assert c.get(f"/api/docs/{document}/files/plot.png").content == b"image"
+    assert c.get(f"/api/projects/{project}/files/plot.png").content == b"image"
 
 
 def test_quota_failure_rolls_back_files_database_and_live_document(c, monkeypatch):
     project, document = setup(c, "old")
     text = document_change(document, "old", [("old", "new")])
-    attachment = {"kind": "file", "doc_id": document, "path": "new.csv", "action": "add", "content": "a,b\n"}
+    attachment = {"kind": "file", "path": "new.csv", "action": "add", "content": "a,b\n"}
     package = submit(c, project, [attachment, text])
     monkeypatch.setattr(quota, "check_quota", lambda *args, **kwargs: (_ for _ in ()).throw(HTTPException(413, "quota")))
     assert accept(c, project, package).status_code == 413
-    assert c.get(f"/api/docs/{document}/files/new.csv").status_code == 404
+    assert c.get(f"/api/projects/{project}/files/new.csv").status_code == 404
     assert c.get(f"/api/docs/{document}").json()["content"] == "old"
     assert str(sync.room(document)["doc"].get("typst", type=Text)) == "old"
     saved = c.get(f"/api/projects/{project}/proposals/{package['id']}").json()
@@ -406,23 +411,23 @@ def test_quota_failure_rolls_back_files_database_and_live_document(c, monkeypatc
 
 def test_file_acceptance_and_deleting_partial_package_preserve_accepted_changes(c):
     project, document = setup(c, "old")
-    c.post(f"/api/projects/{project}/resources", json={"name": "data.csv", "content": "a,b\n1,2\n"})
-    file = {"kind": "resource", "path": "data.csv", "action": "modify", "base": "a,b\n1,2\n", "content": "a,b\n3,4\n", "changes": [{"old_string": "1,2", "new_string": "3,4"}]}
+    put_file(c, project, "data.csv", (b"a,b\n1,2\n"))
+    file = {"kind": "file", "path": "data.csv", "action": "modify", "base": "a,b\n1,2\n", "content": "a,b\n3,4\n", "changes": [{"old_string": "1,2", "new_string": "3,4"}]}
     package = submit(c, project, [file, document_change(document, "old", [("old", "new")])])
     response = accept(c, project, package, file_id=package["files"][0]["id"])
     assert response.status_code == 200, response.text
     assert c.delete(f"/api/projects/{project}/proposals/{package['id']}").status_code == 200
-    resources = c.get(f"/api/projects/{project}/resources").json()["resources"]
+    resources = resources_of(c, project)
     assert next(r["content"] for r in resources if r["name"] == "data.csv") == "a,b\n3,4\n"
     assert c.get(f"/api/docs/{document}").json()["content"] == "old"
 
 
 def test_delete_and_rename_file_proposals_are_not_applied_until_acceptance(c):
     project, document = setup(c)
-    c.post(f"/api/projects/{project}/resources", json={"name": "unused.bib", "content": "old"})
-    package = submit(c, project, [{"kind": "resource", "path": "unused.bib", "action": "rename", "target": "renamed.bib", "base": "old", "content": "old"}])
+    put_file(c, project, "unused.bib", (b"old"))
+    package = submit(c, project, [{"kind": "file", "path": "unused.bib", "action": "rename", "target": "renamed.bib", "base": "old", "content": "old"}])
     assert accept(c, project, package).status_code == 200
-    package = submit(c, project, [{"kind": "resource", "path": "renamed.bib", "action": "delete", "base": "old"}])
+    package = submit(c, project, [{"kind": "file", "path": "renamed.bib", "action": "delete", "base": "old"}])
     assert accept(c, project, package).status_code == 200
     assert any(t["title"] == "renamed.bib" for t in c.get("/api/docs").json()["trash"])
 
@@ -436,7 +441,7 @@ def test_foreign_project_access_and_duplicate_file_ids_are_rejected(c):
     login(c, "alice")
     file = document_change(document, "old", [("old", "new")])
     file["id"] = "duplicate"
-    other = {"id": "duplicate", "kind": "resource", "path": "new.typ", "action": "add", "content": "text"}
+    other = {"id": "duplicate", "kind": "file", "path": "new.typ", "action": "add", "content": "text"}
     assert c.post(f"/api/projects/{project}/proposals", json={"title": "bad", "files": [file, other]}).status_code == 400
 
 
@@ -529,11 +534,11 @@ def test_dependencies_trust_empty_live_room_over_stale_db_text(c, monkeypatch):
     register_user(c, "bob")
     login(c, "alice")
     plotdata = b"plotdata-bytes"
-    assert c.post(f"/api/docs/{document}/files", files={"f": ("plot.png", plotdata)}).status_code == 200
+    assert put_file(c, project, "plot.png", plotdata).status_code == 200
     c.post(f"/api/projects/{project}/members", json={"username": "bob", "role": "reviewer"})
     login(c, "bob")
     package = submit(c, project, [{
-        "kind": "file", "doc_id": document, "path": "plot.png",
+        "kind": "file", "path": "plot.png",
         "action": "delete", "base": plotdata.decode(),
     }])
     # The live room reports EMPTY text while the DB row is stale and still
@@ -543,16 +548,16 @@ def test_dependencies_trust_empty_live_room_over_stale_db_text(c, monkeypatch):
     login(c, "alice")
     response = accept(c, project, package)
     assert response.status_code == 200, response.text
-    assert c.get(f"/api/docs/{document}/files/plot.png").status_code == 404
+    assert c.get(f"/api/projects/{project}/files/plot.png").status_code == 404
 
 
 def test_proposal_cannot_add_case_variant_of_existing_resource(c):
     project, document = setup(c, "old")
-    assert c.post(f"/api/projects/{project}/resources", json={"name": "data.csv", "content": "original"}).status_code == 200
-    package = submit(c, project, [{"kind": "resource", "path": "DATA.csv", "action": "add", "content": "proposal"}])
+    assert put_file(c, project, "data.csv", (b"original")).status_code == 200
+    package = submit(c, project, [{"kind": "file", "path": "DATA.csv", "action": "add", "content": "proposal"}])
     response = accept(c, project, package)
     assert response.status_code == 409, response.text
-    rows = c.get(f"/api/projects/{project}/resources").json()["resources"]
+    rows = resources_of(c, project)
     assert [(row["name"], row["content"]) for row in rows] == [("data.csv", "original")]
 
 
@@ -568,7 +573,7 @@ def test_failed_undo_snapshot_cannot_desync_a_committed_accept(c, monkeypatch):
     assert str(sync.room(document)["doc"].get("typst", type=Text)) == "new"
 
 
-def test_acceptance_releases_upload_and_package_locks_before_project_history(c, monkeypatch):
+def test_acceptance_releases_files_and_package_locks_before_project_history(c, monkeypatch):
     from backend.services import project_history
     from backend.services.locks import _named_lock
 
@@ -577,7 +582,7 @@ def test_acceptance_releases_upload_and_package_locks_before_project_history(c, 
     checkpoints = []
 
     def checkpoint(doc_id):
-        for name in ("upload:" + doc_id, "packages:" + project):
+        for name in ("files:" + project, "packages:" + project):
             lock = _named_lock(name)
             assert lock.acquire(blocking=False), "History would deadlock on acceptance lock: " + name
             lock.release()
@@ -600,16 +605,16 @@ def test_related_acceptance_can_update_references_inside_a_renamed_document(c, f
     response = c.post(f"/api/projects/{project}/docs", json={"title": "Appendix", "content": appendix})
     assert response.status_code == 200, response.text
     other = response.json()["id"]
-    assert c.post(f"/api/projects/{project}/resources", json={"name": "old.typ", "content": "#let value = 1"}).status_code == 200
+    assert put_file(c, project, "old.typ", (b"#let value = 1")).status_code == 200
     package = submit(c, project, [
         document_change(document, main, [('"old.typ"', '"new.typ"\n#include "hint.typ"'), ('Independent old', 'Independent new')]),
         {"kind": "document", "doc_id": other, "path": "main.typ", "action": "rename", "original_title": "Appendix", "target": "Appendix B",
          "base": appendix, "content": appendix.replace('"old.typ"', '"new.typ"').replace('Appendix old', 'Appendix new'),
          "changes": [{"old_string": '"old.typ"', "new_string": '"new.typ"'}, {"old_string": "Appendix old", "new_string": "Appendix new"}]},
-        {"kind": "resource", "path": "old.typ", "action": "rename", "target": "new.typ", "base": "#let value = 1", "content": "#let value = 2",
+        {"kind": "file", "path": "old.typ", "action": "rename", "target": "new.typ", "base": "#let value = 1", "content": "#let value = 2",
          "changes": [{"old_string": "value = 1", "new_string": "value = 2"}]},
-        {"kind": "resource", "path": "hint.typ", "action": "add", "content": '#import "new.typ": value'},
-        {"kind": "file", "doc_id": other, "path": "head.typ", "action": "add", "content": '#import "new.typ": value'},
+        {"kind": "file", "path": "hint.typ", "action": "add", "content": '#import "new.typ": value'},
+        {"kind": "file", "path": "head.typ", "action": "add", "content": '#import "new.typ": value'},
     ])
     source, renamed_doc, module, hint, attachment = package["files"]
     selected = {"module": module, "hint": hint, "attachment": attachment, "reference": source}[first]
@@ -624,6 +629,6 @@ def test_related_acceptance_can_update_references_inside_a_renamed_document(c, f
     assert pending["action"] == "modify"
     assert [change["old_string"] for change in pending["changes"]] == ["Appendix old"]
     assert "Independent old" in c.get(f"/api/docs/{document}").json()["content"]
-    resources = c.get(f"/api/projects/{project}/resources").json()["resources"]
+    resources = resources_of(c, project)
     assert next(f for f in resources if f["name"] == "new.typ")["content"] == "#let value = 1"
     assert accept(c, project, partial).status_code == 200

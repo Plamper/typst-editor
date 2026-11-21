@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 
 import pytest
-from conftest import make_doc, register_user
+from conftest import make_doc, project_of, put_file, register_user
 from fastapi import HTTPException
 
 from backend import config as backend_config
@@ -50,23 +50,23 @@ def test_max_docs_boundary(c, monkeypatch):
 def test_max_files_boundary(c, monkeypatch):
     _patch(monkeypatch, MAX_FILES_PER_DOC=2)
     register_user(c, "alice")
-    did = make_doc(c, "Dateien")
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("a.png", b"1")}).status_code == 200
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("b.png", b"2")}).status_code == 200
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("c.png", b"3")}).status_code == 400
+    pid = project_of(c, make_doc(c, "Dateien"))
+    assert put_file(c, pid, "a.png", b"1").status_code == 200
+    assert put_file(c, pid, "b.png", b"2").status_code == 200
+    assert put_file(c, pid, "c.png", b"3").status_code == 400
 
 
 def test_upload_overwrite_charges_delta_only(c, monkeypatch):
     register_user(c, "alice")
-    did = make_doc(c, "Delta")
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("a.png", b"x" * 100)}).status_code == 200
+    pid = project_of(c, make_doc(c, "Delta"))
+    assert put_file(c, pid, "a.png", b"x" * 100).status_code == 200
     used = backend_main.user_bytes("alice")
     _patch(monkeypatch, MAX_BYTES_PER_USER=used + 50)  # only 50 bytes free
     # Same-size overwrite: delta 0, must not 413 (regression: full size charged).
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("a.png", b"y" * 100)}).status_code == 200
+    assert put_file(c, pid, "a.png", b"y" * 100, force=1).status_code == 200
     # Grow by 40: delta 40 <= 50 free, ok.
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("a.png", b"z" * 140)}).status_code == 200
+    assert put_file(c, pid, "a.png", b"z" * 140, force=1).status_code == 200
     # Grow by 60 with only ~10 free: delta exceeds quota -> 413.
     used2 = backend_main.user_bytes("alice")
     _patch(monkeypatch, MAX_BYTES_PER_USER=used2 + 10)
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("a.png", b"w" * 200)}).status_code == 413
+    assert put_file(c, pid, "a.png", b"w" * 200, force=1).status_code == 413

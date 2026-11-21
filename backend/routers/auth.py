@@ -584,12 +584,13 @@ async def delete_me(b: PwOnly, req: Request, res: Response, user: str = Depends(
     con = db.connect()
     try:
         owned = [r["id"] for r in con.execute("SELECT id FROM docs WHERE owner=?", (user,)).fetchall()]
+        trees = [r["id"] for r in con.execute("SELECT id FROM projects WHERE owner=?", (user,)).fetchall()]
     finally:
         con.close()
     # Files first: trash-rename aside so a crash between FS and DB never loses
     # data (DB still points at the doc, files restorable from .trash-<id>).
     trashed_dirs: list[tuple[Path, Path]] = []
-    for did in owned:
+    for did in owned + trees:
         src = deps.get_files_dir() / did
         if src.is_dir():
             dst = deps.get_files_dir() / f".trash-{did}"

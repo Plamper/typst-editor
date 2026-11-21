@@ -27,13 +27,14 @@ def test_unicode_project_replaces_document_folders(c):
     assert c.post(f"/api/docs/{did}/folder", json={"folder": name}).status_code == 410
 
 
-def test_duplicate_copies_files(c):
+def test_duplicate_reaches_the_same_files(c):
     register_user(c, "alice")
-    did = make_doc(c, "MitDatei")
-    assert c.post(f"/api/docs/{did}/files", files={"f": ("bild.png", b"abc")}).status_code == 200
+    did = make_doc(c, "MitDatei", content='#image("bild.png")')
+    pid = c.get(f"/api/docs/{did}").json()["project_id"]
+    assert c.put(f"/api/projects/{pid}/files/bild.png", content=b"abc").status_code == 200
     nid = c.post(f"/api/docs/{did}/duplicate").json()["id"]
-    names = [f["name"] for f in c.get(f"/api/docs/{nid}/files").json()["files"]]
-    assert "bild.png" in names
+    names = [f["path"] for f in c.get(f"/api/docs/{nid}/resources").json()["files"]]
+    assert names == ["bild.png"]
 
 
 def test_duplicate_quota_413(c, monkeypatch):
