@@ -263,3 +263,16 @@ def test_content_result_is_capped(c, monkeypatch):
     for i in range(6):
         make_doc(c, f"Doc {i}", content="kappwort")
     assert len(_content(c, "kappwort")) == 3
+
+
+def test_doc_guest_search_hides_project_file_names(c):
+    from conftest import login, project_of, put_file, register_user
+
+    register_user(c, "alice")
+    did = c.post("/api/docs/create", json={"title": "Shared", "content": "hello"}).json()["id"]
+    assert put_file(c, project_of(c, did), "secretplan.typ", b"#let x = 1").status_code == 200
+    register_user(c, "bob")
+    login(c, "alice")
+    assert c.post(f"/api/docs/{did}/share", json={"username": "bob", "role": "editor"}).status_code == 200
+    login(c, "bob")
+    assert "secretplan" not in str(c.get("/api/search", params={"q": "secretplan"}).json())

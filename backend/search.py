@@ -82,13 +82,14 @@ def _like_escape(q: str) -> str:
     return "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
-def scan_files(doc_id: str, files_dir: Path, q_lower: str) -> tuple[list[str], list[str]]:
-    """Names + .bib keys containing q (case-insensitive substring) among the files of the doc's project.
+def scan_files(doc_id: str, files_dir: Path, q_lower: str, user: str) -> tuple[list[str], list[str]]:
+    """Names + .bib keys containing q (case-insensitive substring) among the project files the user may see.
 
     Names come from the project_files table, never from a directory walk;
     only .bib *contents* are read from disk (capped at 1 MB).
     """
     from backend import db as _db
+    from backend.services import project_files
 
     con = _db.connect()
     try:
@@ -98,6 +99,9 @@ def scan_files(doc_id: str, files_dir: Path, q_lower: str) -> tuple[list[str], l
             (project, _like_escape(q_lower))).fetchall()
         bibs = con.execute(
             "SELECT path FROM project_files WHERE project_id=? AND type='.bib'", (project,)).fetchall()
+        seen = project_files.visible(con, project, user)
+        if seen is not None:
+            rows, bibs = [r for r in rows if r["path"] in seen], [r for r in bibs if r["path"] in seen]
     except sqlite3.OperationalError:
         return ([], [])  # half-migrated DB (no files table yet): degrade, never 500
     except Exception as e:
@@ -246,7 +250,7 @@ def search_visible(user: str, raw_q: str, con: sqlite3.Connection,
                          "snippet": "", "pos": pos, "updated_at": r["updated_at"]})
             seen.add(r["id"])
         else:
-            names, keys = scan_files(r["id"], files_dir, q_lower)
+            names, keys = scan_files(r["id"], files_dir, q_lower, user)
             if names or keys:
                 pos = txt.lower().find(q_lower)
                 hits.append({"id": r["id"], "title": r["title"], "owner": r["owner"],
