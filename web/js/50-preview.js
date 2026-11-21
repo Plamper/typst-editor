@@ -11,7 +11,6 @@ const PV_WORKER_WASM = '/vendor/typst-compiler-0.8.0-rc3-85a071522388.wasm' // w
 const PV_WORKER_SRC = `
 self.window = self // typst bundle touches bare window at import time (renderer heritage): alias it, compile never needs DOM
 var T = null
-var enc = new TextEncoder()
 function fix(v, n) {
   if (typeof v === 'bigint') return Number(v)
   if (!v || typeof v !== 'object' || n > 6) {

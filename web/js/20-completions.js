@@ -22,15 +22,6 @@ const RES_EXT = { template: '.typ', library: '.bib', table: '.csv', resource: '.
 const resLabel = kind => kind === 'library' ? t('templates.kindlibrary') : kind === 'table' ? t('templates.kindtable') : t('templates.kindModule')
 const resKind = t => (t && t.kind) || (((t || {}).name || '').toLowerCase().endsWith('.bib') ? 'library' : ((t || {}).name || '').toLowerCase().endsWith('.csv') ? 'table' : 'template')
 const resOf = kind => (kind === 'resource' ? myTpl : myTpl.filter(t => resKind(t) === kind)).slice().sort((a, b) => a.name.localeCompare(b.name))
-const groupBy = list => { // top-level first + folder map (caller adds empty folders)
-  const top = [], byF = new Map()
-  list.forEach(t => {
-    const f = t.folder || ''
-    if (!f) top.push(t)
-    else { if (!byF.has(f)) byF.set(f, []); byF.get(f).push(t) }
-  })
-  return { top, byF }
-}
 // Project-only completions (vendor typst_lezer handles the Typst language itself:
 // builtins, params, let-scope, document labels). Returns null everywhere else so
 // the vendor source answers alone. Triggers: file paths in "..." strings,

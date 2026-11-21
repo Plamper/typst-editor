@@ -52,7 +52,7 @@ const FILES_TTL = 15000 // collaborators' uploads show up within this window
 const SAVE_MS = 2500, RENDER_MS = 300, POLL_MS = 5000, SYNC_MS = 40, SYNC_PX = 8 // debounce/intervals + scroll quiet (px)
 const SEARCH_MS = 350, DIFF_MAX = 400, DIFF_OUT = 120 // search debounce, diff line caps
 function clampSplit(w) { return Math.max(SPLIT_MIN, Math.min(SPLIT_MAX, w)) } // fn not const: top init runs first (TDZ fix)
-const QUOTE_MAX = 120, AV_SIZE = 64 // comment quote, avatar px
+const AV_SIZE = 64 // avatar px
 const SPLIT_MIN = 25, SPLIT_MAX = 85 // editor width in %
 const ED_MIN = 10, ED_MAX = 24, ED_STEP = 1, ED_DEF = 14 // editor font
 const PV_MIN = 30, PV_MAX = 400, PV_STEP = 10, PV_DEF = 100 // preview zoom (400: zoom may exceed container, preview scrolls)
