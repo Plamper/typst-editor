@@ -245,8 +245,8 @@ function dirtyAnchor(th) { // batch anchor saves: typing makes one request, not 
   }, SAVE_MS)
 }
 function mapThreads(mapPos, paint = true, fromLen) { // start left, end right: typing before stays out, inside/after grows
-  const t = activeFile || window.suggestionDraft ? shadow : getT() // file tab: anchors live in main, not in file text (Fix #5)
-  const len = fromLen == null ? t.length : Math.max(0, Math.min(fromLen, t.length)) // Round5 High #2: stale anchors beyond the changeset must not reach mapPos (RangeError on empty/short changesets)
+  const t = activeFile || window.suggestionDraft ? shadow : getT() // file tab: anchors live in main, not in file text
+  const len = fromLen == null ? t.length : Math.max(0, Math.min(fromLen, t.length)) // stale anchors beyond the changeset must not reach mapPos (RangeError on empty/short changesets)
   for (const th of threads) {
     if (th.a == null || th.b == null) continue
     const collapsed = th.a === th.b

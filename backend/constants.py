@@ -11,7 +11,6 @@ SNAP_EVERY = 900
 # per older week. kind='manual' rows are never auto-pruned.
 AUTO_SNAP_KEEP = 10       # newest automatic checkpoints kept verbatim
 AUTO_SNAP_KEEP_WEEKS = 5  # extra weekly-decay checkpoints (auto total <= 15)
-SAVE_EVERY = 1.0
 AWARE_MAX = 64 * 1024
 CACHE_TTL = 10.0
 TITLE_MAX = 100

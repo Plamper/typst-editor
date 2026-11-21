@@ -37,7 +37,7 @@ function renderMediaChips(files) {
   if (openedTrashed) { bar.style.display = 'none'; return } // trash: no manager at all
   bar.style.display = mediaOpen ? '' : 'none'
   if (!mediaOpen) return
-  const reviewer = docRole === 'reviewer' || docResReadonly // #8: readers browse + copy to library, no upload/delete/insert
+  const reviewer = docRole === 'reviewer' || docResReadonly // readers browse + copy to library, no upload/delete/insert
   if (!reviewer) {
     const add = el('button', null, t('files.upload'))
     add.onclick = () => $('imgPick').click()
@@ -60,7 +60,7 @@ function renderMediaChips(files) {
       const x = icoBtn(null, ICO_X); x.title = t('files.del'); x.setAttribute('aria-label', t('files.delName', { name: f.path }))
       x.onclick = () => deleteFile(f.path)
       c.appendChild(x)
-      if (window.changeSession && !window.changeSession.original && !TEXT_EXT.test(f.path)) { // Round5 #4: swap an existing image's content inside the package (add would stumble over nameExists)
+      if (window.changeSession && !window.changeSession.original && !TEXT_EXT.test(f.path)) { // swap an existing image's content inside the package (add would stumble over nameExists)
         const r = icoBtn(null, ICO_DUP); r.title = t('files.replaceName', { name: f.path }); r.setAttribute('aria-label', r.title)
         r.onclick = () => { pendingReplace = f.path; $('imgPick').click() }
         c.appendChild(r)
@@ -460,7 +460,7 @@ async function deleteFile(name) { // manager chip: same trash path as the sideba
   return deleteProjectEntry(projects.find(p => p.id === docProject) || { id: docProject }, name)
 }
 let imgIns = false // only via image button, not via manager upload
-let pendingReplace = '' // Round5 #4: one-shot chip target - the next picked file replaces this file's content inside the change session
+let pendingReplace = '' // one-shot chip target - the next picked file replaces this file's content inside the change session
 function insImage(name) { // #image() at cursor
   if (!cm.state.facet(EditorView.editable)) { toast(t('projects.readonly')); return }
   const m = cm.state.selection.main, ins = `#image("${refTo(name)}", width: 80%)`
@@ -485,7 +485,7 @@ $('imgPick').onchange = async () => {
   if (!f || !docId) return
   const swap = pendingReplace; pendingReplace = '' // one-shot: never leaks into the next pick
   try {
-    if (swap && window.changeSession) { // Round5 #4: chip replace swaps the content inside the package
+    if (swap && window.changeSession) { // chip replace swaps the content inside the package
       if (await sessionReplaceFile(swap, f)) { imgIns = false; queueRender(); return }
     }
     if (TEXT_UP.test(f.name)) { const n = await upText(f); if (n) switchTab(n) }

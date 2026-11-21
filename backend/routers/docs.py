@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 
 from backend import config, db, deps, search, sync
 from backend.constants import FOLDER_MAX, MAX_TXT, TITLE_MAX, UPLOAD_MAX
-from backend.schemas import DocCreate, DocSave, FolderRename, FolderSet, TitleSet
+from backend.schemas import DocCreate, DocSave, TitleSet
 from backend.services import project_files, projects
 from backend.services import quota as quota_svc
 from backend.services.locks import _drop_doc_locks, _named_lock
@@ -41,29 +41,6 @@ def list_docs(req: Request, user: str = Depends(deps.me)) -> dict:
                 "trash": [dict(r) for r in trash] + [dict(r) for r in trash_items]}
     finally:
         con.close()
-
-
-@router.get("/api/folders")
-def list_folders(req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.limited(req, "files_list")
-    con = db.connect()
-    try:
-        return {"folders": deps._folder_counts(con, user, "doc")}
-    finally:
-        con.close()
-
-
-@router.post("/api/folders")
-def make_folder(b: FolderSet, req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.limited(req, "folders")
-    with db.tx() as con:
-        title = deps.check_folder_name(b.folder).split("/")[0]
-        row = con.execute("SELECT project_id FROM legacy_project_folders WHERE owner=? AND folder=?", (user, title)).fetchone()
-        pid = row[0] if row else projects.create(con, user, title)
-        con.execute("INSERT OR IGNORE INTO legacy_project_folders VALUES (?,?,?)", (user, title, pid))
-    notify_sidebar(user)
-    return {"id": pid, "project_id": pid, "folder": title}
-
 
 @router.post("/api/docs/create")
 def create_doc(b: DocCreate, req: Request, user: str = Depends(deps.me)) -> dict:
@@ -183,7 +160,7 @@ async def save_doc(doc_id: str, b: DocSave, req: Request, user: str = Depends(de
                         raise HTTPException(404, "Doc gone")
                     if trashed["trashed"]:
                         raise HTTPException(410, "In trash - restore first")
-                    # B5: pre-tx need_edit is a fast-path only; the role must
+                    # Pre-tx need_edit is a fast-path only; the role must
                     # hold on THIS connection (unshare/downgrade may land in
                     # the gap between check and BEGIN IMMEDIATE).
                     if deps._tx_role(con, user, doc_id) not in ("owner", "editor"):
@@ -314,22 +291,6 @@ def restore_doc(doc_id: str, req: Request, user: str = Depends(deps.me)) -> dict
         notify_sidebar(recipient)
     return {"ok": True}
 
-
-@router.post("/api/docs/{doc_id}/folder")
-def move_doc(doc_id: str, b: FolderSet, req: Request, user: str = Depends(deps.me)) -> dict:
-    raise HTTPException(410, "Document folders were replaced by projects")
-
-
-@router.delete("/api/folders/{name}")
-def drop_folder(name: str, req: Request, user: str = Depends(deps.me)) -> dict:
-    raise HTTPException(410, "Document folders were replaced by projects")
-
-
-@router.post("/api/folders/rename")
-def rename_folder(b: FolderRename, req: Request, user: str = Depends(deps.me)) -> dict:
-    raise HTTPException(410, "Document folders were replaced by projects")
-
-
 @router.post("/api/docs/{doc_id}/duplicate")
 def duplicate_doc(doc_id: str, req: Request, user: str = Depends(deps.me)) -> dict:
     deps.check_doc_id(doc_id)
@@ -345,7 +306,7 @@ def duplicate_doc(doc_id: str, req: Request, user: str = Depends(deps.me)) -> di
     with _named_lock(f"dup:{user}"):
         try:
             with db.tx() as con:
-                # B5: outer need_edit is a fast-path only; re-check on the tx
+                # Outer need_edit is a fast-path only; re-check on the tx
                 # connection before inserting (role may change in the gap).
                 if deps._tx_role(con, user, doc_id) not in ("owner", "editor"):
                     raise HTTPException(403, "Reviewer can only comment")

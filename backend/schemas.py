@@ -107,12 +107,6 @@ class SnapRename(BaseModel):
 class SnapRestore(BaseModel):
     force: bool = False
 
-
-class FileText(BaseModel):
-    content: str = Field(default="", max_length=200001)
-    version: str | None = Field(default=None, max_length=64)
-
-
 class InviteNew(BaseModel):
     role: str = Field(default="reviewer", max_length=20)  # editor | reviewer
 

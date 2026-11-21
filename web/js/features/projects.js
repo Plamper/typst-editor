@@ -1012,9 +1012,3 @@ async function duplicatePersonalResource(name) {
   await api('POST', '/api/templates/' + encodeURIComponent(name) + '/duplicate', {})
   await loadTpl(); await sidebar()
 }
-
-function copyDisplayName(name) {
-  const dot = name.lastIndexOf('.')
-  const extension = dot > name.lastIndexOf('/') + 1
-  return t('projects.duplicateName', { stem: extension ? name.slice(0, dot) : name, ext: extension ? name.slice(dot) : '' })
-}

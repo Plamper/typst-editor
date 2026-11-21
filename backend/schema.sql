@@ -152,8 +152,7 @@ CREATE TRIGGER IF NOT EXISTS docs_fts_au AFTER UPDATE ON docs
   INSERT INTO docs_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
 END;
 
--- notifications: minimal backend write path (services/notifications.py),
--- inbox UI follows in Wave 3D (owns routers/notifications.py). No FK to
+-- notifications: written by services/notifications.py, read by routers/notifications.py. No FK to
 -- docs on purpose: the inbox keeps its text snapshot after doc delete.
 CREATE TABLE IF NOT EXISTS notifications (
     id TEXT PRIMARY KEY,
@@ -170,7 +169,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient, created_at);
 
 -- read_tokens: token-hash -> doc for account-less reading
--- (routers/readmode.py, no UI in Wave 1). Revoke = DELETE the row.
+-- (routers/readmode.py, API only). Revoke = DELETE the row.
 CREATE TABLE IF NOT EXISTS read_tokens (
     token_hash TEXT PRIMARY KEY,
     doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,

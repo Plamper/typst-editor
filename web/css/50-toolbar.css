@@ -47,7 +47,7 @@
 #find button.on:hover { background: var(--ink); color: var(--on-ink); filter: opacity(.86); }
 #find button.on:not(:disabled):active { background: var(--ink); color: var(--on-ink); filter: opacity(.78); }
 #find .x { margin-left: auto; border: 0; background: none; box-shadow: none; color: var(--sub); }
-/* Wave 2B: format button only; format-on-save + spellcheck live in Settings (toolbar stays one line) */
+/* Format button only; format-on-save + spellcheck live in Settings (toolbar stays one line) */
 
 /* Document tabs: main.typ, project files, templates in use */
 #tabs { gap: 0; padding: 0 6px; min-height: 36px; align-items: stretch; scrollbar-width: none; }

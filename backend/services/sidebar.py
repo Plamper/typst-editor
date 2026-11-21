@@ -2,8 +2,7 @@
 
 Queue items are strings: "sidebar" (legacy list refresh) or
 "<type>:<doc_id>" / "<type>" for typed events. Types: comment, file,
-member, notification. Follow-ups: 3D consumes comment/file/member +
-notification, 3A the file/member events for tree + tabs.
+member, notification.
 """
 from __future__ import annotations
 

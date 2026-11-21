@@ -314,7 +314,7 @@ def _unread(ctx: Ctx, since: str) -> list[dict]:
 def _where(con, doc_id: str, project_id: str) -> str:
     row = con.execute("SELECT d.title,d.folder,p.title AS pt,p.owner,p.id AS pid FROM docs d JOIN projects p ON p.id=d.project_id WHERE d.id=?", (doc_id,)).fetchone() if doc_id else None
     if row:
-        return "/" + "/".join(x for x in (f"{row['pt']}" if True else "", row["folder"], row["title"]) if x)
+        return "/" + "/".join(x for x in (row["pt"], row["folder"], row["title"]) if x)
     p = con.execute("SELECT title FROM projects WHERE id=?", (project_id,)).fetchone() if project_id else None
     return f"/{p['title']}/.proposals" if p else ""
 

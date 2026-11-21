@@ -11,7 +11,7 @@ log = logging.getLogger("typst.main")
 
 
 def reap_trash_dirs() -> dict[str, int]:
-    # B8: delete_me renames FILES_DIR/<id> (project file trees) aside to .trash-<id> before the DB
+    # delete_me renames FILES_DIR/<id> (project file trees) aside to .trash-<id> before the DB
     # tx. A crash between the steps leaves orphans that user_bytes never
     # counts (and backup still tars). Sweep them at startup (shallow, fast).
     counts = {"restored": 0, "removed": 0, "skipped": 0}
@@ -36,7 +36,7 @@ def reap_trash_dirs() -> dict[str, int]:
         if p.name.startswith("d_") and p.is_dir():
             shutil.rmtree(p, ignore_errors=True)
             counts["removed" if not p.exists() else "skipped"] += 1
-    # B9: duplicate stages file trees in .tmp.dup-<id> before the atomic
+    # Duplicate stages file trees in .tmp.dup-<id> before the atomic
     # rename; a crash between copytree and os.replace orphans the staging
     # dir (invisible to quota/list walks via the ".tmp." rule). Sweep them
     # here: they are never a publish target, only garbage.

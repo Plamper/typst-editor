@@ -1,11 +1,11 @@
 """Yjs-compatible sync server in Python (pycrdt).
 
-Write-behind persistence (1C):
+Write-behind persistence:
   WS updates only mark rooms dirty; a background flusher persists dirty rooms
   every WRITE_BEHIND_FLUSH_SECONDS and on last disconnect. A `kill -9` loses
   at most WRITE_BEHIND_FLUSH_SECONDS of edits (see the constant below).
 
-No synchronous DB access runs on the event loop in the WS hot path (1C):
+No synchronous DB access runs on the event loop in the WS hot path:
   initial checks, room load, role/session/trash rechecks and the final save
   all go through `asyncio.to_thread`. Role, trash status and session live in
   room state and are invalidated on share/unshare/delete/logout.
@@ -38,15 +38,15 @@ STEP1 = 0
 STEP2 = 1
 UPDATE = 2
 
-# 1C: max loss window on a hard crash. Flush every 2s + on last disconnect.
-# Track 1D note: this is the documented kill -9 loss bound.
+# Max loss window on a hard crash (the documented kill -9 loss bound).
+# Flush every 2s + on last disconnect.
 WRITE_BEHIND_FLUSH_SECONDS = 2.0
-# 1C: short-lived quota cache in sync.py ONLY (quota internals stay in
-# services/quota.py, owned by 1D). Keyed by owner -> (is_over, monotonic_ts).
+# Short-lived quota cache in sync.py ONLY (quota internals stay in
+# services/quota.py). Keyed by owner -> (is_over, monotonic_ts).
 QUOTA_CACHE_TTL = 10.0
 # Trash-status cache per room (invalidated on drop/kick/delete).
 # TTL is 0 (revalidate on every WS message via to_thread): trash/delete must
-# kick immediately, and the pre-1C code checked fresh each message. The room
+# kick immediately, like every message did before the cache existed. The room
 # still holds the last value (r["trashed"]) so flush/drop paths share state,
 # but message guards never serve stale.
 TRASH_CACHE_TTL = 0.0
@@ -56,7 +56,7 @@ _sess_cache: dict[str, tuple[str | None, float]] = {}
 _quota_cache: dict[str, tuple[bool, float]] = {}
 _flush_task: asyncio.Task | None = None
 
-# B1: serialize check-then-create (room() runs in worker threads via
+# Serialize check-then-create (room() runs in worker threads via
 # to_thread, so this must be a threading lock, not an asyncio.Lock).
 # RLock: eviction snapshots a victim doc-lock whose lazy-create path takes
 # this same guard (B1-2 self-deadlock fix); all rooms mutations take it.
@@ -105,7 +105,7 @@ def save_status(doc_id: str) -> dict | None:
 
 
 def _quota_ok_sync(doc_id: str) -> bool:
-    """Sync twin of _quota_ok_cached_async (B4: persist/flush_all/disconnect).
+    """Sync twin of _quota_ok_cached_async (persist/flush_all/disconnect).
 
     Shares _quota_cache (same TTL/owner keying) so all persist paths enforce
     the identical verdict. Fail-closed: any DB error -> False (keep dirty).
@@ -159,7 +159,7 @@ def blob(*parts: bytes) -> bytes:
 
 
 def room(doc_id: str) -> dict:
-    # B1: double-checked locking. room() runs in worker threads via
+    # Double-checked locking. room() runs in worker threads via
     # asyncio.to_thread (see handle :706), so parallel first-connects must
     # not create two Doc objects (split-brain dirt loss). Fast path is
     # lock-free; creation/eviction hold the threading _ROOMS_LOCK.
@@ -187,7 +187,7 @@ def room(doc_id: str) -> dict:
                 victim = min(idle, key=_evict_saved)
                 vr = rooms.get(victim)
                 if vr is not None and vr.get("dirty") and fresh_trashed_ok(victim):
-                    # B4: evict path enforces the same quota verdict as the
+                    # Evict path enforces the same quota verdict as the
                     # flusher. Over-quota dirt is never persisted nor dropped:
                     # keep dirty + blocked and skip the evict (cap is soft).
                     if not _quota_ok_sync(victim):
@@ -263,24 +263,8 @@ def room(doc_id: str) -> dict:
         rooms[doc_id] = r
     return r
 
-
-def cached_role(r: dict, user: str, doc_id: str) -> str | None:
-    now = time.monotonic()
-    hit = r.get("role_cache", {}).get(user)
-    if hit and now - hit[1] < CACHE_TTL:
-        return hit[0]
-    try:
-        role = db.doc_role(user, doc_id)
-    except Exception as e:
-        log.warning("cached_role %s/%s failed: %s", doc_id, user, e)
-        # Serve stale on transient DB failure when possible.
-        return hit[0] if hit else None
-    r.setdefault("role_cache", {})[user] = (role, now)
-    return role
-
-
 async def _role_async(r: dict, user: str, doc_id: str) -> str | None:
-    """Cached role without blocking the loop (1C: to_thread on miss)."""
+    """Cached role without blocking the loop (to_thread on miss)."""
     now = time.monotonic()
     hit = r.get("role_cache", {}).get(user)
     if hit and now - hit[1] < CACHE_TTL:
@@ -293,27 +277,10 @@ async def _role_async(r: dict, user: str, doc_id: str) -> str | None:
     r.setdefault("role_cache", {})[user] = (role, now)
     return role
 
-
-def session_ok(token: str, user: str) -> str | None:
-    now = time.monotonic()
-    hit = _sess_cache.get(token)
-    if hit and now - hit[1] < SESSION_RECHECK_TTL:
-        return hit[0]
-    try:
-        current = auth.verify_session(token)
-    except Exception as e:
-        log.warning("session_ok verify failed: %s", e)
-        return None
-    _sess_cache[token] = (current, now)
-    if len(_sess_cache) > 5000:
-        _sess_cache.clear()
-    return current
-
-
 async def _session_async(token: str) -> str | None:
-    """Cached session check without blocking the loop (1C).
+    """Cached session check without blocking the loop.
 
-    B6 fail-closed: any DB exception -> None (same as session_ok), never a
+    Fail-closed: any DB exception -> None (no verified user), never a
     stale cached user. A stale True would admit a revoked/expired session.
     """
     now = time.monotonic()
@@ -340,7 +307,7 @@ def fresh_trashed(doc_id: str) -> bool:
 
 
 async def _trashed_async(doc_id: str, r: dict | None = None) -> bool:
-    """Room-cached trash status without blocking the loop (1C)."""
+    """Room-cached trash status without blocking the loop."""
     now = time.monotonic()
     if r is not None:
         if now - float(r.get("trashed_at", 0.0)) < TRASH_CACHE_TTL and "trashed" in r:
@@ -399,27 +366,10 @@ def drop_sess_token(token: str) -> str | None:
         return hit[0]
     return hit[0] if hit else None
 
-
-def invalidate_doc(doc_id: str) -> None:
-    """Drop all cached WS state for a doc (1C: share/unshare/delete/trash).
-
-    Track 1D: call this after share/unshare/delete/trash so rooms re-read
-    role + trash status instead of serving stale caches. Current callers
-    (share/unshare via drop_role_cache + kick_user, delete via drop) already
-    invalidate through those paths; this is the explicit hook for new 1D
-    writers that bypass them.
-    """
-    r = rooms.get(doc_id)
-    if r is not None:
-        r.get("role_cache", {}).clear()
-        r.pop("trashed", None)
-        r["trashed_at"] = 0.0
-
-
 def invalidate_quota_cache(owner: str = "") -> None:
-    """Drop quota cache entries (1C interface for track 1D).
+    """Drop quota cache entries.
 
-    Track 1D: call invalidate_quota_cache(owner) after quota-relevant writes
+    Call invalidate_quota_cache(owner) after quota-relevant writes
     (avatar, files, templates) so the WS path re-reads instead of serving a
     stale over/under-quota verdict for up to QUOTA_CACHE_TTL.
     """
@@ -430,7 +380,7 @@ def invalidate_quota_cache(owner: str = "") -> None:
 
 
 async def _quota_ok_cached_async(doc_id: str) -> bool:
-    """Short-lived quota cache in sync.py ONLY (1C).
+    """Short-lived quota cache in sync.py ONLY.
 
     TTL = QUOTA_CACHE_TTL. Call invalidate_quota_cache(owner) after
     quota-relevant writes (avatar, files, templates) so the flusher
@@ -439,7 +389,7 @@ async def _quota_ok_cached_async(doc_id: str) -> bool:
     dirty and retries on the next flush; a stale True (cached not-over-quota)
     PERSISTS over-quota content — the flush proceeds and writes it — until
     the entry expires and the quota is rechecked. Quota internals stay in
-    services/quota.py (1D owns them).
+    services/quota.py.
     """
     try:
         owner = await asyncio.to_thread(_quota.doc_owner, doc_id, "")
@@ -464,14 +414,14 @@ async def _quota_ok_cached_async(doc_id: str) -> bool:
 
 
 def _size_ok(room_or_doc: Any, payload: bytes, cached_len: int | None = None) -> bool:
-    """Cheaper size gate replacing the per-update full doc copy (1C).
+    """Cheaper size gate replacing the per-update full doc copy.
 
     Old path copied the whole doc (trial.apply_update(doc.get_update())) per
     keystroke. New path: one stringify of the live doc + payload-byte
     over-estimate; the exact trial copy runs only when near MAX_TXT (rare).
     Returns True when the update fits, False when it would exceed MAX_TXT.
 
-    B2: when passed a room dict, all Doc reads run under its doc_lock so a
+    When passed a room dict, all Doc reads run under its doc_lock so a
     concurrent flusher snapshot (worker thread) cannot race the loop-thread
     apply path. A bare Doc keeps the legacy lock-free path (tests only).
     """
@@ -547,7 +497,7 @@ async def _flush_one(doc_id: str, r: dict) -> bool:
         log.warning("flush_one %s quota check failed: %s", doc_id, e)
         return False
     if not ok:
-        # B4: over quota -> keep dirty + visible blocked flag (never persist,
+        # Over quota -> keep dirty + visible blocked flag (never persist,
         # never drop). Next flush retries; save_status() surfaces it.
         r["dirty"] = True
         _mark_quota_blocked(r, True)
@@ -555,7 +505,7 @@ async def _flush_one(doc_id: str, r: dict) -> bool:
     try:
 
         def _snap() -> tuple[bytes, str]:
-            # B2: Doc snapshot under the per-room RLock (worker thread vs
+            # Doc snapshot under the per-room RLock (worker thread vs
             # loop-thread apply_update). No await while holding the lock.
             with _doc_lock(r):
                 return r["doc"].get_update(), str(r["doc"].get("typst", type=Text))
@@ -622,7 +572,7 @@ async def _flusher_loop() -> None:
 
 
 def ensure_flusher() -> None:
-    """Start the write-behind flusher task once per loop (1C)."""
+    """Start the write-behind flusher task once per loop."""
     global _flush_task
     try:
         loop = asyncio.get_running_loop()
@@ -748,7 +698,7 @@ async def kick_user(doc_id: str, username: str) -> None:
             r.get("tokens", {}).pop(c, None)
             r.get("sess_at", {}).pop(c, None)
     r.get("role_cache", {}).pop(username, None)
-    # Share/unshare invalidation (1C): force trash re-read for remaining
+    # Share/unshare invalidation: force trash re-read for remaining
     # conns (role change never implies trash change, but re-read is cheap
     # and keeps drop_role_cache/kick_user/drop coherent; delete path uses
     # drop() which already clears trash).
@@ -894,10 +844,10 @@ async def kick_token_hash(sid_hash: str) -> None:
 def persist(doc_id: str) -> bool:
     """Sync persist used by disconnect/teardown + REST/MCP no-room paths.
 
-    B4: enforces the same quota verdict as the flusher. Over-quota dirt is
+    Enforces the same quota verdict as the flusher. Over-quota dirt is
     never persisted nor dropped: keep dirty + quota_blocked (visible via
     save_status) and return False so callers retry instead of clearing.
-    B2: Doc snapshot runs under the per-room RLock.
+    The Doc snapshot runs under the per-room RLock.
     """
     r = rooms.get(doc_id)
     if not r:
@@ -985,7 +935,7 @@ def room_text(doc_id: str) -> str | None:
     if not r:
         return None
     try:
-        # B2: read under the per-room lock (writer may apply_update on the loop).
+        # Read under the per-room lock (writer may apply_update on the loop).
         with _doc_lock(r):
             return str(r["doc"].get("typst", type=Text))
     except Exception as e:
@@ -1064,7 +1014,7 @@ async def replace_text(doc_id: str, content: str) -> None:
         return
     doc: Doc = r["doc"]
     try:
-        # B2: mutate under the per-room lock; no await while holding it.
+        # Mutate under the per-room lock; no await while holding it.
         with _doc_lock(r):
             with doc.transaction():
                 text = doc.get("typst", type=Text)
@@ -1119,7 +1069,7 @@ async def _close(ws: WebSocket, doc_id: str, code: int, why: str) -> None:
 
 
 async def handle(ws: WebSocket, doc_id: str) -> None:
-    # 1C: no synchronous DB on the event loop. Every DB touch below goes
+    # No synchronous DB on the event loop. Every DB touch below goes
     # through asyncio.to_thread (directly or via the _*_async helpers that
     # serve room-cached role/trash/session first).
     token = auth.cookie_token(ws.cookies, ws.headers.get("host", ""))
@@ -1158,7 +1108,7 @@ async def handle(ws: WebSocket, doc_id: str) -> None:
         await _close(ws, doc_id, 1011, "room-fail")
         return
     doc: Doc = r["doc"]
-    # Hold role, trash status and session in room state (1C): users/tokens/
+    # Hold role, trash status and session in room state: users/tokens/
     # sess_at bind each WS to its user + token + last check (used for precise
     # cleanup on bcast-fail/kick/disconnect; the session verdict itself comes
     # from the shared _sess_cache in sync.py via _session_async, invalidated
@@ -1170,7 +1120,7 @@ async def handle(ws: WebSocket, doc_id: str) -> None:
     r.setdefault("role_cache", {})[user or ""] = (role, time.monotonic())
     r["trashed"] = bool(trashed)
     r["trashed_at"] = time.monotonic()
-    # B4: surface a pending over-quota block on the next connect (logs +
+    # Surface a pending over-quota block on the next connect (logs +
     # save_status()). The dirt stays cached; the flusher keeps retrying.
     if r.get("quota_blocked"):
         log.warning("handle %s: over-quota dirt pending (save blocked, retrying)", doc_id)
@@ -1179,7 +1129,7 @@ async def handle(ws: WebSocket, doc_id: str) -> None:
     aware_win = time.monotonic()
     try:
         try:
-            # B2: state vector under the per-room lock (flusher snapshots in workers).
+            # State vector under the per-room lock (flusher snapshots in workers).
             with _doc_lock(r):
                 sv = doc.get_state()
         except Exception as e:
@@ -1201,7 +1151,7 @@ async def handle(ws: WebSocket, doc_id: str) -> None:
             except Exception as e:
                 log.warning("handle %s: receive failed: %s", doc_id, e)
                 break
-            # 1C: parse first (sync, no yield) so UPDATE stays atomic.
+            # Parse first (sync, no yield) so UPDATE stays atomic.
             # Fresh trash revalidation happens on STEP1 (no mutate yet, yield
             # safe); UPDATE uses room-cached trash/role/session only (no DB
             # when caches are fresh -> no yield -> no cancellation loss on
@@ -1241,7 +1191,7 @@ async def handle(ws: WebSocket, doc_id: str) -> None:
                         await _close(ws, doc_id, 4403, "role-loss")
                         break
                     try:
-                        # B2: diff under the per-room lock (no await while holding).
+                        # Diff under the per-room lock (no await while holding).
                         with _doc_lock(r):
                             diff = doc.get_update(payload)
                     except Exception as e:
@@ -1266,13 +1216,13 @@ async def handle(ws: WebSocket, doc_id: str) -> None:
                         break
                     if role_now == "reviewer":
                         continue
-                    # 1C: cheaper size gate (no full doc copy unless near limit).
-                    # B2: room-locked variant (serializes vs flusher snapshots).
+                    # Cheaper size gate (no full doc copy unless near limit).
+                    # Room-locked variant (serializes vs flusher snapshots).
                     if not _size_ok(r, payload, r.get("text_len")):
                         await _close(ws, doc_id, 4409, "MAX_TXT")
                         break
                     try:
-                        # B2: atomic apply under the per-room lock.
+                        # Atomic apply under the per-room lock.
                         with _doc_lock(r):
                             doc.apply_update(payload)
                     except Exception as e:
@@ -1283,7 +1233,7 @@ async def handle(ws: WebSocket, doc_id: str) -> None:
                             r["text_len"] = len(str(doc.get("typst", type=Text)).encode("utf-8"))
                     except Exception as e:
                         log.warning("handle %s: text_len update failed: %s", doc_id, e)
-                    # 1C write-behind: mark dirty only. The flusher persists
+                    # Write-behind: mark dirty only. The flusher persists
                     # every WRITE_BEHIND_FLUSH_SECONDS; the final disconnect
                     # below flushes immediately. No DB here.
                     _mark_dirty(doc_id, r)
@@ -1330,10 +1280,10 @@ async def handle(ws: WebSocket, doc_id: str) -> None:
                 r.get(_map, {}).pop(ws, None)
             except Exception as e:
                 log.warning("handle %s: %s cleanup failed: %s", doc_id, _map, e)
-        # 1C write-behind: flush on last disconnect. Sync here (not
+        # Write-behind: flush on last disconnect. Sync here (not
         # to_thread): teardown must not yield indefinitely — the per-message
         # hot path already avoids DB (marks dirty only), so the loop-blocker
-        # goal holds. B4: persist() enforces the same quota verdict as the
+        # goal holds. persist() enforces the same quota verdict as the
         # flusher — over-quota dirt stays dirty + quota_blocked (visible via
         # save_status(), surfaced on the next connect), never silently
         # persisted nor dropped.

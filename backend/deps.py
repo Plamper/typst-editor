@@ -55,12 +55,11 @@ def get_files_dir() -> Path:
     return live
 
 
-ALLOWED_IMG = {".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp", ".pdf", ".typ", ".bib", ".csv", ".tsv", ".json", ".yaml", ".yml", ".toml", ".xml", ".txt", ".csl"}
 
 TEXT_SUFFIX = {".typ", ".bib", ".csv", ".tsv", ".json", ".yaml", ".yml", ".toml", ".xml", ".txt", ".csl"}
 
 
-# B15: long-cached shell assets. Immutable only where the URL carries a
+# Long-cached shell assets. Immutable only where the URL carries a
 # ?v= cache-buster (vendor-cm.js?v=4, manifest.json?v=2, icons, icon.svg?v=3);
 # keep ?v in sync on redeploy or a stale bundle lingers in HTTP cache
 # (content-hashed filenames = proper fix).
@@ -182,7 +181,7 @@ def need_edit(user: str, doc_id: str) -> str:
 
 
 def _tx_role(con: sqlite3.Connection, user: str, doc_id: str) -> str:
-    # B5: authoritative role re-check ON the tx connection. need_access /
+    # Authoritative role re-check ON the tx connection. need_access /
     # need_edit open their own connection, so a pre-tx check can go stale
     # between the check and BEGIN IMMEDIATE (owner unshares/downgrades in
     # the gap). Call this as the first statement of every mutating db.tx()
@@ -199,19 +198,14 @@ def _tx_role(con: sqlite3.Connection, user: str, doc_id: str) -> str:
     return r
 
 
-def _folder_counts(con: sqlite3.Connection, owner: str, kind: str) -> list[dict]:
-    # Shared by list_folders (docs) / list_tpl_folders (templates): counted
-    # names from the items table merged with explicitly created (maybe empty)
-    # folders from the folders table.
-    if kind == "doc":
-        table, extra = "docs", "AND trashed=0 AND project_id IS NULL"
-    else:
-        table, extra = "templates", ""
-    rows = con.execute(f"SELECT folder, COUNT(*) AS n FROM {table} WHERE owner=? AND folder<>'' {extra} "
+def _folder_counts(con: sqlite3.Connection, owner: str) -> list[dict]:
+    # Template folders: counted names from the templates table merged with
+    # explicitly created (maybe empty) folders from the folders table.
+    rows = con.execute("SELECT folder, COUNT(*) AS n FROM templates WHERE owner=? AND folder<>'' "
                        "GROUP BY folder ORDER BY folder", (owner,)).fetchall()
     counts = {r["folder"]: r["n"] for r in rows}
-    for r in con.execute("SELECT name FROM folders WHERE owner=? AND kind=? ORDER BY name",
-                         (owner, kind)).fetchall():
+    for r in con.execute("SELECT name FROM folders WHERE owner=? AND kind='tpl' ORDER BY name",
+                         (owner,)).fetchall():
         counts.setdefault(r["name"], 0)
     return [{"folder": f, "n": counts[f]} for f in sorted(counts)]
 

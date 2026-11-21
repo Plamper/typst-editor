@@ -77,7 +77,7 @@ async def restore_snap(doc_id: str, sid: str, req: Request, user: str = Depends(
     auto = sync.room_text(doc_id)
     try:
         with db.tx() as con:
-            # B5: outer need_edit is a fast-path only; re-check on the tx
+            # Outer need_edit is a fast-path only; re-check on the tx
             # connection before restoring (role may change in the gap).
             if deps._tx_role(con, user, doc_id) not in ("owner", "editor"):
                 raise HTTPException(403, "Reviewer can only comment")

@@ -58,7 +58,7 @@ function pullRemote(ev) {
     return
   }
   if (activeFile) { // file tab open: buffer main only, editor shows file
-    if (threads.length) mapThreads(map, false, old.length) // values yes (main-relative), paint no (Fix #5)
+    if (threads.length) mapThreads(map, false, old.length) // values yes (main-relative), paint no
     queueRender()
     return
   }

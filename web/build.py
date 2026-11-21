@@ -35,7 +35,7 @@ def _read(p: Path) -> str:
 
 
 def _i18n_tag() -> str:
-    # Minimal hook for track 1B: merge web/i18n/<lang>/<area>.json into the
+    # Merge web/i18n/<lang>/<area>.json into the
     # page as {"<lang>": {"<area>": {...}}}. Absent dir -> empty (skip
     # silently); broken JSON -> loud failure with the filename.
     base = WEB / "i18n"
@@ -53,7 +53,7 @@ def _i18n_tag() -> str:
 
 
 def _vendor_url(key: str) -> str:
-    # Wave 2B: resolve a vendor asset (see scripts/vendor.py) to its
+    # Resolve a vendor asset (see scripts/vendor.py) to its
     # self-hosted /vendor/ URL, so feature JS never hardcodes hashed names.
     try:
         manifest = json.loads(_read(WEB.parent / "vendor" / "manifest.json"))

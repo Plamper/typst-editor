@@ -107,7 +107,7 @@ def inspect_pull(con, user: str, b: Pull) -> dict:
         copies[names[old]] = resources.REF_RE.sub(rewrite, content) if old.lower().endswith(".typ") else content
         if len(copies[names[old]].encode("utf-8")) > MAX_TXT:
             raise HTTPException(413, "Text resource exceeds 200 KB")
-    # #7: case-variant module names ('Layout.typ' vs 'layout.typ') would show
+    # Case-variant module names ('Layout.typ' vs 'layout.typ') would show
     # as two rows, so the collision set folds case.
     existing_lower = {n.lower() for n in existing}
     collisions = sorted(

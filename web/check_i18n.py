@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""i18n consistency check (Wave 1B).
+"""i18n consistency check.
 
 Fails when:
   * a t('area.key') / data-i18n*="area.key" key has no entry in
@@ -39,7 +39,7 @@ LETTER = re.compile(r"[A-Za-zäöüÄÖÜß]")
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
         "link", "meta", "param", "source", "track", "wbr"}
 
-# Lines 1E rewrote (vendor URLs, WASM): never touch, never flag.
+# Vendor URLs and WASM lines: never touch, never flag.
 URL_LINE = re.compile(r"vendor/|https?://|\.wasm|workerSrc")
 # Whole-line technical skips (locale-independent code/data, not UI prose).
 SKIP_LINE_RES = [

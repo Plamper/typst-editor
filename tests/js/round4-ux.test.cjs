@@ -243,7 +243,7 @@ test('openTopPackage routes to the document, loads the proposal and avoids doubl
     },
   })
   c.openDoc = async id => { calls.push(['openDoc', id]); c.docProject = id.indexOf('p2') >= 0 ? 'p2' : 'p1' }
-  vm.runInContext(zz.slice(zz.indexOf('// #6: topbar chip opener - entry'), zz.indexOf('window.openTopPackage = openTopPackage') + 'window.openTopPackage = openTopPackage'.length), c)
+  vm.runInContext(zz.slice(zz.indexOf('// topbar chip opener - entry'), zz.indexOf('window.openTopPackage = openTopPackage') + 'window.openTopPackage = openTopPackage'.length), c)
   // current project already open: load proposal directly
   await c.openTopPackage({ project: 'p1', id: '7' })
   assert.deepEqual(calls.pop(), ['GET', '/api/projects/p1/proposals/7'])

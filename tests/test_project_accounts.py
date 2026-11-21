@@ -6,9 +6,7 @@ from backend.services.notifications import create_notification, unread_count
 
 def test_owner_rename_and_account_deletion_preserve_project_integrity(c):
     register_user(c, "alice")
-    c.post("/api/folders", json={"folder": "Team"})
-    p = c.post("/api/projects/preview", json={"folder": "Team"}).json()
-    pid = c.post("/api/projects/convert", json={"folder": "Team", "preview": p["preview"]}).json()["id"]
+    pid = c.post("/api/projects", json={"title": "Team"}).json()["id"]
     did = c.post(f"/api/projects/{pid}/docs", json={"title": "Report"}).json()["id"]
     c.put(f"/api/projects/{pid}/files/module.typ", content=b"Shared")
     register_user(c, "bob")

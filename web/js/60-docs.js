@@ -276,7 +276,7 @@ function refreshDocRole(d) {
   $('role').textContent = openedTrashed ? t('docs.trashBadge') : t(({ owner: 'common.roleOwner', editor: 'common.roleEditor', reviewer: 'common.roleReader' })[role])
   $('roBanner').style.display = ro ? '' : 'none'
   for (const id of ['renBtn', 'shareBtn', 'del']) $(id).style.display = role === 'owner' && !openedTrashed ? '' : 'none'
-  for (const id of ['imgBtn', 'mediaBtn', 'tplBtn', 'symBtn']) $(id).style.display = openedTrashed ? 'none' : '' // #8: reviewer keeps the media manager (read-only, copy chips only)
+  for (const id of ['imgBtn', 'mediaBtn', 'tplBtn', 'symBtn']) $(id).style.display = openedTrashed ? 'none' : '' // reviewer keeps the media manager (read-only, copy chips only)
   if (openedTrashed) $('mediaBtn').style.display = 'none'
   $('histBtn').style.display = openedTrashed ? 'none' : ''
   $('cNew').style.display = !activeFile && !openedTrashed ? '' : 'none'
@@ -312,7 +312,7 @@ function docRow(x, shared, bare) { // row: click opens, duplicate, trash (own), 
   if (!shared) {
     sidebarDrag(div, { project: x.project_id || '', entry: { kind: 'document', doc_id: x.id, name: x.title } }, 'move')
   }
-  if (!bare && (shared ? x.role === 'editor' : true)) { // #8: shared standalone docs can be duplicated by editors too (backend guest_copy)
+  if (!bare && (shared ? x.role === 'editor' : true)) { // shared standalone docs can be duplicated by editors too (backend guest_copy)
     const dup = icoBtn('mini', ICO_DUP); dup.title = t('docs.duplicate'); dup.setAttribute('aria-label', dup.title)
     dup.onclick = e => { e.stopPropagation(); if (dup.disabled) return; dup.disabled = true // upBusy pattern: no double doc
       api('POST', `/api/docs/${x.id}/duplicate`).then(r => openDoc(r.id)).catch(e => toast(e.message)).finally(() => dup.disabled = false) } // openDoc repaints list itself
@@ -819,7 +819,7 @@ function queueTplSave() {
   tplT = setTimeout(() => { if (key === tplName) flushTpl() }, SAVE_MS)
 }
 addEventListener('online', () => { if (tplName && tplDirty) flushTpl() })
-let openN = 0, synced = false // sync state ready? Else no empty save to DB (Fix #2)
+let openN = 0, synced = false // sync state ready? Else no empty save to DB
 function wsLive() { return !!(prov && prov.wsconnected) } // Yjs carries the document text; REST autosave would only 409
 let connT = 0 // debounced disconnect paint: brief flaps stay invisible, no flicker
 function paintConn() { // one status: Live / Offline (browser) / Getrennt (WS down); #save stays with queueSave/saveNow
@@ -909,7 +909,7 @@ async function openDoc(id) {
   for (const s of ['wsDot', 'wsTxt', 'save']) $(s).style.display = '' // doc open: status back
   $('histBtn').style.display = openedTrashed ? 'none' : '' // project history is readable from every file
   $('imgBtn').style.display = ro ? 'none' : ''
-  $('mediaBtn').style.display = openedTrashed ? 'none' : '' // #8: reviewer keeps the media manager (read-only, copy chips only)
+  $('mediaBtn').style.display = openedTrashed ? 'none' : '' // reviewer keeps the media manager (read-only, copy chips only)
   $('tplBtn').style.display = ro ? 'none' : ''
   $('symBtn').style.display = ro ? 'none' : ''
   $('colWrap').hidden = ro
@@ -928,7 +928,7 @@ async function openDoc(id) {
     ytext.observe((e, tx) => { if (tx.origin !== 'local') pullRemote(e) }) // only real remote updates touch editor (delta = exact changes)
     prov.awareness.on('change', renderPeers)
     pp.on('status', () => { if (prov === pp) updConn() }); pp.on('connection-close', () => { if (prov === pp) updConn() }); pp.on('connection-error', () => { if (prov === pp) updConn() })
-    pp.on('synced', s => { if (s !== true || prov !== pp) return; synced = true; if (prov === pp) { updConn(); if (threads.length && threads.some(x => x.a == null)) { reanchor(); loadComments().catch(() => {}) } } }) // re-hoist (Round5 High #1): WS sync can beat the comments GET, so an already-synced doc must re-run the range pass; loadComments skips the dedupe-render but still repaints missing ranges (only a real sync opens the gates; the vendor emits synced [false] on disconnect, and a destroyed old provider must not)
+    pp.on('synced', s => { if (s !== true || prov !== pp) return; synced = true; if (prov === pp) { updConn(); if (threads.length && threads.some(x => x.a == null)) { reanchor(); loadComments().catch(() => {}) } } }) // re-hoist: WS sync can beat the comments GET, so an already-synced doc must re-run the range pass; loadComments skips the dedupe-render but still repaints missing ranges (only a real sync opens the gates; the vendor emits synced [false] on disconnect, and a destroyed old provider must not)
     updConn()
     pushPresence()
   } else {
@@ -985,7 +985,7 @@ async function saveNow(force, auto) {
   if (window.changeSession) { if (!auto) await submitChangeSession(); return } // explicit (Ctrl+S/menu) saves at once; autosave passes auto=true and stays quiet on failure
   if (window.suggestionDraft && !auto) { await sendSuggestionDraft(); return }
   clearTimeout(saveT); clearTimeout(tplT)
-  if (docId && !tplName && !activeFile && !synced) { saveT = setTimeout(() => saveNow(false, true), SAVE_MS); return } // sync running: retry later instead of '' (Fix #2)
+  if (docId && !tplName && !activeFile && !synced) { saveT = setTimeout(() => saveNow(false, true), SAVE_MS); return } // sync running: retry later instead of ''
   const saveErr = e => navigator.onLine === false ? t('docs.offlineRetry') : t('docs.saveError', { msg: e.message })
   if (tplName) { await flushTpl(); return } // explicit save: flushTpl carries status + conflict toasts
   if (activeFile && docId) { // file/template tab: save that text, not main
@@ -994,12 +994,12 @@ async function saveNow(force, auto) {
   }
   if (!docId || docRole === 'reviewer' || !ytext) return
   if (!wsLive() || navigator.onLine === false) { $('save').textContent = t('docs.offlineRetry'); return } // Yjs owns the document text: no REST off the sync path (forked text doubled on reconnect), quiet even when explicit
-  if (auto) { if (!window.suggestionDraft) $('save').textContent = t('docs.saved'); paintConn(); return } // reconnect won the race: Yjs has it, no REST (2E); draft must not claim 'saved'
+  if (auto) { if (!window.suggestionDraft) $('save').textContent = t('docs.saved'); paintConn(); return } // reconnect won the race: Yjs has it, no REST; draft must not claim 'saved'
   try { await api('POST', `/api/docs/${docId}/save`, { content: ytext.toString(), ...(force ? { force: true } : {}) }); $('save').textContent = t('docs.saved') }
   catch (e) {
     if (e.status === 409 && !force && prov && prov.wsconnected && synced) return saveNow(true, auto) // live: Y state already merges everyone's edits, safe to overwrite
     $('save').textContent = saveErr(e)
-    if (auto && (navigator.onLine === false || !wsLive())) return // quiet: status line already says it, no toast spam (2E)
+    if (auto && (navigator.onLine === false || !wsLive())) return // quiet: status line already says it, no toast spam
     if (e.status === 409 && !force) toast(t('docs.saveConflict'), () => saveNow(true), t('docs.forceSave'))
     else toast(t('docs.saveFail', { msg: e.message }), () => saveNow(force), t('common.retry'))
   }

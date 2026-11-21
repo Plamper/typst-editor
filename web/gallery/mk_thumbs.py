@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate gallery thumbnails (2C). Run once, check in the SVGs.
+"""Generate gallery thumbnails. Run once, check in the SVGs.
 
 Usage: python3 web/gallery/mk_thumbs.py
 Source of truth for the data-URIs inlined in web/js/features/gallery.js:

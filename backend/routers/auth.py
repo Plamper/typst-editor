@@ -172,7 +172,7 @@ async def logout(req: Request, res: Response) -> dict:
 
 @router.get("/api/sessions")
 def list_sessions(req: Request, res: Response, user: str = Depends(deps.me)) -> dict:
-    """1C backend-only session list (UI in Wave 2D).
+    """The caller's sessions (Settings > Sessions).
 
     Returns the caller's sessions as [{id, expires, current}]. id is the
     stored token_hash (hex, not the secret itself); current marks the cookie
@@ -202,7 +202,7 @@ def list_sessions(req: Request, res: Response, user: str = Depends(deps.me)) -> 
 @router.delete("/api/sessions/{sid}")
 async def revoke_session(sid: str, req: Request, res: Response,
                          user: str = Depends(deps.me)) -> dict:
-    """1C backend-only single revoke (UI in Wave 2D)."""
+    """Revoke one of the caller's sessions."""
     deps.limited(req, "auth")
     sid = (sid or "").strip().lower()
     if not sid or len(sid) != 64 or any(c not in "0123456789abcdef" for c in sid):
@@ -225,7 +225,7 @@ async def revoke_session(sid: str, req: Request, res: Response,
             con.close()
         except Exception as e:
             log.warning("revoke_session close failed: %s", e)
-    # B5: actively kick the revoked session's WS conns (idle clients die
+    # Actively kick the revoked session's WS conns (idle clients die
     # immediately, not on their next message). Self-revoke keeps the
     # existing kick_all (all devices of this user); foreign revoke kicks
     # only the revoked token hash.

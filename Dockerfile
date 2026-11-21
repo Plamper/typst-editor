@@ -1,4 +1,4 @@
-# Digest pin: check `docker buildx imagetools inspect python:3.11-slim` before release,
+# Digest pin: check `docker buildx imagetools inspect` for the tag below before release,
 # Dependabot (docker ecosystem) bumps the pin automatically.
 FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913
 ARG TARGETARCH
@@ -23,7 +23,7 @@ RUN set -eux; \
     apt-get purge -y --auto-remove curl xz-utils; \
     rm -rf /var/lib/apt/lists/*; \
     typst --version
-# Only what the server really serves: backend/ + index.html + FRONT_FILES from backend/main.py
+# Runtime contents: the backend, the backup script, the built frontend (FRONT_FILES in backend/routers/frontend.py) and vendor/
 COPY backend/ ./backend/
 COPY scripts/backup.py ./scripts/backup.py
 COPY index.html vendor-cm.js manifest.json icon.svg icon-192.png icon-512.png docker-entrypoint.sh ./

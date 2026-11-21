@@ -38,17 +38,6 @@ def list_templates(req: Request, user: str = Depends(deps.me)) -> dict:
     finally:
         con.close()
 
-
-@router.get("/api/resources")
-def list_resources(req: Request, user: str = Depends(deps.me)) -> dict:
-    deps.limited(req, "files_list")
-    con = db.connect()
-    try:
-        return {"resources": res.list_resources(con, user)}
-    finally:
-        con.close()
-
-
 @router.get("/api/templates/{name}")
 def get_template(name: str, req: Request, user: str = Depends(deps.me)) -> dict:
     deps.limited(req, "files_list")
@@ -304,7 +293,7 @@ def list_tpl_folders(req: Request, user: str = Depends(deps.me)) -> dict:
     deps.limited(req, "files_list")
     con = db.connect()
     try:
-        return {"folders": deps._folder_counts(con, user, "tpl")}
+        return {"folders": deps._folder_counts(con, user)}
     finally:
         con.close()
 

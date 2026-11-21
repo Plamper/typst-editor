@@ -1,8 +1,4 @@
-"""Account-less reading via token (Wave 1D: function only, no UI).
-
-Follow-up 3E owns the public share-link UI + routers/public.py; the
-token model here (read_tokens table) is what it builds on.
-"""
+"""Account-less reading via token (read_tokens table). API only: the web UI has no share-link view yet."""
 from __future__ import annotations
 
 import logging
