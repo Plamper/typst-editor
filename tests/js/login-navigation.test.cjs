@@ -23,6 +23,53 @@ test('late session initialization respects an already-started document navigatio
   }
 })
 
+test('boot exchanges a URL token and reports an invalid one after the session check', async () => {
+  const nodes = {
+    login: { style: {} },
+    app: { classList: { add() {} } },
+    err: { textContent: '' },
+  }
+  const bootContext = extra => vm.createContext({
+    api: async () => ({ user: 'alice' }), loadSpell() {}, paintMe() {},
+    $: id => nodes[id] || { style: {}, classList: { add() {} } }, cm: { measure() {} },
+    sidebar: async () => {}, watchSidebar() {}, loadInbox: async () => {}, loadTpl: async () => {},
+    checkJoin: async () => false, lastOwn: [], lastShared: [], openDoc() {},
+    openN: 1, docId: '', tplName: '', URLSearchParams, location: { search: '' }, console,
+    hadOidcErr: false, hadInvite: false, t: k => k, loadAuthConfig: async () => {},
+    ...extra,
+  })
+
+  // A token is exchanged first; the normal /api/me call then boots the app.
+  const calls = []
+  const ctx = bootContext({
+    location: { search: '?token=tpl_abc' },
+    api: async (method, path, body) => {
+      calls.push([method, path, body])
+      return { user: 'alice' }
+    },
+  })
+  await vm.runInContext(restore, ctx)
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls[0].slice(0, 2), ['POST', '/api/login/token'])
+  assert.equal(calls[0][2].token, 'tpl_abc')
+  assert.deepEqual(calls[1].slice(0, 2), ['GET', '/api/me'])
+  assert.equal(ctx.user, 'alice')
+  assert.equal(nodes.login.style.display, 'none')
+
+  // A rejected exchange still lets the cookie session decide; if both fail,
+  // the login view explains that the link is gone.
+  let authConfig = 0
+  const bad = bootContext({
+    location: { search: '?token=tpl_dead' },
+    api: async () => { throw { status: 401 } },
+    loadAuthConfig: async () => { authConfig++ },
+  })
+  await vm.runInContext(restore, bad)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(authConfig, 1)
+  assert.equal(nodes.err.textContent, 'login.linkInvalid')
+})
+
 const oidcStart = source.indexOf('function oidcErrMsg(code)')
 const oidcEnd = source.indexOf('const hadOidcErr = checkOidcError()')
 const oidcHelpers = source.slice(oidcStart, oidcEnd)

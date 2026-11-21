@@ -95,9 +95,6 @@ def _cookie_secure(req: Request) -> bool:
 def set_cookie(res: Response, req: Request, token: str) -> None:
     cfg = config.load()
     name = deps.cookie_name(req)
-    if name != deps.COOKIE:
-        # One-time cleanup of the pre-port-scoping cookie on this host.
-        res.delete_cookie(deps.COOKIE, path="/", samesite="lax", secure=_cookie_secure(req), httponly=True)
     res.set_cookie(name, token, max_age=min(max(cfg.SESSION_SECONDS, 3600), 90 * 86400),
                    path="/", httponly=True, samesite="lax", secure=_cookie_secure(req))
 
@@ -106,8 +103,9 @@ def clear_cookie(res: Response, req: Request) -> None:
     secure = _cookie_secure(req)
     name = deps.cookie_name(req)
     res.delete_cookie(name, path="/", samesite="lax", secure=secure, httponly=True)
-    if name != deps.COOKIE and not req.cookies.get(name):
-        # No port-scoped cookie: this logout ended a pre-port-scoping session.
+    if name != deps.COOKIE:
+        # The legacy cookie is shared by every port: leaving it behind would
+        # sign the browser straight back in through the fallback.
         res.delete_cookie(deps.COOKIE, path="/", samesite="lax", secure=secure, httponly=True)
 
 

@@ -3,6 +3,10 @@
 
 The links are not exposed in the web UI. Run this with the same DATA_DIR as
 the app; the token is printed once and only its hash is stored.
+
+Revoking stops future exchanges only. A session that was already created
+from the link is a normal session and stays valid until it expires or is
+revoked in the app.
 """
 from __future__ import annotations
 
@@ -33,7 +37,7 @@ def main() -> None:
     lst = sub.add_parser("list", help="List a user's links (ids and timestamps, never secrets).")
     lst.add_argument("username")
 
-    revoke = sub.add_parser("revoke", help="Delete a link by id.")
+    revoke = sub.add_parser("revoke", help="Delete a link by id. Sessions already created from it stay valid.")
     revoke.add_argument("id")
     revoke.add_argument("--user", default="", help="Only revoke when the link belongs to this user.")
 

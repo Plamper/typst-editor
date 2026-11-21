@@ -36,6 +36,39 @@ def test_pre_port_cookie_still_works(c):
                                      "cookie": f"{auth.COOKIE}={tok}"}).status_code == 200
 
 
+def test_logout_clears_the_legacy_cookie_too(c):
+    port_name = auth.cookie_name("testserver:8978")
+    r = c.post("/api/register", json={"username": "alice", "password": "pass1234"},
+               headers={"host": "testserver:8978"})
+    port_tok = r.cookies.get(port_name)
+    legacy_tok = auth.mint("alice")
+    r = c.post("/api/logout", headers={
+        "host": "testserver:8978",
+        "cookie": f"{port_name}={port_tok}; {auth.COOKIE}={legacy_tok}",
+    })
+    cleared = [h for h in r.headers.get_list("set-cookie") if "Max-Age=0" in h]
+    # Both cookies authenticated the request: leaving the shared legacy one
+    # behind would sign the browser back in through the fallback.
+    assert any(h.startswith(port_name + "=") for h in cleared)
+    assert any(h.startswith(auth.COOKIE + "=") for h in cleared)
+
+
+def test_port_login_keeps_the_legacy_cookie_for_default_ports(c):
+    register_user(c, "alice")
+    legacy_tok = c.cookies.get(auth.COOKIE)
+    c.cookies.clear()
+    port_name = auth.cookie_name("testserver:8978")
+    r = c.post("/api/login", json={"username": "alice", "password": "pass1234"},
+               headers={"host": "testserver:8978"})
+    assert r.status_code == 200, r.text
+    set_cookies = r.headers.get_list("set-cookie")
+    assert any(h.startswith(port_name + "=") for h in set_cookies)
+    # Signing in on a dev port must not end the session on the default port.
+    assert not any(h.startswith(auth.COOKIE + "=") and "Max-Age=0" in h for h in set_cookies)
+    assert c.get("/api/me", headers={"host": "testserver",
+                                     "cookie": f"{auth.COOKIE}={legacy_tok}"}).status_code == 200
+
+
 def test_login_link_roundtrip_and_revoke(c):
     register_user(c, "alice")
     tid, tok = auth.mint_login_token("alice")

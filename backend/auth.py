@@ -318,7 +318,11 @@ def list_login_tokens(username: str) -> list[dict]:
 
 
 def revoke_login_token(tid: str, username: str = "") -> bool:
-    """Internal revoke for maintenance scripts; the token is dead immediately."""
+    """Internal revoke for maintenance scripts.
+
+    Only the link dies: a session minted from it earlier is a normal session
+    and stays valid until it expires or is revoked in the app.
+    """
     con = db.connect()
     try:
         if username:
