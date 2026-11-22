@@ -8,6 +8,10 @@ body.welcome #mid, body.welcome #statusBar, body.welcome #docHead, body.welcome 
 #welcome button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
 .wInner { max-width: 620px; margin: 0 auto; }
 
+.wTitleRow { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.wLink { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; border: 0; background: none; font-size: 13px; color: var(--acc); }
+.wLink .wIco { display: inline-flex; }
+.wLink:hover .wLbl { text-decoration: underline; text-underline-offset: 3px; }
 .wTitle { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -.02em; color: var(--text); }
 .wSub { margin: 4px 0 0; font-size: 13px; color: var(--sub); }
 
@@ -37,7 +41,15 @@ body.welcome #mid, body.welcome #statusBar, body.welcome #docHead, body.welcome 
 .wRowWhen { flex: none; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .wEmpty { margin: 0; padding: 14px 10px 16px; font-size: 13px; color: var(--sub); }
 
+.wSection { margin-top: 20px; }
+.wSecHead { padding: 0 2px 8px; }
+.wDocGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.wDocTile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card); box-shadow: var(--sh-1); }
+.wDocTile:hover { background: var(--hover); }
+.wDocTile .wIco { display: inline-flex; color: var(--sub); margin-bottom: 4px; }
+.wDocTile .wRowTitle, .wDocTile .wRowSub { max-width: 100%; }
 @media (max-width: 760px) {
+  .wDocGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #welcome { padding: 28px 16px 32px; }
   .wActs .wPrimary { flex: 1 1 100%; justify-content: center; }
   .wRowSub { display: none; }

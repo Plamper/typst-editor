@@ -41,12 +41,6 @@ function welcomeRow(icon, title, sub, when, open) { // one line like a sidebar r
   row.onclick = () => Promise.resolve().then(open).catch(e => toast(e.message))
   return row
 }
-function welcomeDocRow(x) {
-  const p = x.project_id && projects.find(q => q.id === x.project_id)
-  const place = x.owner && x.owner !== user ? t('docs.wSharedBy', { owner: x.owner })
-    : [p && p.title !== x.title ? p.title : '', x.folder || ''].filter(Boolean).join(' / ')
-  return welcomeRow(welcomeIcon(wIco('doc'), 14), x.title, place, x.updated_at ? ago(x.updated_at) : '', () => openDoc(x.id))
-}
 function welcomeCard(id, title, rows, more) {
   const card = el('section', 'wCard'); card.setAttribute('aria-labelledby', id)
   const head = el('div', 'wCardHeadRow')
@@ -55,10 +49,6 @@ function welcomeCard(id, title, rows, more) {
   if (more) head.append(more)
   card.append(head, ...rows)
   return card
-}
-function welcomeRecentCard(n) {
-  const docs = welcomeRecent(n)
-  return welcomeCard('wRecentH', t('docs.wRecent'), docs.length ? docs.map(welcomeDocRow) : [el('p', 'wEmpty', t('docs.wEmpty'))])
 }
 function welcomeInboxCard() { // up to three unread notifications, each opens its place; null when nothing is unread
   let items = []
@@ -72,26 +62,41 @@ function welcomeInboxCard() { // up to three unread notifications, each opens it
 }
 function welcomeKeys(e) { // arrows walk the rows like a list
   if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
-  const rows = [...$('welcome').querySelectorAll('.wRow')], i = rows.indexOf(document.activeElement)
+  const rows = [...$('welcome').querySelectorAll('.wRow, .wDocTile')], i = rows.indexOf(document.activeElement)
   if (i < 0) return
   e.preventDefault()
   rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))].focus()
+}
+function welcomeDocTile(x) { // a recent document as a small card
+  const p = x.project_id && projects.find(q => q.id === x.project_id)
+  const b = el('button', 'wDocTile'); b.type = 'button'
+  const ic = el('span', 'wIco'); ic.innerHTML = welcomeIcon(wIco('doc'), 14)
+  b.append(ic, el('span', 'wRowTitle', x.title), el('span', 'wRowSub', [p && p.title !== x.title ? p.title : '', x.folder || ''].filter(Boolean).join(' / ') || '\u00a0'),
+    el('span', 'wRowWhen', x.updated_at ? ago(x.updated_at) : ''))
+  b.onclick = () => openDoc(x.id)
+  return b
 }
 function paintWelcome() {
   const box = $('welcome')
   if (!box || !welcomeOn()) return
   const inner = el('div', 'wInner')
   const head = el('div', 'wHead')
-  head.append(el('h1', 'wTitle', t('docs.wTitle')), el('p', 'wSub', t('docs.wLead')))
+  const titleRow = el('div', 'wTitleRow'); titleRow.append(el('h1', 'wTitle', t('docs.wTitle')))
+  head.append(titleRow, el('p', 'wSub', t('docs.wLead')))
   const acts = el('div', 'wActs')
   const create = welcomeButton(t('docs.wNew'), 'new', () => newProjectFromMenu(), 'wBtn'); create.classList.add('wPrimary')
   acts.append(create, welcomeButton(t('docs.wImport'), 'upload', () => $('docPick').click(), 'wBtn'))
   const tut = lastOwn.find(x => x.title === 'Tutorial')
-  if (tut) acts.append(welcomeButton(t('docs.wTutorial'), 'book', () => openDoc(tut.id), 'wBtn'))
+  if (tut) titleRow.append(welcomeButton(t('docs.wTutorial'), 'book', () => openDoc(tut.id), 'wLink'))
   inner.append(head, acts)
   const inbox = welcomeInboxCard()
   if (inbox) inner.append(inbox)
-  inner.append(welcomeRecentCard(8))
+  const docs = welcomeRecent(6)
+  const sec = el('section', 'wSection'); sec.setAttribute('aria-labelledby', 'wRecentH')
+  const h = el('h2', 'wCardHead wSecHead', t('docs.wRecent')); h.id = 'wRecentH'
+  const grid = el('div', 'wDocGrid'); docs.forEach(x => grid.append(welcomeDocTile(x)))
+  sec.append(h, docs.length ? grid : el('p', 'wEmpty', t('docs.wEmpty')))
+  inner.append(sec)
   box.onkeydown = welcomeKeys
   box.replaceChildren(inner)
 }
