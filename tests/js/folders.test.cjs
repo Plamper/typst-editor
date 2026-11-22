@@ -36,8 +36,11 @@ test('sidebar tree: one tree of documents and files, implied and empty folders, 
 
 test('moving into a folder renames the path; documents use the folder endpoint', async () => {
   const calls = []
-  const c = projectCtx({ api: async (method, url, body) => { calls.push([method, url, body]); return { name: 'lib/x.typ', version: 'v' } } })
-  const p = { id: 'p', documents: [{ id: 'd', folder: '' }] }
+  const c = projectCtx({ api: async (method, url, body) => {
+    if (url.endsWith('-preview')) return { changes: [] } // nothing quotes the document: no dialog
+    calls.push([method, url, body]); return { name: 'lib/x.typ', version: 'v' }
+  } })
+  const p = { id: 'p', documents: [{ id: 'd', folder: '', title: 'Doc' }] }
   c.projectEntries = () => ({ documents: p.documents })
   c.applyEntryRename = async (...args) => calls.push(['rename', ...args])
   await c.moveEntryToFolder(p, { kind: 'file', name: 'x.typ' }, 'lib')
@@ -46,9 +49,9 @@ test('moving into a folder renames the path; documents use the folder endpoint',
   await c.moveEntryToFolder(p, { kind: 'document', doc_id: 'd' }, 'chapters')
   assert.deepEqual(calls[0].slice(0, 3), ['rename', p, 'x.typ'])
   assert.equal(calls[0][3], 'lib/x.typ')
-  assert.equal(calls[0][4], false) // drag = move silently, no reference dialog
+  assert.equal(calls[0][4], true) // a drag is a move: the dialog says move
   assert.equal(calls[1][3], 'pic.png')
-  assert.equal(JSON.stringify(calls[2]), JSON.stringify(['POST', '/api/projects/p/docs/d/folder', { folder: 'chapters' }]))
+  assert.equal(JSON.stringify(calls[2]), JSON.stringify(['POST', '/api/projects/p/docs/d/folder', { folder: 'chapters', fix_refs: true }]))
   assert.equal(calls.length, 3)
 })
 
@@ -58,7 +61,7 @@ test('folders drag as one entry and move into the first level with the rename en
   const fresh = { id: 'p', folders: ['a', 'a/b'], documents: [], files: [] }
   const c = projectCtx({
     sidebarDrag: (row, data, effect) => dragged.push([data, effect]),
-    api: async (method, url, body) => { calls.push([method, url, body]); return fresh },
+    api: async (method, url, body) => { if (url.endsWith('-preview')) return { changes: [] }; calls.push([method, url, body]); return fresh },
     toast: m => { toasted = m },
   })
   c.afterFolderRename = async (...args) => calls.push(['after', ...args])
@@ -68,7 +71,7 @@ test('folders drag as one entry and move into the first level with the rename en
   assert.equal(calls[0][0], 'GET')
   assert.equal(calls[0][1], '/api/projects/p')
   assert.equal(calls[0][2], undefined)
-  assert.equal(JSON.stringify(calls[1]), JSON.stringify(['POST', '/api/projects/p/folders/rename', { path: 'src', target: 'a/src' }]))
+  assert.equal(JSON.stringify(calls[1]), JSON.stringify(['POST', '/api/projects/p/folders/rename', { path: 'src', target: 'a/src', fix_refs: true }]))
   assert.equal(calls[2][0], 'after')
   calls.length = 0
   // a folder in a second-level folder would become three levels deep

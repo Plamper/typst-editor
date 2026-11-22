@@ -33,6 +33,7 @@ class FolderRename(BaseModel):
 
 class DocFolder(BaseModel):
     folder: str = Field(default="", max_length=240)
+    fix_refs: bool = True
 
 
 def folder_path(raw: str, *, new: bool = True) -> str:
@@ -193,6 +194,19 @@ async def delete_folder(project_id: str, path: str, req: Request, user: str = De
     return {"ok": True, "documents": docs}
 
 
+@router.post("/api/projects/{project_id}/docs/{doc_id}/folder-preview")
+def move_document_preview(project_id: str, doc_id: str, b: DocFolder, req: Request, user: str = Depends(deps.me)) -> dict:
+    """The quoted references of the document that a move to `folder` would update."""
+    deps.limited(req, "files_list")
+    folder = folder_path(b.folder) if b.folder.strip("/") else ""
+    con = db.connect()
+    try:
+        projects.require(con, project_id, user, edit=True)
+        return {"folder": folder, "changes": project_files.ref_changes(con, project_id, {}, {doc_id: folder})}
+    finally:
+        con.close()
+
+
 @router.post("/api/projects/{project_id}/docs/{doc_id}/folder")
 async def move_document(project_id: str, doc_id: str, b: DocFolder, req: Request, user: str = Depends(deps.me)) -> dict:
     """The document moves to another folder; its relative references keep reaching their files."""
@@ -212,6 +226,6 @@ async def move_document(project_id: str, doc_id: str, b: DocFolder, req: Request
             raise HTTPException(409, "Document title already exists in this folder") from e
 
     old, paths = await asyncio.to_thread(run)
-    changed = await project_files.relocate_docs([(doc_id, old, folder)], {}, paths, "move") if old != folder else 0
+    changed = await project_files.relocate_docs([(doc_id, old, folder)], {}, paths, "move") if old != folder and b.fix_refs else 0
     await asyncio.to_thread(projects.notify, project_id)
     return {"folder": folder, "updated_references": changed}

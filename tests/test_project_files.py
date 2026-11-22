@@ -263,3 +263,15 @@ def test_folder_rename_preview_and_rename_without_updating_references(c):
     assert r.status_code == 200 and r.json()["updated_references"] == 0
     assert c.get(f"/api/docs/{did}").json()["content"] == '#include "ch/part.typ"'  # the user chose "rename only"
     assert c.get(f"/api/projects/{pid}/files/book/part.typ").content == b"P"
+
+
+def test_document_move_preview_and_move_only(c):
+    register_user(c, "docmoveonly")
+    pid = c.post("/api/projects", json={"title": "D"}).json()["id"]
+    did = c.post(f"/api/projects/{pid}/docs", json={"title": "Main", "content": '#include "a.typ"'}).json()["id"]
+    _put(c, pid, "a.typ", b"A")
+    pre = c.post(f"/api/projects/{pid}/docs/{did}/folder-preview", json={"folder": "sub"}).json()
+    assert pre["changes"] == [{"in": "Main", "old": "a.typ", "new": "../a.typ"}]
+    r = c.post(f"/api/projects/{pid}/docs/{did}/folder", json={"folder": "sub", "fix_refs": False})
+    assert r.json() == {"folder": "sub", "updated_references": 0}
+    assert c.get(f"/api/docs/{did}").json()["content"] == '#include "a.typ"'

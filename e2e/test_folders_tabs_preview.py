@@ -127,6 +127,8 @@ def test_file_rows_and_empty_hints_are_drop_areas_for_their_folder(page):
     assert file_paths(page.request, pid) == ["empty/inner/other.typ", "lib/style.typ"]
     # dropping on a file row targets the folder that file lives in, not the file
     page.locator("aside .doc.sub[title='lib/style.typ']").drag_to(page.locator("aside .doc.sub[title='empty/inner/other.typ']"))
+    expect(page.locator("#modal")).to_contain_text("Move only")  # the document quotes style.typ: the move asks first
+    page.click("#mYes")
     expect(page.locator("aside .doc.sub[title='empty/inner/style.typ']")).to_have_count(1)
     assert file_paths(page.request, pid) == ["empty/inner/other.typ", "empty/inner/style.typ"]
 
