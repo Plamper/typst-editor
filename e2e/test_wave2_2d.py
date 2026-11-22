@@ -4,7 +4,7 @@ from playwright.sync_api import expect
 
 
 def _open_settings(page):
-    expect(page.locator("#cm .cm-content")).to_be_visible()
+    page.wait_for_function("window.__booted === true")  # app ready (no document is open at the start)
     page.click("#who")
     pop = page.locator("#setPop")
     if not pop.is_visible():  # async openDoc hidePops() won the race: toggle back open

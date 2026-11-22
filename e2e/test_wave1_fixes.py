@@ -81,7 +81,7 @@ def test_login_does_not_reload_when_module_fails(page):
 
 def test_8_settings_sliders_keep_dialog_open(page):
     register(page, "e2e_gina")
-    expect(page.locator("#cm .cm-content")).to_be_visible()  # tutorial open: openDoc's hidePops() calls are done
+    page.wait_for_function("window.__booted === true")  # app ready (no document is open at the start)
     page.click("#who")
     pop = page.locator("#setPop")
     if not pop.is_visible():  # async openDoc hidePops() won the race: toggle back open (hidden -> click opens)
