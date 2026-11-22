@@ -202,3 +202,30 @@ def test_compile_root_never_writes_outside(tmp_path):
         with pytest.raises(HTTPException):
             render._write_root(tmp_path / "root", "x", [(name, b"x")])
     assert not (tmp_path / "up.png").exists() and not (tmp_path / "abs").exists()
+
+
+def test_folder_rename_keeps_every_reference_reaching_its_file(c):
+    register_user(c, "folderrefs")
+    pid = c.post("/api/projects", json={"title": "R"}).json()["id"]
+    outside = c.post(f"/api/projects/{pid}/docs", json={"title": "Main", "content": '#include "ch/part.typ"\n#image("/ch/img.png")'}).json()["id"]
+    inside = c.post(f"/api/projects/{pid}/docs", json={"title": "Intro", "folder": "ch", "content": '#include "part.typ"\n#import "../style.typ"'}).json()["id"]
+    _put(c, pid, "ch/part.typ", b'#image("img.png")\n#import "../style.typ"')
+    _put(c, pid, "ch/img.png", b"png")
+    _put(c, pid, "style.typ", b"#let x = 1")
+    r = c.post(f"/api/projects/{pid}/folders/rename", json={"path": "ch", "target": "book/chapters"})
+    assert r.status_code == 200, r.text
+    assert r.json()["updated_references"] == 2
+    assert c.get(f"/api/docs/{outside}").json()["content"] == '#include "book/chapters/part.typ"\n#image("/book/chapters/img.png")'
+    assert c.get(f"/api/docs/{inside}").json()["content"] == '#include "part.typ"\n#import "../../style.typ"'
+    assert c.get(f"/api/projects/{pid}/files/book/chapters/part.typ").content == b'#image("img.png")\n#import "../../style.typ"'
+
+
+def test_document_move_keeps_its_relative_references(c):
+    register_user(c, "docmove")
+    pid = c.post("/api/projects", json={"title": "M"}).json()["id"]
+    did = c.post(f"/api/projects/{pid}/docs", json={"title": "Main", "content": '#include "parts/a.typ"\n#image("/img.png")\n"plain words"'}).json()["id"]
+    _put(c, pid, "parts/a.typ", b"A")
+    _put(c, pid, "img.png", b"png")
+    r = c.post(f"/api/projects/{pid}/docs/{did}/folder", json={"folder": "deep"})
+    assert r.status_code == 200 and r.json()["updated_references"] == 1
+    assert c.get(f"/api/docs/{did}").json()["content"] == '#include "../parts/a.typ"\n#image("/img.png")\n"plain words"'

@@ -6,6 +6,7 @@ Depth is capped by MAX_FOLDER_DEPTH; deeper legacy paths stay readable.
 """
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -78,34 +79,43 @@ def create_folder(project_id: str, b: FolderPath, req: Request, user: str = Depe
 
 
 @router.post("/api/projects/{project_id}/folders/rename")
-def rename_folder(project_id: str, b: FolderRename, req: Request, user: str = Depends(deps.me)) -> dict:
+async def rename_folder(project_id: str, b: FolderRename, req: Request, user: str = Depends(deps.me)) -> dict:
+    """Everything inside moves along; every quoted reference in the project keeps reaching its file."""
     deps.limited(req, "rename")
     old, new = folder_path(b.path, new=False), folder_path(b.target)
     if old == new:
-        return {"path": new}
+        return {"path": new, "updated_references": 0}
     if _within(new, old):
         raise HTTPException(400, "A folder cannot move into itself")
+    docs, paths, moves = await asyncio.to_thread(_rename_folder, project_id, old, new, user)
+    changed = await project_files.relocate_docs(docs, moves, paths, "folder move")
+    # notify() -> auto() -> prepared() takes the files lock; call it after release.
+    await asyncio.to_thread(projects.notify, project_id)
+    return {"path": new, "updated_references": changed}
+
+
+def _rename_folder(project_id: str, old: str, new: str, user: str) -> tuple[list[tuple[str, str, str]], set[str], dict[str, str]]:
     backups: project_files.Backups = {}
+    docs: list[tuple[str, str, str]] = []
     with project_files.lock(project_id):
         try:
             with db.tx() as con:
                 projects.require(con, project_id, user, edit=True)
                 now = db.now_iso()
-                moves = [(p, _moved_depth(p, old, new)) for (p,) in con.execute("SELECT path FROM project_files WHERE project_id=?", (project_id,)) if _within(p, old)]
+                moves = {p: _moved_depth(p, old, new) for (p,) in con.execute("SELECT path FROM project_files WHERE project_id=?", (project_id,)) if _within(p, old)}
                 for i, f, title in con.execute("SELECT id,folder,title FROM docs WHERE project_id=? AND trashed=0", (project_id,)).fetchall():
-                    if f and _within(f, old):
-                        target = _moved_depth(f, old, new, folder=True)
+                    target = _moved_depth(f, old, new, folder=True) if f and _within(f, old) else f
+                    docs.append((i, f, target))
+                    if target != f:
                         # Titles are unique per folder, so a rename can collide only here.
                         if con.execute("SELECT 1 FROM docs WHERE project_id=? AND folder=? AND title=? COLLATE NOCASE AND trashed=0 AND id<>?",
                                        (project_id, target, title, i)).fetchone():
                             raise HTTPException(409, "Document title already exists in target folder")
                         con.execute("UPDATE docs SET folder=? WHERE id=?", (target, i))
                 staying = {p.casefold() for (p,) in con.execute("SELECT path FROM project_files WHERE project_id=?", (project_id,)) if not _within(p, old)}
-                if any(n.casefold() in staying for _, n in moves):
+                if any(n.casefold() in staying for n in moves.values()):
                     raise HTTPException(409, "Name already exists in this project")
-                data = {o: project_files.remove(con, project_id, o, backups) for o, _ in moves}
-                for o, n in moves:
-                    project_files.put(con, project_id, n, data[o], backups)
+                paths = project_files.relocate_files(con, project_id, moves, backups)
                 rows = [r[0] for r in con.execute("SELECT path FROM project_folders WHERE project_id=?", (project_id,))]
                 for p in rows:
                     if _within(p, old):
@@ -116,9 +126,7 @@ def rename_folder(project_id: str, b: FolderRename, req: Request, user: str = De
         except Exception:
             project_files.undo(backups)
             raise
-    # notify() -> auto() -> prepared() takes the files lock; call it after release.
-    projects.notify(project_id)
-    return {"path": new}
+    return docs, paths, moves
 
 
 @router.delete("/api/projects/{project_id}/folders")
@@ -161,16 +169,24 @@ async def delete_folder(project_id: str, path: str, req: Request, user: str = De
 
 
 @router.post("/api/projects/{project_id}/docs/{doc_id}/folder")
-def move_document(project_id: str, doc_id: str, b: DocFolder, req: Request, user: str = Depends(deps.me)) -> dict:
+async def move_document(project_id: str, doc_id: str, b: DocFolder, req: Request, user: str = Depends(deps.me)) -> dict:
+    """The document moves to another folder; its relative references keep reaching their files."""
     deps.limited(req, "move")
     folder = folder_path(b.folder) if b.folder.strip("/") else ""
-    try:
-        with db.tx() as con:
-            projects.require(con, project_id, user, edit=True)
-            if not con.execute("SELECT 1 FROM docs WHERE id=? AND project_id=? AND trashed=0", (doc_id, project_id)).fetchone():
-                raise HTTPException(404, "Document not found")
-            con.execute("UPDATE docs SET folder=? WHERE id=?", (folder, doc_id))
-    except sqlite3.IntegrityError as e:
-        raise HTTPException(409, "Document title already exists in this folder") from e
-    projects.notify(project_id)
-    return {"folder": folder}
+
+    def run() -> tuple[str, set[str]]:
+        try:
+            with db.tx() as con:
+                projects.require(con, project_id, user, edit=True)
+                row = con.execute("SELECT folder FROM docs WHERE id=? AND project_id=? AND trashed=0", (doc_id, project_id)).fetchone()
+                if not row:
+                    raise HTTPException(404, "Document not found")
+                con.execute("UPDATE docs SET folder=? WHERE id=?", (folder, doc_id))
+                return row[0], {r[0] for r in con.execute("SELECT path FROM project_files WHERE project_id=?", (project_id,))}
+        except sqlite3.IntegrityError as e:
+            raise HTTPException(409, "Document title already exists in this folder") from e
+
+    old, paths = await asyncio.to_thread(run)
+    changed = await project_files.relocate_docs([(doc_id, old, folder)], {}, paths, "move") if old != folder else 0
+    await asyncio.to_thread(projects.notify, project_id)
+    return {"folder": folder, "updated_references": changed}
