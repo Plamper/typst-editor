@@ -96,7 +96,7 @@ def test_watch_level_from_the_bell_on_the_project_row(page):
         page.wait_for_timeout(100)
     assert level == "all"
 
-    page.locator("#title").click()  # clicking outside still closes it
+    page.locator("main > header .hl").click(position={"x": 4, "y": 4})  # clicking outside still closes it
     expect(box).to_have_count(0)
 
     page.reload()

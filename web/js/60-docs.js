@@ -242,6 +242,7 @@ async function refreshSidebar() {
   const held = sideFocusKey() // the repaint replaces the focused row action: keyboard focus moves to the same action of the new row
   paintOwn(); paintTrash(d.trash); paintShared(d.shared); paintSecs(); paintTabs()
   paintTpls()
+  if (welcomeOn()) paintWelcome() // recent documents follow the list
   if (held && !held.el.isConnected) sideFocusBack(held)
   const nv = $('nav'); nv.onscroll = updNavFade; updNavFade()
   watchHitBadges()
@@ -728,6 +729,7 @@ async function resSync() { // SSE follow-up: fresh list first, open resource fol
   }
 }
 function leaveDoc() { // reset sync/peers/threads/media (openTpl/openDoc/del)
+  setWelcome(false)
   clearTimeout(scrollT)
   saveDocScroll() // previous doc: remember editor + preview spot before the buffers reset
   scrollRestore = null
@@ -864,7 +866,7 @@ function closeView() { // no doc open: buttons off, empty view in
   $('title').textContent = t('docs.welcome'); $('title').classList.add('is-empty'); $('role').textContent = ''; $('role').onclick = null; $('role').title = ''
   $('roBanner').style.display = 'none'
   $('tools').style.display = 'none'; $('pvTools').style.display = 'none'
-  paintEmpty()
+  setWelcome(true)
   paintTabs() // hides the tab bar: no doc open
   paintOwn(); paintShared(lastShared) // clear the active row highlight
   setT(''); gutter(); paintOutline()

@@ -87,6 +87,8 @@ def build() -> str:
     out = GLOB_MARK.sub(sub_glob, out)
     out = out.replace("@@typstyle-wasm@@", _vendor_url("typstyle-wasm"))
     out = out.replace("@@typstyle-glue@@", _vendor_url("typstyle-glue"))
+    for face in ("regular", "italic", "semibold"):  # the start page sets its title in Typst's default font
+        out = out.replace(f"@@font-libertinus-{face}@@", _vendor_url(f"font-libertinusserif-{face}"))
     return I18N_MARK.sub(lambda _: _i18n_tag(), out)
 
 
