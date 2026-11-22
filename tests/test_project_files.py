@@ -204,6 +204,33 @@ def test_compile_root_never_writes_outside(tmp_path):
     assert not (tmp_path / "up.png").exists() and not (tmp_path / "abs").exists()
 
 
+def test_folder_rename_keeps_every_reference_reaching_its_file(c):
+    register_user(c, "folderrefs")
+    pid = c.post("/api/projects", json={"title": "R"}).json()["id"]
+    outside = c.post(f"/api/projects/{pid}/docs", json={"title": "Main", "content": '#include "ch/part.typ"\n#image("/ch/img.png")'}).json()["id"]
+    inside = c.post(f"/api/projects/{pid}/docs", json={"title": "Intro", "folder": "ch", "content": '#include "part.typ"\n#import "../style.typ"'}).json()["id"]
+    _put(c, pid, "ch/part.typ", b'#image("img.png")\n#import "../style.typ"')
+    _put(c, pid, "ch/img.png", b"png")
+    _put(c, pid, "style.typ", b"#let x = 1")
+    r = c.post(f"/api/projects/{pid}/folders/rename", json={"path": "ch", "target": "book/chapters"})
+    assert r.status_code == 200, r.text
+    assert r.json()["updated_references"] == 2
+    assert c.get(f"/api/docs/{outside}").json()["content"] == '#include "book/chapters/part.typ"\n#image("/book/chapters/img.png")'
+    assert c.get(f"/api/docs/{inside}").json()["content"] == '#include "part.typ"\n#import "../../style.typ"'
+    assert c.get(f"/api/projects/{pid}/files/book/chapters/part.typ").content == b'#image("img.png")\n#import "../../style.typ"'
+
+
+def test_document_move_keeps_its_relative_references(c):
+    register_user(c, "docmove")
+    pid = c.post("/api/projects", json={"title": "M"}).json()["id"]
+    did = c.post(f"/api/projects/{pid}/docs", json={"title": "Main", "content": '#include "parts/a.typ"\n#image("/img.png")\n"plain words"'}).json()["id"]
+    _put(c, pid, "parts/a.typ", b"A")
+    _put(c, pid, "img.png", b"png")
+    r = c.post(f"/api/projects/{pid}/docs/{did}/folder", json={"folder": "deep"})
+    assert r.status_code == 200 and r.json()["updated_references"] == 1
+    assert c.get(f"/api/docs/{did}").json()["content"] == '#include "../parts/a.typ"\n#image("/img.png")\n"plain words"'
+
+
 def test_file_read_names_the_version_of_the_bytes_it_sends(c):
     register_user(c, "versionhdr")
     pid = c.post("/api/projects", json={"title": "V"}).json()["id"]
@@ -211,3 +238,40 @@ def test_file_read_names_the_version_of_the_bytes_it_sends(c):
     got = c.get(f"/api/projects/{pid}/files/a.typ")
     assert got.headers["X-File-Version"] == put["version"]
     assert c.put(f"/api/projects/{pid}/files/a.typ?version={got.headers['X-File-Version']}", content=b"two").status_code == 200
+
+
+def test_move_preview_lists_each_reference_before_and_after(c):
+    register_user(c, "previewchanges")
+    pid = c.post("/api/projects", json={"title": "P"}).json()["id"]
+    c.post(f"/api/projects/{pid}/docs", json={"title": "Main", "content": '#include "kapitel/teil.typ"'})
+    c.post(f"/api/projects/{pid}/docs", json={"title": "Intro", "folder": "kapitel", "content": '#include "teil.typ"\n#include "/kapitel/teil.typ"'})
+    _put(c, pid, "kapitel/teil.typ", b"T")
+    pre = c.post(f"/api/projects/{pid}/files-move-preview", json={"path": "kapitel/teil.typ", "target": "kapitel/hugo.typ"}).json()
+    assert pre["changes"] == [{"in": "Main", "old": "kapitel/teil.typ", "new": "kapitel/hugo.typ"},
+                              {"in": "kapitel/Intro", "old": "teil.typ", "new": "hugo.typ"},
+                              {"in": "kapitel/Intro", "old": "/kapitel/teil.typ", "new": "/kapitel/hugo.typ"}]
+
+
+def test_folder_rename_preview_and_rename_without_updating_references(c):
+    register_user(c, "folderonly")
+    pid = c.post("/api/projects", json={"title": "F"}).json()["id"]
+    did = c.post(f"/api/projects/{pid}/docs", json={"title": "Main", "content": '#include "ch/part.typ"'}).json()["id"]
+    _put(c, pid, "ch/part.typ", b"P")
+    pre = c.post(f"/api/projects/{pid}/folders/rename-preview", json={"path": "ch", "target": "book"}).json()
+    assert pre["changes"] == [{"in": "Main", "old": "ch/part.typ", "new": "book/part.typ"}]
+    r = c.post(f"/api/projects/{pid}/folders/rename", json={"path": "ch", "target": "book", "fix_refs": False})
+    assert r.status_code == 200 and r.json()["updated_references"] == 0
+    assert c.get(f"/api/docs/{did}").json()["content"] == '#include "ch/part.typ"'  # the user chose "rename only"
+    assert c.get(f"/api/projects/{pid}/files/book/part.typ").content == b"P"
+
+
+def test_document_move_preview_and_move_only(c):
+    register_user(c, "docmoveonly")
+    pid = c.post("/api/projects", json={"title": "D"}).json()["id"]
+    did = c.post(f"/api/projects/{pid}/docs", json={"title": "Main", "content": '#include "a.typ"'}).json()["id"]
+    _put(c, pid, "a.typ", b"A")
+    pre = c.post(f"/api/projects/{pid}/docs/{did}/folder-preview", json={"folder": "sub"}).json()
+    assert pre["changes"] == [{"in": "Main", "old": "a.typ", "new": "../a.typ"}]
+    r = c.post(f"/api/projects/{pid}/docs/{did}/folder", json={"folder": "sub", "fix_refs": False})
+    assert r.json() == {"folder": "sub", "updated_references": 0}
+    assert c.get(f"/api/docs/{did}").json()["content"] == '#include "a.typ"'

@@ -26,7 +26,7 @@ If the server is not connected yet: ask the user for the server address (as reac
 - `read` shows open comments (id, line, quote). Answer with `comment(reply_to=…)`, close with `comment(id, resolved=true)`.
 - `edit`: `old` is exact text with 2-3 lines of context; all edits of one call apply atomically. Prefer `edit` over `write`.
 - `write` over an existing text needs `base_version` (or `force=true`). Binary files: `content_base64`, or `upload` (one-time curl link) above ~100 KB. `copy_from` copies server-side.
-- `move` renames/moves documents, files, folders (paths end with `/`), projects; quoted references to a moved file are rewritten. A `.typ` file moved to a document path becomes a document (`broken_references` lists texts that still include it); a document moved to a `.typ` path becomes a file. A document moved to another folder keeps its text: `render` and fix its relative paths.
+- `move` renames/moves documents, files, folders (paths end with `/`), projects; quoted references keep reaching their files (also for moved folders and documents moved to another folder; `updated_references` counts the texts changed). A `.typ` file moved to a document path becomes a document (`broken_references` lists texts that still include it); a document moved to a `.typ` path becomes a file.
 - `render` without `pages` is the cheap check; fix every error before looking at images.
 - `export` returns a `url` valid for 5 minutes (curl it) and, when small, `content_base64`; `upload` links work once. Roughly 40 calls per 16 s are allowed.
 

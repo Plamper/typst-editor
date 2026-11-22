@@ -18,9 +18,7 @@ def test_file_server_name_and_rename_preview(page):
     expect(tab).to_have_attribute('aria-selected', 'true')
     tab.dblclick()
     page.fill('#mInp', 'renamed.typ')
-    page.click('#mYes')
-    expect(page.locator('#modal')).to_contain_text('No static references found')
-    expect(page.locator('#modal')).to_contain_text('updated to the new path')
-    page.click('#mYes')
+    page.click('#mYes')  # nothing quotes the file: renamed at once, no confirmation dialog
+    expect(page.locator('#modal')).to_be_hidden()
     expect(page.locator('#tabs button.tab').filter(has_text='renamed.typ')).to_be_visible()
     expect(page.locator('#tabs button.tab').filter(has_text='_nderungen.typ')).to_have_count(0)

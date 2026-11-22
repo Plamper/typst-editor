@@ -735,8 +735,8 @@ async def move(ctx: Ctx, path: str, to: str, fix_refs: bool = True, package: str
         if dest["kind"] not in ("folder", "new_folder") or dest["project_id"] != node["project_id"]:
             raise err(400, "bad_path", "A folder moves to another folder of the same project; end both paths with /")
         need_write(node)
-        await asyncio.to_thread(rename_folder, node["project_id"], FolderRename(path=node["folder"], target=dest["folder"]), req, ctx.user)
-        return {"path": dest["path"], "note": "References to files inside are not rewritten"}
+        r = await rename_folder(node["project_id"], FolderRename(path=node["folder"], target=dest["folder"]), req, ctx.user)
+        return {"path": dest["path"], "updated_references": r["updated_references"]}
     _need_typ(node, dest)
     if not _is_convert(node, dest):
         _check_move(node, dest)
@@ -748,8 +748,7 @@ async def move(ctx: Ctx, path: str, to: str, fix_refs: bool = True, package: str
     if _is_convert(node, dest):
         return await _convert(ctx, node, dest, fix_refs)
     if kind == "doc":
-        _move_doc(ctx, node, dest)
-        return {"path": dest["path"]}
+        return {"path": dest["path"], "updated_references": await _move_doc(ctx, node, dest)}
     r = await project_files.move(node["project_id"], node["name"], dest["name"], ctx.user, force=True, fix_refs=fix_refs)
     return {"path": dest["path"], "updated_references": r["updated_references"]}
 
@@ -773,7 +772,7 @@ async def _convert(ctx: Ctx, node: dict, dest: dict, fix_refs: bool) -> dict:
     return out
 
 
-def _move_doc(ctx: Ctx, node: dict, dest: dict) -> None:
+async def _move_doc(ctx: Ctx, node: dict, dest: dict) -> int:
     from backend.routers.docs import rename_doc
     from backend.routers.project_folders import DocFolder, move_document
     from backend.schemas import TitleSet
@@ -781,8 +780,9 @@ def _move_doc(ctx: Ctx, node: dict, dest: dict) -> None:
     req = fake_request(ctx.user)
     if dest["title"] != node["title"]:
         rename_doc(node["doc_id"], TitleSet(title=dest["title"]), req, ctx.user)
-    if dest["folder"] != node["folder"]:
-        move_document(node["project_id"], node["doc_id"], DocFolder(folder=dest["folder"]), req, ctx.user)
+    if dest["folder"] == node["folder"]:
+        return 0
+    return (await move_document(node["project_id"], node["doc_id"], DocFolder(folder=dest["folder"]), req, ctx.user))["updated_references"]
 
 
 def _restore(ctx: Ctx, node: dict) -> dict:

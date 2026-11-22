@@ -159,7 +159,7 @@ function modalInert(on) { // background not focusable while dialog open (no iner
   if (on) { a.setAttribute('inert', ''); a.setAttribute('aria-hidden', 'true') }
   else { a.removeAttribute('inert'); a.removeAttribute('aria-hidden') }
 }
-function ask(head, o = {}) { // custom modal not prompt/confirm (string|null, no input: true/false)
+function ask(head, o = {}) { // custom modal not prompt/confirm (string|null, no input: true/false, o.alt: extra button -> 'alt')
   const { value = '', ph = '', ok = t('common.ok'), danger = false, noInput = false, body = null, stem = false, selectAll = false } = o
   return new Promise(res => {
     if (askRes) askRes(null)
@@ -177,8 +177,11 @@ function ask(head, o = {}) { // custom modal not prompt/confirm (string|null, no
     const yes = $('mYes'); yes.textContent = ok
     yes.disabled = false
     yes.style.background = danger ? 'var(--danger)' : ''; yes.style.color = danger ? '#fff' : ''
-    const done = v => { ov.style.display = 'none'; modalInert(false); askRes = null; body?.remove(); if (prev && document.contains(prev) && prev.classList && prev.classList.contains('mini')) prev.blur(); else if (prev && document.contains(prev)) prev?.focus?.(); res(v) }
+    const alt = o.alt ? el('button', 'mAlt', o.alt) : null
+    if (alt) yes.before(alt)
+    const done = v => { ov.style.display = 'none'; modalInert(false); askRes = null; body?.remove(); alt?.remove(); if (prev && document.contains(prev) && prev.classList && prev.classList.contains('mini')) prev.blur(); else if (prev && document.contains(prev)) prev?.focus?.(); res(v) }
     $('mNo').onclick = () => done(noInput ? false : null)
+    if (alt) alt.onclick = () => done('alt')
     yes.onclick = () => done(noInput ? true : inp.value)
     inp.onkeydown = e => { if (e.key === 'Enter') yes.onclick() }
     if (noInput) yes.focus()
