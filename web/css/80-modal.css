@@ -13,8 +13,14 @@
 .mBody .mLabel { margin: 0 0 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
 .mBody .mLabel + .mTarget { margin-bottom: 16px; }
 .mBody .mTarget { padding: 7px 10px; border-radius: var(--r-sm); background: var(--hover); color: var(--text); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12.5px; overflow-wrap: anywhere; }
-.mBody .mRefs { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
-.mBody .mRefs code { padding: 5px 9px; border-radius: var(--r-sm); background: var(--hover); color: var(--text); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; overflow-wrap: anywhere; }
+.mBody .mMove, .mBody .mChange code { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
+.mBody .mOld { color: var(--faint); }
+.mBody .mArrow { color: var(--faint); font-family: inherit; }
+.mBody .mChanges { display: flex; flex-direction: column; margin-bottom: 14px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+.mBody .mChange { display: grid; grid-template-columns: minmax(80px, 34%) 1fr; gap: 10px; align-items: baseline; padding: 7px 10px; }
+.mBody .mChange + .mChange { border-top: 1px solid var(--line); }
+.mBody .mIn { color: var(--text); font-size: 12.5px; overflow-wrap: anywhere; }
+.mBody .mChange code { color: var(--text); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; overflow-wrap: anywhere; }
 .mBody .mText { margin: 0 0 14px; }
 .mBody .mNote { margin: 12px 0 0; color: var(--faint); font-size: 12px; }
 .zipList { max-height: 44vh; overflow-y: auto; border: 1px solid var(--line-2); border-radius: var(--r-md); }

@@ -287,13 +287,30 @@ def _target(path: str, target: str) -> str:
     return t
 
 
+def ref_changes(con: sqlite3.Connection, project_id: str, path: str, target: str) -> list[dict]:
+    """What a move of `path` to `target` rewrites: {"in": text, "old": quoted ref, "new": quoted ref after the move}."""
+    paths = {r[0] for r in con.execute("SELECT path FROM project_files WHERE project_id=?", (project_id,))}
+    texts_in = [(posixpath.join(d["folder"], d["title"]), d["folder"], doc_text(d["id"], d["content"]))
+                for d in con.execute("SELECT id,title,folder,content FROM docs WHERE project_id=? AND trashed=0 ORDER BY folder,title", (project_id,))]
+    texts_in += [(p, posixpath.dirname(p), text) for p, text in sorted(texts(con, project_id).items()) if p != path]
+    out = []
+    for name, base, text in texts_in:
+        for m in resources.REF_RE.finditer(text):
+            if resources.resolve(base, m.group(1)) == path:
+                change = {"in": name, "old": m.group(1), "new": relocate_refs(m.group(0), base, base, {path: target}, paths)[1:-1]}
+                if change not in out:
+                    out.append(change)
+    return out
+
+
 def move_preview(project_id: str, path: str, target: str, user: str) -> dict:
     path, target = clean(path, new=False), _target(path, target)
     con = db.connect()
     try:
         projects.require(con, project_id, user, edit=True)
         row = _current(con, project_id, path, None, True)
-        return {"path": target, "version": row["version"], "references": referrers(con, project_id, path)}
+        return {"path": target, "version": row["version"], "references": referrers(con, project_id, path),
+                "changes": ref_changes(con, project_id, path, target)}
     finally:
         con.close()
 

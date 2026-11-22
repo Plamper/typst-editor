@@ -552,17 +552,20 @@ async function renameProjectEntry(p, name, host) {
   if (target === name) return
   await applyEntryRename(p, name, target)
 }
-function renameBody(name, references) { // structured rename dialog: target first, then references, then the warning
+function renameBody(from, to, changes) { // old -> new path, then every quoted reference that follows it
   const body = el('div', 'mBody')
-  body.append(el('div', 'mLabel', t('projects.newName')))
-  const target = el('div', 'mTarget', name); body.append(target)
-  body.append(el('div', 'mLabel', t('projects.referencesTitle')))
-  if (references.length) {
-    const list = el('div', 'mRefs')
-    references.forEach(ref => list.append(el('code', null, ref)))
-    body.append(list)
-  } else body.append(el('p', 'mText', t('projects.noReferences')))
-  body.append(el('p', 'mNote', t('projects.dynamicReferences')))
+  const move = el('div', 'mTarget mMove')
+  move.append(el('span', 'mOld', from), el('span', 'mArrow', '→'), el('span', null, to))
+  body.append(el('div', 'mLabel', t('projects.newName')), move)
+  body.append(el('div', 'mLabel', t('projects.updatesTitle', { n: changes.length })))
+  const list = el('div', 'mChanges')
+  changes.forEach(c => {
+    const row = el('div', 'mChange'), path = el('code')
+    path.append(el('span', 'mOld', c.old), el('span', 'mArrow', '→'), el('span', null, c.new))
+    row.append(el('span', 'mIn', c.in), path)
+    list.append(row)
+  })
+  body.append(list, el('p', 'mNote', t('projects.dynamicReferences')))
   return body
 }
 async function applyEntryRename(p, name, target, confirm = true) { // rename or move (a new path = a new folder): the listed quoted references follow
@@ -570,7 +573,7 @@ async function applyEntryRename(p, name, target, confirm = true) { // rename or 
   const doc = docId, epoch = openN
   const preview = await api('POST', `/api/projects/${p.id}/files-move-preview`, { path: name, target })
   if (doc !== docId || epoch !== openN) return
-  if (confirm && !await ask(t('files.renameHead'), { noInput: true, body: renameBody(preview.path, preview.references), ok: t('projects.renameAction') })) return
+  if (confirm && preview.changes.length && !await ask(t('files.renameHead'), { noInput: true, body: renameBody(name, preview.path, preview.changes), ok: t('projects.renameAction') })) return // nothing quotes it: rename at once
   if (doc !== docId || epoch !== openN) return
   const result = await api('POST', `/api/projects/${p.id}/files-move`, { path: name, target: preview.path, version: preview.version, fix_refs: true })
   tabRemapEntry(p.id, 'f:' + name, 'f:' + result.path)

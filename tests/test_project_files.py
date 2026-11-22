@@ -238,3 +238,15 @@ def test_file_read_names_the_version_of_the_bytes_it_sends(c):
     got = c.get(f"/api/projects/{pid}/files/a.typ")
     assert got.headers["X-File-Version"] == put["version"]
     assert c.put(f"/api/projects/{pid}/files/a.typ?version={got.headers['X-File-Version']}", content=b"two").status_code == 200
+
+
+def test_move_preview_lists_each_reference_before_and_after(c):
+    register_user(c, "previewchanges")
+    pid = c.post("/api/projects", json={"title": "P"}).json()["id"]
+    c.post(f"/api/projects/{pid}/docs", json={"title": "Main", "content": '#include "kapitel/teil.typ"'})
+    c.post(f"/api/projects/{pid}/docs", json={"title": "Intro", "folder": "kapitel", "content": '#include "teil.typ"\n#include "/kapitel/teil.typ"'})
+    _put(c, pid, "kapitel/teil.typ", b"T")
+    pre = c.post(f"/api/projects/{pid}/files-move-preview", json={"path": "kapitel/teil.typ", "target": "kapitel/hugo.typ"}).json()
+    assert pre["changes"] == [{"in": "Main", "old": "kapitel/teil.typ", "new": "kapitel/hugo.typ"},
+                              {"in": "kapitel/Intro", "old": "teil.typ", "new": "hugo.typ"},
+                              {"in": "kapitel/Intro", "old": "/kapitel/teil.typ", "new": "/kapitel/hugo.typ"}]

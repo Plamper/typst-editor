@@ -49,11 +49,11 @@ test('rename confirmation lists references and moves with the preview version, f
   const prompts = [], writes = []
   const c = setup({ ask: async (label, opts) => { prompts.push(opts?.body ? opts.body.all() : label); return opts?.noInput ? true : 'new.typ' },
     api: async (_method, url, body) => {
-      if (url.endsWith('-preview')) return { path: 'new.typ', version: 'v1', references: ['Doc/main.typ: old.typ'] }
+      if (url.endsWith('-preview')) return { path: 'new.typ', version: 'v1', references: ['Doc/main: old.typ'], changes: [{ in: 'Doc/main', old: 'old.typ', new: 'new.typ' }] }
       writes.push([url, body]); return { path: 'new.typ' }
     }, filesDirty: false, tabSig: '', queueRender: () => {} })
   await c.renameProjectEntry({ id: 'p' }, 'old.typ')
-  assert.ok(prompts[1].includes('Doc/main.typ: old.typ'))
+  assert.ok(prompts[1].includes('Doc/main') && prompts[1].includes('old.typ') && prompts[1].includes('new.typ'))
   assert.equal(writes[0][0], '/api/projects/p/files-move')
   assert.equal(JSON.stringify(writes[0][1]), JSON.stringify({ path: 'old.typ', target: 'new.typ', version: 'v1', fix_refs: true }))
 })
@@ -61,7 +61,7 @@ test('rename confirmation lists references and moves with the preview version, f
 test('late rename completion cannot reset a different document draft', async () => {
   let finish
   const c = setup({ ask: async (_label, opts) => opts?.noInput ? true : 'new.typ',
-    api: async (_method, url) => url.endsWith('-preview') ? { path: 'new.typ', version: 'v1', references: [] } : new Promise(r => { finish = r }),
+    api: async (_method, url) => url.endsWith('-preview') ? { path: 'new.typ', version: 'v1', references: [], changes: [] } : new Promise(r => { finish = r }),
     queueRender: () => assert.fail('new document must remain untouched'), switchTab: async () => assert.fail('no switch in another document') })
   const pending = c.renameProjectEntry({ id: 'p' }, 'old.typ')
   while (!finish) await new Promise(r => setImmediate(r))
@@ -74,7 +74,7 @@ test('late rename completion cannot reset a different document draft', async () 
 test('a renamed open file tab reopens under its new path', async () => {
   const switches = []
   const c = setup({ activeFile: 'old.typ', ask: async (_label, opts) => opts?.noInput ? true : 'new.typ',
-    api: async (_method, url) => url.endsWith('-preview') ? { path: 'new.typ', version: 'v1', references: [] } : { path: 'new.typ' },
+    api: async (_method, url) => url.endsWith('-preview') ? { path: 'new.typ', version: 'v1', references: [], changes: [] } : { path: 'new.typ' },
     queueRender: () => {}, switchTab: async name => { switches.push(name); c.activeFile = name; return true } })
   await c.renameProjectEntry({ id: 'p' }, 'old.typ')
   assert.deepEqual(switches, ['', 'new.typ'])
