@@ -1,0 +1,57 @@
+/* ==========================================================================
+   Start page (no document open): same cards, rows and buttons as the rest of the app
+   ========================================================================== */
+body.welcome #mid, body.welcome #statusBar, body.welcome #docHead, body.welcome #viewSeg, body.welcome #exportBtn, body.welcome #peers { display: none; }
+
+#welcome { flex: 1; min-height: 0; overflow: auto; padding: 8vh 24px 48px; background: var(--bg); }
+:where(#welcome) button { margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+#welcome button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+.wInner { max-width: 620px; margin: 0 auto; }
+
+.wTitleRow { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.wLink { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; border: 0; background: none; font-size: 13px; color: var(--acc); }
+.wLink .wIco { display: inline-flex; }
+.wLink:hover .wLbl { text-decoration: underline; text-underline-offset: 3px; }
+.wTitle { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -.02em; color: var(--text); }
+.wSub { margin: 4px 0 0; font-size: 13px; color: var(--sub); }
+
+.wActs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.wBtn { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 14px; border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  background: var(--card); box-shadow: var(--sh-1); font-size: 13px; font-weight: 500; }
+.wBtn:hover { background: var(--hover); }
+.wBtn .wIco { display: inline-flex; color: var(--sub); }
+.wBtn.wPrimary { border-color: transparent; background: var(--ink); color: var(--on-ink); box-shadow: none; font-weight: 600; }
+.wBtn.wPrimary:hover { background: var(--ink); opacity: .88; }
+.wBtn.wPrimary .wIco { color: currentColor; }
+
+.wCard { margin-top: 20px; padding: 6px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--sh-1); }
+.wCardHeadRow { display: flex; align-items: center; justify-content: space-between; }
+.wMore { padding: 6px 10px; border: 0; background: none; font-size: 12px; color: var(--acc); }
+.wMore:hover { text-decoration: underline; text-underline-offset: 3px; }
+.wAt { display: inline-flex; width: 14px; justify-content: center; font-size: 13px; font-weight: 650; color: var(--acc); }
+.wGo { display: inline-flex; flex: none; color: var(--faint); opacity: 0; transition: opacity .12s ease; }
+.wRow:hover .wGo, .wRow:focus-visible .wGo { opacity: 1; }
+.wCardHead { margin: 0; padding: 8px 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.wRow { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; padding: 6px 10px; border: 0; border-radius: var(--r-sm); background: none; }
+.wRow:hover { background: var(--hover); }
+.wRow .wIco { display: inline-flex; flex: none; color: var(--sub); }
+.wRowMain { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; }
+.wRowTitle { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; font-weight: 500; }
+.wRowSub { flex: 0 1 auto; max-width: 45%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; color: var(--faint); }
+.wRowWhen { flex: none; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.wEmpty { margin: 0; padding: 14px 10px 16px; font-size: 13px; color: var(--sub); }
+
+.wSection { margin-top: 20px; }
+.wSecHead { padding: 0 2px 8px; }
+.wDocGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.wDocTile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card); box-shadow: var(--sh-1); }
+.wDocTile:hover { background: var(--hover); }
+.wDocTile .wIco { display: inline-flex; color: var(--sub); margin-bottom: 4px; }
+.wDocTile .wRowTitle, .wDocTile .wRowSub { max-width: 100%; }
+@media (max-width: 760px) {
+  .wDocGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #welcome { padding: 28px 16px 32px; }
+  .wActs .wPrimary { flex: 1 1 100%; justify-content: center; }
+  .wRowSub { display: none; }
+  .wGo { display: none; }
+}

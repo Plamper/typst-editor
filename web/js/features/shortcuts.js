@@ -307,8 +307,8 @@ function scFocusSearch() {
     if (p.style.display !== 'none') p.querySelector('[data-shortcut-search]')?.focus()
   } catch (e) {}
 }
-function scPaintEmpty() { // keep the onboarding hints in sync with custom bindings
-  try { if ($('emptyCard') && typeof paintEmpty === 'function') paintEmpty() } catch (e) {}
+function scPaintEmpty() { // keep the start page's key hints in sync with custom bindings
+  if (welcomeOn()) paintWelcome()
 }
 function scResetRecordingState() { scRecordingId = ''; scNotice = null }
 function scRecordingRow(id) {

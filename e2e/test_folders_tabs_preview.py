@@ -143,7 +143,9 @@ def test_last_tab_closes_to_the_plain_welcome_screen(page):
     expect(page.locator("#tabs button.tab")).to_have_count(1)
     page.locator("#tabs button.tab").last.click(button="right")
     page.locator("#menu button").filter(has_text="Close tab").click()
-    expect(page.locator("#title")).to_have_text("Welcome")
-    expect(page.locator("#emptyCard")).to_be_visible()
-    expect(page.locator("#emptyCard .step")).to_have_count(3)
-    expect(page.locator("#emptyCard #galQuick")).to_have_count(0)  # no decorative, dead template grid
+    expect(page.locator("#welcome")).to_be_visible()
+    expect(page.locator("#mid")).to_be_hidden()  # no empty editor and preview behind the start page
+    expect(page.locator("#welcome .wDocTile")).to_have_count(2)  # Only + Tutorial as contents lines
+    page.locator("#welcome .wDocTile", has_text="Only").click()
+    expect(page.locator("#title")).to_have_text("Only")
+    expect(page.locator("#welcome")).to_be_hidden()

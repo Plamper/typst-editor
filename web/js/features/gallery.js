@@ -35,11 +35,3 @@ function galleryCard(g, sel, onPick) { // thumb + title + desc, keyboard-operabl
   b.onclick = onPick
   return b
 }
-function fitEmptyCard() {
-  const card = document.getElementById('emptyCard'), preview = document.getElementById('preview')
-  if (!card) return
-  const scale = Math.min(1, (preview.clientHeight - 32) / card.offsetHeight, (preview.clientWidth - 32) / card.offsetWidth)
-  card.style.setProperty('--empty-scale', Math.max(.1, scale))
-}
-new ResizeObserver(fitEmptyCard).observe(document.getElementById('preview'))
-new MutationObserver(fitEmptyCard).observe(document.getElementById('preview'), { childList: true, subtree: true })

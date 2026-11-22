@@ -5,6 +5,7 @@ async function loadInbox() {
   const d = await api('GET', '/api/notifications')
   inboxItems = d.items; inboxUnread = d.unread
   paintInboxBadge()
+  if (welcomeOn()) paintWelcome()
   if ($('inboxPop').style.display !== 'none') renderInbox()
 }
 function paintInboxBadge() {
