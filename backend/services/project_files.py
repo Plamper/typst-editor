@@ -212,25 +212,59 @@ def delete(project_id: str, path: str, user: str, *, version_: str | None = None
     return {"ok": True}
 
 
-def rewrite(text: str, base: str, old: str, new: str) -> str:
-    """Quoted references from a text in folder `base` to `old` now name `new` (absolute stays absolute)."""
-    def fix(m) -> str:
-        ref = m.group(1)
-        if resources.resolve(base, ref) != old:
-            return m.group(0)
-        return '"' + ("/" + new if ref.strip().startswith("/") else posixpath.relpath(new, base or ".")) + '"'
-    return resources.REF_RE.sub(fix, text)
-
-
-def _rebase(text: str, old_base: str, new_base: str, paths: set[str]) -> str:
-    """A moved text keeps reaching the files its relative references reached."""
+def relocate_refs(text: str, old_base: str, new_base: str, moves: dict[str, str], paths: set[str]) -> str:
+    """References of a text that moves from folder old_base to new_base (or stays: same base) while files move
+    per `moves` (old -> new path): each keeps reaching the file it reached. Absolute stays absolute."""
     def fix(m) -> str:
         ref = m.group(1)
         hit = resources.resolve(old_base, ref)
-        if ref.strip().startswith("/") or hit not in paths or resources.resolve(new_base, ref) == hit:
+        if hit not in paths:
             return m.group(0)
-        return '"' + posixpath.relpath(hit, new_base or ".") + '"'
+        target = moves.get(hit, hit)
+        if resources.resolve(new_base, ref) == target:
+            return m.group(0)
+        return '"' + ("/" + target if ref.strip().startswith("/") else posixpath.relpath(target, new_base or ".")) + '"'
     return resources.REF_RE.sub(fix, text)
+
+
+def rewrite(text: str, base: str, old: str, new: str) -> str:
+    """Quoted references from a text in folder `base` to `old` now name `new`."""
+    return relocate_refs(text, base, base, {old: new}, {old})
+
+
+def relocate_files(con: sqlite3.Connection, project_id: str, moves: dict[str, str], backups: Backups, fix_refs: bool = True) -> set[str]:
+    """Move files per `moves` inside the caller's transaction. With fix_refs every .typ file (moved or not) keeps
+    reaching what it reached. Returns the project paths before the move (the documents' rewrite needs them)."""
+    paths = {r[0] for r in con.execute("SELECT path FROM project_files WHERE project_id=?", (project_id,))}
+    typ = texts(con, project_id) if fix_refs else {}
+    data = {old: remove(con, project_id, old, backups) for old in moves}
+    for old, new in moves.items():
+        if old in typ:
+            data[old] = relocate_refs(typ.pop(old), posixpath.dirname(old), posixpath.dirname(new), moves, paths).encode()
+        put(con, project_id, new, data[old], backups)
+    for p, text in typ.items():
+        if (fixed := relocate_refs(text, posixpath.dirname(p), posixpath.dirname(p), moves, paths)) != text:
+            put(con, project_id, p, fixed.encode(), backups)
+    return paths
+
+
+async def relocate_docs(docs: list[tuple[str, str, str]], moves: dict[str, str], paths: set[str], label: str) -> int:
+    """Documents (id, old folder, new folder) keep reaching the files they reached; live rooms get minimal edits."""
+    changed = 0
+    for doc_id, old_folder, new_folder in docs:
+        def fn(text: str, old_folder: str = old_folder, new_folder: str = new_folder) -> str:
+            return relocate_refs(text, old_folder, new_folder, moves, paths)
+        old = await asyncio.to_thread(sync.room_text, doc_id)
+        if old is None:
+            con = db.connect()
+            try:
+                old = con.execute("SELECT content FROM docs WHERE id=?", (doc_id,)).fetchone()[0]
+            finally:
+                con.close()
+        if fn(old) != old:
+            await edit_doc_refs(doc_id, fn, label)
+            changed += 1
+    return changed
 
 
 def referrers(con: sqlite3.Connection, project_id: str, path: str) -> list[str]:
@@ -253,18 +287,36 @@ def _target(path: str, target: str) -> str:
     return t
 
 
+def ref_changes(con: sqlite3.Connection, project_id: str, moves: dict[str, str], doc_moves: dict[str, str] | None = None) -> list[dict]:
+    """What moving files (`moves`, old -> new path) and documents (`doc_moves`, id -> new folder) rewrites:
+    {"in": text, "old": quoted ref, "new": quoted ref afterwards} for every quoted reference that changes."""
+    doc_moves = doc_moves or {}
+    paths = {r[0] for r in con.execute("SELECT path FROM project_files WHERE project_id=?", (project_id,))}
+    texts_in = [(posixpath.join(d["folder"], d["title"]), d["folder"], doc_moves.get(d["id"], d["folder"]), doc_text(d["id"], d["content"]))
+                for d in con.execute("SELECT id,title,folder,content FROM docs WHERE project_id=? AND trashed=0 ORDER BY folder,title", (project_id,))]
+    texts_in += [(p, posixpath.dirname(p), posixpath.dirname(moves.get(p, p)), text) for p, text in sorted(texts(con, project_id).items())]
+    out = []
+    for name, old_base, new_base, text in texts_in:
+        for m in resources.REF_RE.finditer(text):
+            new = relocate_refs(m.group(0), old_base, new_base, moves, paths)[1:-1]
+            if new != m.group(1) and (change := {"in": name, "old": m.group(1), "new": new}) not in out:
+                out.append(change)
+    return out
+
+
 def move_preview(project_id: str, path: str, target: str, user: str) -> dict:
     path, target = clean(path, new=False), _target(path, target)
     con = db.connect()
     try:
         projects.require(con, project_id, user, edit=True)
         row = _current(con, project_id, path, None, True)
-        return {"path": target, "version": row["version"], "references": referrers(con, project_id, path)}
+        return {"path": target, "version": row["version"], "references": referrers(con, project_id, path),
+                "changes": ref_changes(con, project_id, {path: target})}
     finally:
         con.close()
 
 
-def _move_files(project_id: str, path: str, target: str, user: str, version_: str | None, force: bool, fix_refs: bool) -> tuple[list[tuple[str, str]], str]:
+def _move_files(project_id: str, path: str, target: str, user: str, version_: str | None, force: bool, fix_refs: bool) -> tuple[list[tuple[str, str, str]], set[str], str]:
     backups: Backups = {}
     with lock(project_id):
         try:
@@ -274,23 +326,14 @@ def _move_files(project_id: str, path: str, target: str, user: str, version_: st
                 if target.lower() != path.lower() and con.execute(
                         "SELECT 1 FROM project_files WHERE project_id=? AND path=? COLLATE NOCASE", (project_id, target)).fetchone():
                     raise HTTPException(409, "Name already exists in this project")
-                paths = {r[0] for r in con.execute("SELECT path FROM project_files WHERE project_id=?", (project_id,))}
-                typ = texts(con, project_id) if fix_refs else {}
-                data = remove(con, project_id, path, backups)
-                if fix_refs and path in typ:
-                    data = _rebase(typ.pop(path), posixpath.dirname(path), posixpath.dirname(target), paths).encode()
-                put(con, project_id, target, data, backups)
-                for p, text in typ.items():
-                    new = rewrite(text, posixpath.dirname(p), path, target)
-                    if new != text:
-                        put(con, project_id, p, new.encode(), backups)
-                docs = [(d["id"], d["folder"]) for d in con.execute("SELECT id,folder FROM docs WHERE project_id=? AND trashed=0", (project_id,))] if fix_refs else []
+                paths = relocate_files(con, project_id, {path: target}, backups, fix_refs)
+                docs = [(d["id"], d["folder"], d["folder"]) for d in con.execute("SELECT id,folder FROM docs WHERE project_id=? AND trashed=0", (project_id,))] if fix_refs else []
                 owner = owner_of(con, project_id)
                 quota.check_quota(owner, 0, con)
         except Exception:
             undo(backups)
             raise
-    return docs, owner
+    return docs, paths, owner
 
 
 async def edit_doc_refs(doc_id: str, fn, label: str) -> None:
@@ -310,21 +353,8 @@ async def move(project_id: str, path: str, target: str, user: str, *, version_: 
     path, target = clean(path, new=False), _target(path, target)
     if target == path:
         return {"path": path, "updated_references": 0}
-    docs, owner = await asyncio.to_thread(_move_files, project_id, path, target, user, version_, force, fix_refs)
-    changed = 0
-    for doc_id, folder in docs:
-        def fn(text: str, folder: str = folder) -> str:
-            return rewrite(text, folder, path, target)
-        old = await asyncio.to_thread(sync.room_text, doc_id)
-        if old is None:
-            con = db.connect()
-            try:
-                old = con.execute("SELECT content FROM docs WHERE id=?", (doc_id,)).fetchone()[0]
-            finally:
-                con.close()
-        if fn(old) != old:
-            await edit_doc_refs(doc_id, fn, "move")
-            changed += 1
+    docs, paths, owner = await asyncio.to_thread(_move_files, project_id, path, target, user, version_, force, fix_refs)
+    changed = await relocate_docs(docs, {path: target}, paths, "move")
     quota.invalidate_quota_cache(owner)
     await asyncio.to_thread(projects.notify, project_id)
     return {"path": target, "updated_references": changed}

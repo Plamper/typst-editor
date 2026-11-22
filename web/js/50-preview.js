@@ -1127,11 +1127,17 @@ function diagRange(d, doc) { // F20: real column ranges from compiler diagnostic
   return { from, to, line: sl + 1, col: sc + 1, explicit }
 }
 // </diagRange>
+function diagText(d, quoted) { // Typst reports a missing file as "failed to load file (access denied)": name the file instead
+  const m = String((d && d.message) || '')
+  if (!/failed to load file|file not found|access denied/i.test(m)) return m || t('preview.typstErrorBare')
+  const path = ((quoted || '').match(/"([^"\n]+)"/) || [])[1]
+  return path ? t('preview.fileMissing', { path }) : t('preview.fileMissingBare')
+}
 function paintErr() { // compile errors via lint (F1): every column range renders (F20), badge keeps one row per line
   const doc = cm.state.doc, diags = [], byLine = new Map(), general = []
   for (const d of cmpDiags) {
-    const msg = (d && d.message) || t('preview.typstErrorBare')
     const r = d && d.path === tabPath(activeFile) ? diagRange(d, doc) : null // marks for the text in the editor (the document text or the open tab)
+    const msg = diagText(d, r ? doc.sliceString(r.from, r.to) : '')
     if (r) {
       diags.push({ from: r.from, to: r.to, severity: 'error', message: msg + (d.hints && d.hints.length ? '\n' + d.hints.map(h => 'â†’ ' + h).join('\n') : ''), source: 'typst' })
       if (!byLine.has(r.line)) byLine.set(r.line, { line: r.line, col: r.explicit ? r.col : 0, from: r.from, to: r.to, raw: msg, msg: msg + t('preview.lineSuffix', { line: r.line, col: r.explicit ? ':' + r.col : '' }) })

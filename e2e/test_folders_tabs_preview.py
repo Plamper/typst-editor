@@ -94,8 +94,7 @@ def test_create_folder_module_in_folder_and_rename_folder_through_the_ui(page):
     if page.locator("#menu:not([hidden])").count():
         page.locator("#menu button, #menu [role=menuitem]", has_text="Rename").click()
     page.locator("aside input.renameInput").fill("parts")
-    page.keyboard.press("Enter")
-    page.click("#mYes")
+    page.keyboard.press("Enter")  # no reference into the folder changes: renamed at once
     expect(page.locator("aside .fhd.folder", has_text="parts")).to_have_count(1)
     assert file_paths(page.request, pid) == ["parts/intro.typ"]
     expect(page.locator("#tabs button.tab", has_text="intro.typ")).to_have_count(1)
@@ -128,6 +127,8 @@ def test_file_rows_and_empty_hints_are_drop_areas_for_their_folder(page):
     assert file_paths(page.request, pid) == ["empty/inner/other.typ", "lib/style.typ"]
     # dropping on a file row targets the folder that file lives in, not the file
     page.locator("aside .doc.sub[title='lib/style.typ']").drag_to(page.locator("aside .doc.sub[title='empty/inner/other.typ']"))
+    expect(page.locator("#modal")).to_contain_text("Move only")  # the document quotes style.typ: the move asks first
+    page.click("#mYes")
     expect(page.locator("aside .doc.sub[title='empty/inner/style.typ']")).to_have_count(1)
     assert file_paths(page.request, pid) == ["empty/inner/other.typ", "empty/inner/style.typ"]
 
