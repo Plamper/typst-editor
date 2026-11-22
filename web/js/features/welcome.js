@@ -71,7 +71,8 @@ function welcomeDocTile(x) { // a recent document as a small card
   const p = x.project_id && projects.find(q => q.id === x.project_id)
   const b = el('button', 'wDocTile'); b.type = 'button'
   const ic = el('span', 'wIco'); ic.innerHTML = welcomeIcon(wIco('doc'), 14)
-  b.append(ic, el('span', 'wRowTitle', x.title), el('span', 'wRowSub', [p && p.title !== x.title ? p.title : '', x.folder || ''].filter(Boolean).join(' / ') || '\u00a0'),
+  const place = x.owner && x.owner !== user ? t('docs.wSharedBy', { owner: x.owner }) : [p && p.title !== x.title ? p.title : '', x.folder || ''].filter(Boolean).join(' / ')
+  b.append(ic, el('span', 'wRowTitle', x.title), el('span', 'wRowSub', place || '\u00a0'),
     el('span', 'wRowWhen', x.updated_at ? ago(x.updated_at) : ''))
   b.onclick = () => openDoc(x.id)
   return b
