@@ -202,3 +202,12 @@ def test_compile_root_never_writes_outside(tmp_path):
         with pytest.raises(HTTPException):
             render._write_root(tmp_path / "root", "x", [(name, b"x")])
     assert not (tmp_path / "up.png").exists() and not (tmp_path / "abs").exists()
+
+
+def test_file_read_names_the_version_of_the_bytes_it_sends(c):
+    register_user(c, "versionhdr")
+    pid = c.post("/api/projects", json={"title": "V"}).json()["id"]
+    put = c.put(f"/api/projects/{pid}/files/a.typ", content=b"one").json()
+    got = c.get(f"/api/projects/{pid}/files/a.typ")
+    assert got.headers["X-File-Version"] == put["version"]
+    assert c.put(f"/api/projects/{pid}/files/a.typ?version={got.headers['X-File-Version']}", content=b"two").status_code == 200

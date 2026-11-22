@@ -8,11 +8,12 @@ function refTo(path, dir = activeFile ? activeFile.split('/').slice(0, -1).join(
   return !dir ? path : path.startsWith(dir + '/') ? path.slice(dir.length + 1) : '/' + path
 }
 const cachedText = path => { const c = fileCache.get(path); return c ? new TextDecoder().decode(c.bytes) : '' } // text the preview already holds
-async function fileText(path) { // UTF-8 text of a project file
+async function fileRead(path) { // UTF-8 text of a project file and the version of exactly these bytes
   const r = await fetch(fileUrl(path))
   if (!r.ok) throw Object.assign(new Error(expMsg(await r.text())), { status: r.status })
-  return r.text()
+  return { text: await r.text(), version: r.headers.get('X-File-Version') || '' }
 }
+const fileText = async path => (await fileRead(path)).text
 async function putFile(url, body) { // raw PUT of a project file (?version= guards an overwrite); errors carry .status like api()
   filesDirty = true
   const r = await fetch(url, { method: 'PUT', body })
@@ -321,10 +322,11 @@ async function switchTab(name, nosave, preserveView = false) { // true = switche
   const file = lastFiles.find(f => f.path === name)
   if (!TEXT_EXT.test(name)) text = t('files.binaryInfo', { name, kb: Math.round((file?.size || 0) / 1024) })
   else {
-    try { text = await fileText(name) }
+    let version
+    try { ({ text, version } = await fileRead(name)) }
     catch (e) { if (my === tabSeq && dk === docId) toast(e.message); return false }
     if (my !== tabSeq || dk !== docId) return false // late response: must not write into the newer tab
-    if (file) tabVersions.set(name, file.version)
+    tabVersions.set(name, version) // from the read itself: a file list refresh racing the open may still miss a new file
   }
   if (my !== tabSeq || dk !== docId || epoch !== openN || tabDirty) return false
   activeFile = name; tabDirty = false; setT(text, preserveView)
@@ -408,11 +410,9 @@ async function flushTab(allowStash = false) {
 }
 async function loadTabTheirs(dk, key) { // 409 escape: take the server text into the editor (mirror of loadTheirs)
   try {
-    await loadProjectFiles(true)
-    const text = await fileText(key), row = lastFiles.find(f => f.path === key)
+    const { text, version } = await fileRead(key)
     if (docId !== dk || activeFile !== key) return
-    if (!row) { toast(t('files.tplGone')); return }
-    tabVersions.set(key, row.version)
+    tabVersions.set(key, version)
     tabDirty = false; setT(text)
     try { localStorage.removeItem(fileStashKey(dk, key)) } catch (e) {}
     $('save').textContent = t('docs.saved')
