@@ -565,7 +565,7 @@ function renameBody(from, to, changes) { // old -> new path, then every quoted r
     row.append(el('span', 'mIn', c.in), path)
     list.append(row)
   })
-  body.append(list, el('p', 'mNote', t('projects.dynamicReferences')))
+  body.append(list)
   return body
 }
 async function applyEntryRename(p, name, target, confirm = true) { // rename or move (a new path = a new folder): the listed quoted references follow
