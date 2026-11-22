@@ -54,6 +54,7 @@ def get_file(project_id: str, path: str, req: Request, user: str = Depends(deps.
     name = posixpath.basename(path)
     mime = "application/octet-stream" if name.lower().endswith(".svg") else mimetypes.guess_type(name)[0] or "application/octet-stream"
     return Response(data, media_type=mime, headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
+                                                    "X-File-Version": project_files.version(data),  # the exact bytes sent: a tab saves against them
                                                     "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
 
 

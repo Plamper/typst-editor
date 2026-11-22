@@ -229,3 +229,12 @@ def test_document_move_keeps_its_relative_references(c):
     r = c.post(f"/api/projects/{pid}/docs/{did}/folder", json={"folder": "deep"})
     assert r.status_code == 200 and r.json()["updated_references"] == 1
     assert c.get(f"/api/docs/{did}").json()["content"] == '#include "../parts/a.typ"\n#image("/img.png")\n"plain words"'
+
+
+def test_file_read_names_the_version_of_the_bytes_it_sends(c):
+    register_user(c, "versionhdr")
+    pid = c.post("/api/projects", json={"title": "V"}).json()["id"]
+    put = c.put(f"/api/projects/{pid}/files/a.typ", content=b"one").json()
+    got = c.get(f"/api/projects/{pid}/files/a.typ")
+    assert got.headers["X-File-Version"] == put["version"]
+    assert c.put(f"/api/projects/{pid}/files/a.typ?version={got.headers['X-File-Version']}", content=b"two").status_code == 200

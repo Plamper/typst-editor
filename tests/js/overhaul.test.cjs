@@ -89,7 +89,7 @@ test('an old document save cannot clear a new document draft', async () => {
 test('a file read does not change the active buffer before it finishes', async () => {
   const pending = deferred()
   const c = context({ activeFile: '', tabDirty: false, tabSeq: 0, TEXT_EXT: /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i,
-    lastFiles: [{ path: 'chapter.typ', version: 'v1' }], loadProjectFiles: async () => true, fileText: () => pending.promise,
+    lastFiles: [{ path: 'chapter.typ', version: 'v1' }], loadProjectFiles: async () => true, fileRead: () => pending.promise,
     flushTab: async () => true, tabSaveState: () => {}, setT: () => { throw new Error('must not replace dirty text') },
   })
   vm.runInContext(part('web/js/80-files-images.js', 'async function switchTab(', 'function offerFileStash('), c)
@@ -97,10 +97,26 @@ test('a file read does not change the active buffer before it finishes', async (
   await Promise.resolve()
   assert.equal(c.activeFile, '')
   c.text = 'Typed into main while the file loads'; c.tabDirty = true
-  pending.resolve('File text')
+  pending.resolve({ text: 'File text', version: 'v1' })
   assert.equal(await switching, false)
   assert.equal(c.activeFile, '')
   assert.equal(c.text, 'Typed into main while the file loads')
+})
+
+test('a file opened before the file list knows it saves against the version it was read at', async () => {
+  let shown = ''
+  const c = context({ activeFile: '', tabDirty: false, tabSeq: 0, TEXT_EXT: /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i,
+    lastFiles: [], loadProjectFiles: async () => false, fileRead: async () => ({ text: 'New file', version: 'v-read' }),
+    flushTab: async () => true, tabSaveState: () => {}, setT: text => { shown = text },
+    cm: { dispatch: () => {} }, editableComp: { reconfigure: () => {} }, editMode: () => {},
+    paintTabs: () => {}, paintOwn: () => {}, paintShared: () => {}, lastShared: [], gutter: () => {}, closePop: () => {}, paintOutline: () => {},
+    tabRestoreState: () => {}, scrollApplyEditor: () => {}, paintErr: () => {}, queueRender: () => {}, reanchor: () => {}, refreshHl: () => {},
+    offerFileStash: async () => {}, tabSig: '', RangeSet: { of: () => {} }, setHl: { of: () => {} },
+  })
+  vm.runInContext(part('web/js/80-files-images.js', 'async function switchTab(', 'function offerFileStash('), c)
+  await c.switchTab('fresh.typ')
+  assert.equal(shown, 'New file')
+  assert.equal(c.tabVersions.get('fresh.typ'), 'v-read') // the racing list refresh lost: the save still names the right version
 })
 
 test('a delayed formatter does not format a different document', async () => {
