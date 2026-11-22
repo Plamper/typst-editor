@@ -144,7 +144,7 @@ def test_last_tab_closes_to_the_plain_welcome_screen(page):
     page.locator("#menu button").filter(has_text="Close tab").click()
     expect(page.locator("#welcome")).to_be_visible()
     expect(page.locator("#mid")).to_be_hidden()  # no empty editor and preview behind the start page
-    expect(page.locator("#welcome .wLine")).to_have_count(2)  # Only + Tutorial as contents lines
-    page.locator("#welcome .wLine", has_text="Only").click()
+    expect(page.locator("#welcome .wRow")).to_have_count(2)  # Only + Tutorial as contents lines
+    page.locator("#welcome .wRow", has_text="Only").click()
     expect(page.locator("#title")).to_have_text("Only")
     expect(page.locator("#welcome")).to_be_hidden()
