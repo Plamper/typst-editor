@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="#installation"><strong>Install</strong></a> ·
+  <a href="docs/README.md">Docs</a> ·
   <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="SECURITY.md">Security</a> ·
   <a href="LICENSE">License</a>
@@ -65,18 +66,17 @@ docker compose logs app | grep "invite code"         # docker compose
 
 The code is generated on first start and saved to `DATA_DIR/.invite_token`. For a public server, set `REGISTRATION_INVITE_TOKEN` before the first start.
 
-### Single Sign-On (OIDC)
+For more information, read this README and the [documentation](docs/README.md).
 
-To enable OpenID Connect login (Authentik, Authelia, Kanidm, etc.) using Authorization Code Flow with PKCE, set `OIDC_ISSUER_URL` and `OIDC_CLIENT_ID` (plus `OIDC_CLIENT_SECRET` for confidential clients, or leave it empty for public PKCE clients):
+## Documentation
 
-```dotenv
-OIDC_ISSUER_URL=https://auth.example.com/application/o/typst/
-OIDC_CLIENT_ID=typst-editor
-OIDC_CLIENT_SECRET=
-OIDC_REDIRECT_URI=https://typst.example.com/api/oidc/callback
-```
+The full documentation lives in [`docs/`](docs/README.md). The most important pages:
 
-Set `OIDC_REDIRECT_URI` explicitly in production. Optional settings (`OIDC_PROVIDER_NAME`, `OIDC_ALLOWED_GROUPS`, `OIDC_AUTO_REGISTER`, `OIDC_AUTO_REDIRECT`, `DISABLE_PASSWORD_LOGIN`) are documented in [`.env.example`](.env.example) and [`config.example.toml`](config.example.toml).
+- [Installation](docs/self-hosting/installation.md): Docker, Compose, the first account and running without Docker.
+- [Configuration](docs/self-hosting/configuration.md): every setting with its default, quotas, rate limits and startup checks.
+- [Reverse proxy and TLS](docs/self-hosting/reverse-proxy.md): Caddy and nginx examples, proxy trust and cookies.
+- [Single Sign-On (OIDC)](docs/self-hosting/single-sign-on.md): Authentik, Authelia, Kanidm and other OpenID Connect providers.
+- [Agents and MCP](docs/usage/agents-and-mcp.md): API keys, key modes and connecting Claude Code, OpenCode and other clients.
 
 ## Contributing
 
