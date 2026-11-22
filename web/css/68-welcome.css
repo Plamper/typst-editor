@@ -20,18 +20,20 @@ body.welcome #mid, body.welcome #statusBar, body.welcome #docHead, body.welcome 
 .wBtn.wPrimary:hover { background: var(--ink); opacity: .88; }
 .wBtn.wPrimary .wIco { color: currentColor; }
 
-.wInbox { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; padding: 4px 0; border: 0; background: none; font-size: 13px; color: var(--acc); }
-.wInbox .wIco { display: inline-flex; }
-.wInbox:hover .wLbl { text-decoration: underline; text-underline-offset: 3px; }
-
-.wCard { margin-top: 28px; padding: 6px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--sh-1); }
+.wCard { margin-top: 20px; padding: 6px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--sh-1); }
+.wCardHeadRow { display: flex; align-items: center; justify-content: space-between; }
+.wMore { padding: 6px 10px; border: 0; background: none; font-size: 12px; color: var(--acc); }
+.wMore:hover { text-decoration: underline; text-underline-offset: 3px; }
+.wAt { display: inline-flex; width: 14px; justify-content: center; font-size: 13px; font-weight: 650; color: var(--acc); }
+.wGo { display: inline-flex; flex: none; color: var(--faint); opacity: 0; transition: opacity .12s ease; }
+.wRow:hover .wGo, .wRow:focus-visible .wGo { opacity: 1; }
 .wCardHead { margin: 0; padding: 8px 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
 .wRow { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; padding: 6px 10px; border: 0; border-radius: var(--r-sm); background: none; }
 .wRow:hover { background: var(--hover); }
 .wRow .wIco { display: inline-flex; flex: none; color: var(--sub); }
 .wRowMain { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; }
 .wRowTitle { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; font-weight: 500; }
-.wRowSub { flex: none; max-width: 40%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; color: var(--faint); }
+.wRowSub { flex: 0 1 auto; max-width: 45%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; color: var(--faint); }
 .wRowWhen { flex: none; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .wEmpty { margin: 0; padding: 14px 10px 16px; font-size: 13px; color: var(--sub); }
 
@@ -39,4 +41,5 @@ body.welcome #mid, body.welcome #statusBar, body.welcome #docHead, body.welcome 
   #welcome { padding: 28px 16px 32px; }
   .wActs .wPrimary { flex: 1 1 100%; justify-content: center; }
   .wRowSub { display: none; }
+  .wGo { display: none; }
 }

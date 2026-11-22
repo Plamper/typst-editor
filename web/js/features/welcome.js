@@ -31,33 +31,51 @@ function welcomeRecent(n) { // newest first across own and shared documents
   for (const x of [...lastOwn, ...lastShared]) if (!seen.has(x.id)) { seen.add(x.id); all.push(x) }
   return all.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''))).slice(0, n)
 }
-function welcomeRow(x) { // one recent document: icon, title, project, time - like a sidebar row
+function welcomeRow(icon, title, sub, when, open) { // one line like a sidebar row: icon, title, muted place, time, arrow on hover
   const row = el('button', 'wRow'); row.type = 'button'
-  const ic = el('span', 'wIco'); ic.innerHTML = welcomeIcon(wIco('doc'), 14)
-  const p = x.project_id && projects.find(q => q.id === x.project_id)
-  const where = x.owner && x.owner !== user ? t('docs.wSharedBy', { owner: x.owner }) : p && p.title !== x.title ? p.title : ''
-  const main = el('span', 'wRowMain'); main.append(el('span', 'wRowTitle', x.title))
-  if (where) main.append(el('span', 'wRowSub', where))
-  row.append(ic, main, el('span', 'wRowWhen', x.updated_at ? ago(x.updated_at) : ''))
-  row.onclick = () => openDoc(x.id)
+  const ic = el('span', 'wIco'); ic.innerHTML = icon
+  const main = el('span', 'wRowMain'); main.append(el('span', 'wRowTitle', title))
+  if (sub) main.append(el('span', 'wRowSub', sub))
+  const go = el('span', 'wGo'); go.innerHTML = welcomeIcon('<path d="M6 3.5L10.5 8 6 12.5"/>', 12)
+  row.append(ic, main, el('span', 'wRowWhen', when), go)
+  row.onclick = () => Promise.resolve().then(open).catch(e => toast(e.message))
   return row
 }
-function welcomeRecentCard(n) {
-  const card = el('section', 'wCard'); card.setAttribute('aria-labelledby', 'wRecentH')
-  const h = el('h2', 'wCardHead', t('docs.wRecent')); h.id = 'wRecentH'
-  card.append(h)
-  const docs = welcomeRecent(n)
-  if (docs.length) docs.forEach(x => card.append(welcomeRow(x)))
-  else card.append(el('p', 'wEmpty', t('docs.wEmpty')))
+function welcomeDocRow(x) {
+  const p = x.project_id && projects.find(q => q.id === x.project_id)
+  const place = x.owner && x.owner !== user ? t('docs.wSharedBy', { owner: x.owner })
+    : [p && p.title !== x.title ? p.title : '', x.folder || ''].filter(Boolean).join(' / ')
+  return welcomeRow(welcomeIcon(wIco('doc'), 14), x.title, place, x.updated_at ? ago(x.updated_at) : '', () => openDoc(x.id))
+}
+function welcomeCard(id, title, rows, more) {
+  const card = el('section', 'wCard'); card.setAttribute('aria-labelledby', id)
+  const head = el('div', 'wCardHeadRow')
+  const h = el('h2', 'wCardHead', title); h.id = id
+  head.append(h)
+  if (more) head.append(more)
+  card.append(head, ...rows)
   return card
 }
-function welcomeInbox() { // unread notifications as one quiet line (opens the inbox)
-  let unread = 0
-  try { unread = inboxUnread || 0 } catch (e) {} // boot: inbox.js has not run yet
-  if (!unread) return null
-  const b = welcomeButton(t(unread === 1 ? 'docs.wInboxOne' : 'docs.wInboxMany', { n: unread }), 'bell', () => $('inboxBtn').click(), 'wInbox')
-  b.onclick = e => { e.stopPropagation(); $('inboxBtn').click() }
-  return b
+function welcomeRecentCard(n) {
+  const docs = welcomeRecent(n)
+  return welcomeCard('wRecentH', t('docs.wRecent'), docs.length ? docs.map(welcomeDocRow) : [el('p', 'wEmpty', t('docs.wEmpty'))])
+}
+function welcomeInboxCard() { // up to three unread notifications, each opens its place; null when nothing is unread
+  let items = []
+  try { items = inboxItems.filter(it => !it.is_read).slice(0, 3) } catch (e) {} // boot: inbox.js has not run yet
+  if (!items.length) return null
+  const all = el('button', 'wMore', t('docs.wInboxAll')); all.type = 'button'
+  all.onclick = e => { e.stopPropagation(); $('inboxBtn').click() }
+  const rows = items.map(it => welcomeRow(it.type === 'mention' ? '<b class="wAt">@</b>' : welcomeIcon(wIco('bell'), 14),
+    inboxText(it), it.type === 'mention' ? it.text : '', ago(it.created_at), () => goInbox(it)))
+  return welcomeCard('wInboxH', t('docs.wForYou'), rows, all)
+}
+function welcomeKeys(e) { // arrows walk the rows like a list
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+  const rows = [...$('welcome').querySelectorAll('.wRow')], i = rows.indexOf(document.activeElement)
+  if (i < 0) return
+  e.preventDefault()
+  rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))].focus()
 }
 function paintWelcome() {
   const box = $('welcome')
@@ -71,8 +89,9 @@ function paintWelcome() {
   const tut = lastOwn.find(x => x.title === 'Tutorial')
   if (tut) acts.append(welcomeButton(t('docs.wTutorial'), 'book', () => openDoc(tut.id), 'wBtn'))
   inner.append(head, acts)
-  const inbox = welcomeInbox()
+  const inbox = welcomeInboxCard()
   if (inbox) inner.append(inbox)
-  inner.append(welcomeRecentCard(6))
+  inner.append(welcomeRecentCard(8))
+  box.onkeydown = welcomeKeys
   box.replaceChildren(inner)
 }
