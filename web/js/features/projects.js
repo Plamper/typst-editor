@@ -509,10 +509,10 @@ async function renameFolder(p, path, host) {
   if (target === path) return
   if (target.split('/').length > FOLDER_LEVELS) { toast(t('projects.folderDepth', { n: FOLDER_LEVELS })); return }
   if (!folderTreeFits(folderContents(p, path), path, target)) { toast(t('projects.folderDepth', { n: FOLDER_LEVELS })); return }
-  const body = el('div', 'mBody')
-  body.append(el('div', 'mLabel', t('projects.newName')), el('div', 'mTarget', target), el('p', 'mNote', t('projects.folderRenameNote')))
-  if (!await ask(t('projects.renameFolder'), { noInput: true, body, ok: t('projects.renameAction') })) return
-  await api('POST', `/api/projects/${p.id}/folders/rename`, { path, target })
+  const { changes } = await api('POST', `/api/projects/${p.id}/folders/rename-preview`, { path, target })
+  const choice = changes.length ? await ask(t('projects.renameFolder'), { noInput: true, body: renameBody(path, target, changes), ok: t('projects.renameAction'), alt: t('projects.renameOnly') }) : true
+  if (!choice) return
+  await api('POST', `/api/projects/${p.id}/folders/rename`, { path, target, fix_refs: choice !== 'alt' })
   await afterFolderRename(p, path, target)
 }
 async function renameProject(p, host) {
@@ -573,16 +573,16 @@ async function applyEntryRename(p, name, target, confirm = true) { // rename or 
   const doc = docId, epoch = openN
   const preview = await api('POST', `/api/projects/${p.id}/files-move-preview`, { path: name, target })
   if (doc !== docId || epoch !== openN) return
-  if (confirm && preview.changes.length && !await ask(t('files.renameHead'), { noInput: true, body: renameBody(name, preview.path, preview.changes), ok: t('projects.renameAction') })) return // nothing quotes it: rename at once
+  const choice = confirm && preview.changes.length ? await ask(t('files.renameHead'), { noInput: true, body: renameBody(name, preview.path, preview.changes), ok: t('projects.renameAction'), alt: t('projects.renameOnly') }) : true // nothing quotes it, or a drag: no dialog
+  if (!choice) return
   if (doc !== docId || epoch !== openN) return
-  const result = await api('POST', `/api/projects/${p.id}/files-move`, { path: name, target: preview.path, version: preview.version, fix_refs: true })
+  const result = await api('POST', `/api/projects/${p.id}/files-move`, { path: name, target: preview.path, version: preview.version, fix_refs: choice !== 'alt' })
   tabRemapEntry(p.id, 'f:' + name, 'f:' + result.path)
   const reopen = docId === doc && openN === epoch && docProject === p.id && activeFile === name
   if (reopen) await switchTab('', true) // the moved text may carry rewritten references: load it fresh under its new path
   if (docId === doc && openN === epoch && docProject === p.id) { filesDirty = true; await loadProjectFiles(true); tabSig = ''; queueRender() }
   await sidebarFresh()
   if (reopen && docId === doc && openN === epoch) await switchTab(result.path)
-  toast(confirm ? t('files.renamed', { name: result.path }) : t('files.moved', { name: result.path }))
 }
 async function moveEntryToFolder(p, entry, folder) { // drag onto a folder (or the project): same project only
   if (folder && folder.split('/').length > FOLDER_LEVELS) { toast(t('projects.folderDepth', { n: FOLDER_LEVELS })); return }

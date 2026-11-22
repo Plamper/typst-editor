@@ -28,6 +28,7 @@ class FolderPath(BaseModel):
 class FolderRename(BaseModel):
     path: str = Field(min_length=1, max_length=240)
     target: str = Field(min_length=1, max_length=240)
+    fix_refs: bool = True
 
 
 class DocFolder(BaseModel):
@@ -87,14 +88,36 @@ async def rename_folder(project_id: str, b: FolderRename, req: Request, user: st
         return {"path": new, "updated_references": 0}
     if _within(new, old):
         raise HTTPException(400, "A folder cannot move into itself")
-    docs, paths, moves = await asyncio.to_thread(_rename_folder, project_id, old, new, user)
+    docs, paths, moves = await asyncio.to_thread(_rename_folder, project_id, old, new, user, b.fix_refs)
     changed = await project_files.relocate_docs(docs, moves, paths, "folder move")
     # notify() -> auto() -> prepared() takes the files lock; call it after release.
     await asyncio.to_thread(projects.notify, project_id)
     return {"path": new, "updated_references": changed}
 
 
-def _rename_folder(project_id: str, old: str, new: str, user: str) -> tuple[list[tuple[str, str, str]], set[str], dict[str, str]]:
+def _folder_moves(con: sqlite3.Connection, project_id: str, old: str, new: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Files (old -> new path) and documents (id -> new folder) a folder rename moves."""
+    files = {p: _moved_depth(p, old, new) for (p,) in con.execute("SELECT path FROM project_files WHERE project_id=?", (project_id,)) if _within(p, old)}
+    docs = {i: _moved_depth(f, old, new, folder=True) for i, f in con.execute("SELECT id,folder FROM docs WHERE project_id=? AND trashed=0", (project_id,))
+            if f and _within(f, old)}
+    return files, docs
+
+
+@router.post("/api/projects/{project_id}/folders/rename-preview")
+def rename_folder_preview(project_id: str, b: FolderRename, req: Request, user: str = Depends(deps.me)) -> dict:
+    """The quoted references a folder rename would update (the dialog lists them)."""
+    deps.limited(req, "files_list")
+    old, new = folder_path(b.path, new=False), folder_path(b.target)
+    con = db.connect()
+    try:
+        projects.require(con, project_id, user, edit=True)
+        files, docs = _folder_moves(con, project_id, old, new)
+        return {"path": new, "changes": project_files.ref_changes(con, project_id, files, docs)}
+    finally:
+        con.close()
+
+
+def _rename_folder(project_id: str, old: str, new: str, user: str, fix_refs: bool = True) -> tuple[list[tuple[str, str, str]], set[str], dict[str, str]]:
     backups: project_files.Backups = {}
     docs: list[tuple[str, str, str]] = []
     with project_files.lock(project_id):
@@ -115,7 +138,9 @@ def _rename_folder(project_id: str, old: str, new: str, user: str) -> tuple[list
                 staying = {p.casefold() for (p,) in con.execute("SELECT path FROM project_files WHERE project_id=?", (project_id,)) if not _within(p, old)}
                 if any(n.casefold() in staying for n in moves.values()):
                     raise HTTPException(409, "Name already exists in this project")
-                paths = project_files.relocate_files(con, project_id, moves, backups)
+                paths = project_files.relocate_files(con, project_id, moves, backups, fix_refs)
+                if not fix_refs:
+                    docs = []
                 rows = [r[0] for r in con.execute("SELECT path FROM project_folders WHERE project_id=?", (project_id,))]
                 for p in rows:
                     if _within(p, old):

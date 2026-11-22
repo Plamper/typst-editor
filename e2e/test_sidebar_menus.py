@@ -288,7 +288,7 @@ def test_rename_keeps_the_folder_path_out_of_the_input(page):
     assert inp.evaluate("el => [el.selectionStart, el.selectionEnd]") == [0, 5]
     inp.fill("renamed.typ")
     inp.press("Enter")
-    page.locator("#mYes").click()  # rename preview confirms the new path
+    expect(page.locator("#modal")).to_be_hidden()  # nothing quotes it: no confirmation
     expect(page.locator("aside .doc .t", has_text="renamed.typ")).to_be_visible()
     names = file_paths(page.request, pid)
     assert "sub/renamed.typ" in names and "sub/notes.typ" not in names

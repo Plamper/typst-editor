@@ -17,7 +17,7 @@
 .mBody .mOld { color: var(--faint); }
 .mBody .mArrow { color: var(--faint); font-family: inherit; }
 .mBody .mChanges { display: flex; flex-direction: column; margin-bottom: 14px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
-.mBody .mChange { display: grid; grid-template-columns: minmax(80px, 34%) 1fr; gap: 10px; align-items: baseline; padding: 7px 10px; }
+.mBody .mChange { display: grid; grid-template-columns: minmax(70px, 26%) 1fr; gap: 10px; align-items: baseline; padding: 7px 10px; }
 .mBody .mChange + .mChange { border-top: 1px solid var(--line); }
 .mBody .mIn { color: var(--text); font-size: 12.5px; overflow-wrap: anywhere; }
 .mBody .mChange code { color: var(--text); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; overflow-wrap: anywhere; }
@@ -32,6 +32,9 @@
 .zipDir { color: var(--faint); }
 .zipHint { flex: none; font-size: 12px; color: var(--faint); }
 .mRow { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.mRow:has(.mAlt) #mNo { margin-right: auto; } /* cancel left, both actions right */
+.mRow .mAlt { background: var(--card); color: var(--text); border: 1px solid var(--line-2); box-shadow: var(--sh-1); font-weight: 500; }
+.mRow .mAlt:hover { background: var(--hover); }
 .mRow button { padding: 7px 16px; min-height: 34px; font-size: 13px; border-radius: var(--r-sm); }
 .mTop { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .mTop button { min-height: 30px; padding: 4px 12px; }

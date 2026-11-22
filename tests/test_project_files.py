@@ -250,3 +250,16 @@ def test_move_preview_lists_each_reference_before_and_after(c):
     assert pre["changes"] == [{"in": "Main", "old": "kapitel/teil.typ", "new": "kapitel/hugo.typ"},
                               {"in": "kapitel/Intro", "old": "teil.typ", "new": "hugo.typ"},
                               {"in": "kapitel/Intro", "old": "/kapitel/teil.typ", "new": "/kapitel/hugo.typ"}]
+
+
+def test_folder_rename_preview_and_rename_without_updating_references(c):
+    register_user(c, "folderonly")
+    pid = c.post("/api/projects", json={"title": "F"}).json()["id"]
+    did = c.post(f"/api/projects/{pid}/docs", json={"title": "Main", "content": '#include "ch/part.typ"'}).json()["id"]
+    _put(c, pid, "ch/part.typ", b"P")
+    pre = c.post(f"/api/projects/{pid}/folders/rename-preview", json={"path": "ch", "target": "book"}).json()
+    assert pre["changes"] == [{"in": "Main", "old": "ch/part.typ", "new": "book/part.typ"}]
+    r = c.post(f"/api/projects/{pid}/folders/rename", json={"path": "ch", "target": "book", "fix_refs": False})
+    assert r.status_code == 200 and r.json()["updated_references"] == 0
+    assert c.get(f"/api/docs/{did}").json()["content"] == '#include "ch/part.typ"'  # the user chose "rename only"
+    assert c.get(f"/api/projects/{pid}/files/book/part.typ").content == b"P"

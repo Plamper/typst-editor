@@ -94,8 +94,7 @@ def test_create_folder_module_in_folder_and_rename_folder_through_the_ui(page):
     if page.locator("#menu:not([hidden])").count():
         page.locator("#menu button, #menu [role=menuitem]", has_text="Rename").click()
     page.locator("aside input.renameInput").fill("parts")
-    page.keyboard.press("Enter")
-    page.click("#mYes")
+    page.keyboard.press("Enter")  # no reference into the folder changes: renamed at once
     expect(page.locator("aside .fhd.folder", has_text="parts")).to_have_count(1)
     assert file_paths(page.request, pid) == ["parts/intro.typ"]
     expect(page.locator("#tabs button.tab", has_text="intro.typ")).to_have_count(1)
