@@ -86,6 +86,15 @@ test('font completion covers #set text, #text, bare set text, and auto-quotes', 
   assert.equal(r3.from, 18)
   assert.equal(r3.options[0].label, 'Acme Sans')
 
+  // German / typographic opening quotes (keyboard autocorrect) complete and normalize to straight quotes
+  const r5 = c.typstComplete(editor('#set text(font: „Int'))
+  assert.equal(r5.from, 16)
+  assert.equal(r5.options[0].label, 'Inter')
+  const smart = []
+  r5.options[0].apply({ state: { sliceDoc: (f, t) => '#set text(font: „Int“)'.slice(f, t) }, dispatch: tr => smart.push(tr) }, r5.options[0], r5.from, 20)
+  assert.deepEqual(JSON.parse(JSON.stringify(smart[0].changes)), { from: 16, to: 21, insert: '"Inter"' })
+  assert.equal(c.typstComplete(editor('#set text(font: ("Inter", „')).options.some(o => o.label === 'Inter'), false)
+
   // Bare set text inside #show rule
   const r4 = c.typstComplete(editor('#show raw: set text(font: "Deja'))
   assert.equal(r4.options[0].label, 'DejaVu Sans Mono')

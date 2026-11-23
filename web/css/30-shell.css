@@ -197,6 +197,19 @@ body.file-view #leftCol { display: flex !important; width: 100% !important; flex
 .imageFile { flex: 1; min-width: 0; height: 100%; overflow: auto; padding: 24px; box-sizing: border-box; text-align: center; }
 .imageFile img { max-width: 100%; height: auto; object-fit: contain; }
 .imageFile embed { width: 100%; height: 100%; border: 0; }
+.fontFile { max-width: 420px; margin: 12vh auto 0; color: var(--sub); font-size: 13.5px; line-height: 1.55; overflow-wrap: anywhere; }
+.fontFile .fontSample { font-size: 72px; line-height: 1.2; color: var(--text); }
+.fontFile .fontName { margin-top: 6px; font-size: 15px; font-weight: 600; color: var(--text); }
+.fontFile .fontUse { display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 8px; }
+.fontFile code { font: 12.5px var(--mono); }
+.fontFile .fontUse .ibtn { width: 24px; height: 24px; padding: 0; }
+.fontFile .fontKind { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
+.fontFile .fontSet { margin-top: 14px; text-align: left; }
+.fontFile .fontSet + .fontSet { margin-top: 6px; }
+.fontFile .fontSet summary { cursor: pointer; width: max-content; margin: 0 auto; font-size: 12.5px; }
+.fontFile .fontSet summary:hover { color: var(--text); }
+.fontFile .fontGlyphs { display: grid; grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 4px; margin-top: 10px; }
+.fontFile .fontGlyphs span { display: flex; align-items: center; justify-content: center; height: 38px; font-size: 20px; color: var(--text); }
 
 .sidebar-drop { min-width: 0; border-radius: var(--r-sm); }
 

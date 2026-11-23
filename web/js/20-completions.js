@@ -134,8 +134,8 @@ function typstComplete(ctx) {
           type: 'enum',
           detail: srcDetail(f.source),
           boost: 55 + pre + srcBoost(f.source),
-          apply: (view, completion, from, to) => { // auto-quote and consume an existing closing `"`
-            const end = view.state.sliceDoc(to, to + 1) === '"' ? to + 1 : to
+          apply: (view, completion, from, to) => { // auto-quote with straight quotes (Typst strings) and consume an existing closing quote
+            const end = /["“”]/.test(view.state.sliceDoc(to, to + 1)) ? to + 1 : to
             view.dispatch({ changes: { from, to: end, insert: quotedVal }, selection: { anchor: from + quotedVal.length }, userEvent: 'input.complete' })
           },
         })
@@ -240,7 +240,7 @@ function matchFontContext(before, pos) { // innermost unclosed text(... font: <s
     return parts
   }
   const parseTail = s => {
-    const qm = s.match(/^\s*("([^"\n\\]*))$/)
+    const qm = s.match(/^\s*(["„“”]([^"„“”\n\\]*))$/) // German/typographic quotes (keyboard autocorrect) count as the opening quote
     if (qm) return { trail: qm[1], quoted: true, query: qm[2] }
     const bm = s.match(/^\s*([\p{ID_Continue}_-]*)$/u)
     if (bm) return { trail: bm[1], quoted: false, query: bm[1] }
@@ -265,7 +265,7 @@ function matchFontContext(before, pos) { // innermost unclosed text(... font: <s
   if (!inner) return null // tuple already closed
   for (let i = 0; i < inner.length - 1; i++) {
     const s = inner[i].trim()
-    const sm = s.match(/^"([^"\n\\]+)"$/) || s.match(/^\(\s*name\s*:\s*"([^"\n\\]+)"/)
+    const sm = s.match(/^["„“”]([^"„“”\n\\]+)["“”]$/) || s.match(/^\(\s*name\s*:\s*["„“”]([^"„“”\n\\]+)["“”]/)
     if (sm) used.add(sm[1].toLowerCase())
   }
   const last = inner[inner.length - 1]
