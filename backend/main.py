@@ -25,6 +25,7 @@ from backend.routers import (
     docs,
     events,
     export,
+    fonts,
     frontend,
     library_copy,
     notifications,
@@ -174,6 +175,8 @@ async def no_cache_html(req: Request, call: Any):
     if res.status_code == 200 and (
             req.url.path.rsplit("/", 1)[-1] in deps.IMMUTABLE_SHELL or req.url.path.startswith("/vendor/")):
         res.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif res.status_code == 200 and req.url.path.startswith("/api/fonts/") and len(req.url.path) > len("/api/fonts/"):
+        res.headers["Cache-Control"] = "private, max-age=31536000, immutable"
     elif req.url.path == "/" or req.url.path.endswith((".html", ".js")) or req.url.path.startswith("/api/"):
         res.headers["Cache-Control"] = "no-store"
     res.headers["X-Content-Type-Options"] = "nosniff"
@@ -243,6 +246,7 @@ app.include_router(project_files.router)
 app.include_router(snapshots.router)
 app.include_router(notifications.router)
 app.include_router(export.router)
+app.include_router(fonts.router)
 app.include_router(transfer.router)
 app.include_router(events.router)
 app.include_router(readmode.router)
