@@ -265,6 +265,7 @@ def move_template(name: str, b: FolderSet, req: Request, user: str = Depends(dep
 def doc_resources(doc_id: str, req: Request, user: str = Depends(deps.me)) -> dict:
     """What one document compiles against: its project, its compile entry (`F/__doc__.typ`) and the
     project files it reaches (`files`, with size and version). `readonly` = no project edit right."""
+    from backend.services import fonts as fonts_svc
     from backend.services import project_files, projects
 
     deps.limited(req, "files_list")
@@ -276,8 +277,10 @@ def doc_resources(doc_id: str, req: Request, user: str = Depends(deps.me)) -> di
         if not d:
             raise HTTPException(404, "Doc gone")
         rows = project_files.listing(con, d["project_id"]) if d["project_id"] else []
-        reached = res.reachable({r["path"] for r in rows}, project_files.texts(con, d["project_id"]) if rows else {},
+        paths = {r["path"] for r in rows}
+        reached = res.reachable(paths, project_files.texts(con, d["project_id"]) if rows else {},
                                 d["folder"], project_files.doc_text(doc_id, d["content"]))
+        reached |= {p for p in paths if fonts_svc.is_font_path(p)}
         try:
             readonly = projects.role(con, d["project_id"], user) not in ("owner", "editor")
         except HTTPException:

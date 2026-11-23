@@ -21,6 +21,7 @@ from pycrdt import Doc, Text
 
 from backend import config, db, deps, sync
 from backend.constants import ENTRY, MAX_TXT, TITLE_MAX, UPLOAD_MAX
+from backend.services import fonts as fonts_svc
 from backend.services import projects, quota, resources, trash
 from backend.services.docfiles import check_depth, file_type, safe_name, safe_rename_target, store
 from backend.services.locks import _named_lock
@@ -96,7 +97,7 @@ def visible(con: sqlite3.Connection, project_id: str, user: str) -> set[str] | N
         raise HTTPException(404, "Project not found")
     paths = {r[0] for r in con.execute("SELECT path FROM project_files WHERE project_id=?", (project_id,))}
     typ = texts(con, project_id)
-    got: set[str] = set()
+    got: set[str] = {p for p in paths if fonts_svc.is_font_path(p)}
     for d in docs:
         got |= resources.reachable(paths, typ, d["folder"], doc_text(d["id"], d["content"]))
     return got

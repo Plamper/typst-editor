@@ -26,6 +26,7 @@ from mcp.types import Annotations
 
 from backend import db
 from backend.constants import ENTRY, EXPORT_FORMATS, EXPORT_MAX, UPLOAD_MAX
+from backend.services import fonts as fonts_svc
 from backend.services import quota as quota_svc
 
 log = logging.getLogger("typst.render")
@@ -199,9 +200,19 @@ _VIEW_CACHE: dict[str, dict] = {}
 _VIEW_TOTALS: dict[str, int] = {}
 
 
+def _font_args() -> list[str]:
+    """CLI font flags: project compile root plus active server font dirs (parity with browser WASM)."""
+    args = ["--ignore-system-fonts", "--font-path", "."]
+    for d in fonts_svc.server_font_dirs():
+        args.extend(["--font-path", str(d)])
+    return args
+
+
 def _content_hash(doc_id: str, main_text: str, files: list[tuple[str, bytes]]) -> str:
     h = hashlib.sha256()
     h.update(_typst_tag().encode("utf-8"))
+    h.update(b"\0")
+    h.update(fonts_svc.fingerprint().encode("utf-8"))
     h.update(b"\0")
     h.update(main_text.encode("utf-8"))
     for name, data in files:
@@ -381,7 +392,7 @@ def _typst_page_files(root: Path, typst: str, entry: str = ENTRY) -> int | None:
     except OSError as e:
         log.warning("svg pages dir failed: %s", e)
         return None
-    cmd = [typst, "compile", "--root", ".", "--format", "svg", entry, "__pages__/p-{p}.svg"]
+    cmd = [typst, "compile", "--root", ".", *_font_args(), "--format", "svg", entry, "__pages__/p-{p}.svg"]
     try:
         proc = subprocess.run(cmd, cwd=root, capture_output=True,
                               timeout=VIEW_TIMEOUT, env=_typst_env(root),
@@ -417,7 +428,7 @@ def _compile_pngs(main_text: str, files: list[tuple[str, bytes]],
             except OSError as e:
                 raise _bad(f"compile failed: {e}", 500) from e
             (root / "__shots__").mkdir(exist_ok=True)  # own output folder: uploaded page-*.png files are never returned as pages
-            cmd = [typst, "compile", "--root", ".", "--format", "png", "--ppi", str(ppi),
+            cmd = [typst, "compile", "--root", ".", *_font_args(), "--format", "png", "--ppi", str(ppi),
                    "--pages", pages, entry, "__shots__/page-{p}.png"]
             env = _typst_env(root)
             try:
@@ -469,7 +480,7 @@ def _compile_pdf_pages(main_text: str, files: list[tuple[str, bytes]]) -> int | 
             n = _typst_page_files(root, typst, entry)
             if n is not None:
                 return n
-            cmd = [typst, "compile", "--root", ".", "--format", "pdf", entry, "out.pdf"]
+            cmd = [typst, "compile", "--root", ".", *_font_args(), "--format", "pdf", entry, "out.pdf"]
             try:
                 proc = subprocess.run(cmd, cwd=tmp, capture_output=True,
                                       timeout=VIEW_TIMEOUT, env=_typst_env(root),
@@ -744,9 +755,10 @@ def _compile_export_doc(main_text: str, files: list[tuple[str, bytes]], fmt: str
         except OSError as e:
             raise _bad(f"compile failed: {e}", 500) from e
         pg_args = ["--pages", pg] if pg else []
+        font_args = _font_args()
         if f == "pdf":
             std_args = ["--pdf-standard", std] if std else []
-            _typst_compile(["compile", "--root", ".", "--format", "pdf", *std_args, *pg_args, entry, "out.pdf"], tmp)
+            _typst_compile(["compile", "--root", ".", *font_args, "--format", "pdf", *std_args, *pg_args, entry, "out.pdf"], tmp)
             try:
                 payload = (root / "out.pdf").read_bytes()
             except OSError as e:
@@ -758,10 +770,10 @@ def _compile_export_doc(main_text: str, files: list[tuple[str, bytes]], fmt: str
         except OSError as e:
             raise _bad(f"compile failed: {e}", 500) from e
         if f == "svg":
-            _typst_compile(["compile", "--root", ".", "--format", "svg", *pg_args, entry, "__export__/page-{p}.svg"], tmp)
+            _typst_compile(["compile", "--root", ".", *font_args, "--format", "svg", *pg_args, entry, "__export__/page-{p}.svg"], tmp)
             shots = sorted(out.glob("page-*.svg"), key=_page_no)  # page-10 after page-9
             return _pages_or_zip(shots, EXPORT_MIMES["svg"])
-        _typst_compile(["compile", "--root", ".", "--format", "png", "--ppi", str(res or EXPORT_PPI),
+        _typst_compile(["compile", "--root", ".", *font_args, "--format", "png", "--ppi", str(res or EXPORT_PPI),
                         *pg_args, entry, "__export__/page-{p}.png"], tmp)
         shots = sorted(out.glob("page-*.png"), key=_page_no)
         return _pages_or_zip(shots, EXPORT_MIMES["png"])
@@ -832,7 +844,7 @@ def check_source(main_text: str, files: list[tuple[str, bytes]]) -> dict:
             entry = _write_root(root, main_text, files)
         except OSError as e:
             raise _bad(f"compile failed: {e}", 500) from e
-        stderr = _typst_compile(["compile", "--root", ".", "--format", "pdf", entry, "out.pdf"], tmp)
+        stderr = _typst_compile(["compile", "--root", ".", *_font_args(), "--format", "pdf", entry, "out.pdf"], tmp)
         pages = _pdf_page_count((root / "out.pdf").read_bytes())
     result = {"pages": pages, "warnings": _parse_typst_diagnostics(stderr, "warning")}
     while len(_CHECKS) >= VIEW_CACHE_MAX:
