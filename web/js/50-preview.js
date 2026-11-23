@@ -268,8 +268,8 @@ async function collectRenderFonts(main) { // active server fonts (fetched + cach
     .map(f => ({ id: f.id, bytes: serverFontBytes.get(f.id) }))
   const pFonts = [...fileCache].filter(([n, c]) => FONT_EXT.test(n) && isValidFontBytes(c?.bytes))
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, c]) => ({ name, version: c.version, bytes: c.bytes }))
-  const fontSig = sFonts.map(f => f.id).join(',') + '|' + pFonts.map(f => f.name + ':' + f.version).join(',')
+    .map(([name, c]) => ({ name, sig: pvFileSig(name, c), bytes: c.bytes }))
+  const fontSig = sFonts.map(f => f.id).join(',') + '|' + pFonts.map(f => f.sig).join(',')
   return { serverFonts: sFonts, projectFonts: pFonts, fontSig }
 }
 function noteMissingServerFonts(diags) { // @preview package or dynamic font: auto-demand matching server fonts once
@@ -579,14 +579,14 @@ async function render() {
     const pf = await pvFiles()
     if (!pf) { if (myEpoch === openN && myDoc === docId) queueRender(); return } // a resource poll superseded the list load: retry, no other render would
     if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted compile
-    const rf = await collectRenderFonts(main)
+    const rf = typeof collectRenderFonts === 'function' ? await collectRenderFonts(main) : { fontSig: '|', serverFonts: [], projectFonts: [] }
     if (pvStale(id, myDoc, myTplName)) return
     const job = { cmd: 'work', id: ++pvJobN, main, mainPath: docMain(), sig: pf.sig,
       files: [...fileCache].map(([n, c]) => ({ name: n, bytes: c.bytes })),
       fontSig: rf.fontSig, serverFonts: rf.serverFonts, projectFonts: rf.projectFonts }
     let m = await pvCall(job, id) // compile off the main thread: typing stays fluid
     if (!m || m.skip || pvStale(id, myDoc, myTplName)) return
-    if (noteMissingServerFonts(m.diags)) { // @preview package requested a server font not quoted in source: fetch & recompile once
+    if (typeof noteMissingServerFonts === 'function' && noteMissingServerFonts(m.diags)) { // @preview package requested a server font not quoted in source: fetch & recompile once
       const rf2 = await collectRenderFonts(main)
       if (!pvStale(id, myDoc, myTplName) && rf2.fontSig !== rf.fontSig) {
         m = await pvCall({ ...job, id: ++pvJobN, fontSig: rf2.fontSig, serverFonts: rf2.serverFonts, projectFonts: rf2.projectFonts }, id)
@@ -1243,10 +1243,15 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
     renderDirect.tail = new Promise(r => { release = r })
     await prev
     try {
-      await shadowAll(window.changeSession ? sessionMainText() : activeFile ? shadow : getT()) // file tab: preview still compiles the document text
+      const main = window.changeSession ? sessionMainText() : activeFile ? shadow : getT()
+      await shadowAll(main) // file tab: preview still compiles the document text
       if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted full compile
       const compiler = await $typst.getCompiler()
       cmp = await compiler.compile({ mainFilePath: docMain(), format: 1, diagnostics: 'full' }) // 1 = pdf: bytes + diagnostics in one compile
+      if (typeof noteMissingServerFonts === 'function' && noteMissingServerFonts(cmp.diagnostics) && !pvStale(id, myDoc, myTplName)) {
+        await syncMainFonts(main)
+        cmp = await compiler.compile({ mainFilePath: docMain(), format: 1, diagnostics: 'full' })
+      }
     } finally { release() }
     if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted pdfjs work
     doc = await pdfjsLib.getDocument({ data: cmp.result }).promise

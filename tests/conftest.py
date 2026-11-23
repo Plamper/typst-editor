@@ -13,6 +13,7 @@ os.environ.setdefault("DATA_DIR", _IMPORT_DATA.name)
 
 import backend.main as main  # noqa: E402
 from backend import db, deps, ratelimit, sync  # noqa: E402
+from backend.services import fonts as fonts_svc  # noqa: E402
 
 
 def pytest_sessionstart(session):
@@ -51,9 +52,11 @@ def c(tmp_path, monkeypatch):
     monkeypatch.setenv("REGISTRATION", "open")  # Tests need open registration (Prod default is invite-only)
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
     monkeypatch.setattr(deps, "FILES_DIR", tmp_path / "files")
+    fonts_svc.clear_cache()
     db.init_db()
     with TestClient(main.app) as client:
         yield client
+    fonts_svc.clear_cache()
 
 
 def set_cookie(c, name, value):

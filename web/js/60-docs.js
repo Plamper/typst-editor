@@ -753,6 +753,7 @@ function leaveDoc() { // reset sync/peers/threads/media (openTpl/openDoc/del)
   activeFile = ''; clearTimeout(fileT); bibKeys = [] // tabs closed (see paintTabs)
   $('tabs').style.display = 'none'
   fileCache.clear(); lastMedia = ''; lastFiles = []; mediaOpen = false
+  projectFontByPath.clear(); projectFontFamilies = []; pvFontMetaSig = ''
   filesDirty = true; filesAt = 0; shadowSig = ''; lastPres = ''; lastErrToast = '' // next doc: fresh list + full shadow remap + presence
   $('media').style.display = 'none'; closePop()
   cm.dispatch({ effects: setPeer.of(RangeSet.of([])) })

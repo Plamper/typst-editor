@@ -156,3 +156,65 @@ test('project files load once by path and a moved document remaps the compiler s
   assert.notEqual((await c.pvFiles()).sig, before)
   assert.deepEqual(urls, ['/api/projects/p/files/img/logo.png'])
 })
+
+test('JS OpenType parser extracts family names from vendored fonts and rejects corrupt bytes', () => {
+  const source = fs.readFileSync('web/js/50-preview.js', 'utf8')
+  const c = vm.createContext({ Uint8Array, DataView, Map, Set, TextDecoder })
+  vm.runInContext(source.slice(source.indexOf('const FONT_EXT ='), source.indexOf('let pvTextDone =')), c)
+  const libFile = fs.readdirSync('vendor').find(f => f.startsWith('font-LibertinusSerif-Regular'))
+  const djFile = fs.readdirSync('vendor').find(f => f.startsWith('font-DejaVuSansMono-b4'))
+  assert.deepEqual([...c.parseFontFamiliesJS(new Uint8Array(fs.readFileSync('vendor/' + libFile)))], ['Libertinus Serif'])
+  assert.deepEqual([...c.parseFontFamiliesJS(new Uint8Array(fs.readFileSync('vendor/' + djFile)))], ['DejaVu Sans Mono'])
+  assert.deepEqual([...c.parseFontFamiliesJS(new Uint8Array([1, 2, 3, 4]))], [])
+})
+
+test('server font selection is eager for small sets, on-demand for large sets, and notes missing families once', async () => {
+  const source = fs.readFileSync('web/js/50-preview.js', 'utf8')
+  let nextResp = { fonts: [], families: [] }
+  const c = vm.createContext({ Uint8Array, DataView, Map, Set, TextDecoder, fileCache: new Map(), api: async () => nextResp, docId: '', queueRender() {} })
+  vm.runInContext(source.slice(source.indexOf('const FONT_EXT ='), source.indexOf('let pvTextDone =')), c)
+  // Small set (<=25 files, <=25MB): eager
+  nextResp = { fonts: [{ id: 'a', families: ['Inter'], size: 1000, url: '/api/fonts/a' }, { id: 'b', families: ['Fira Sans'], size: 1000, url: '/api/fonts/b' }], families: ['Fira Sans', 'Inter'] }
+  await c.loadServerFonts()
+  assert.equal(c.selectServerFontCatalog('Hello world').length, 2)
+  // Large set (>25 files): on-demand by quoted strings + demand set
+  nextResp = { fonts: Array.from({ length: 30 }, (_, i) => ({ id: 'f' + i, families: ['Font ' + i], size: 1000, url: '/api/fonts/f' + i })), families: [] }
+  await c.loadServerFonts()
+  assert.deepEqual([...c.selectServerFontCatalog('#set text(font: "Font 7")').map(f => f.id)], ['f7'])
+  assert.equal(c.noteMissingServerFonts([{ message: 'unknown font family: Font 12' }]), true)
+  assert.equal(c.noteMissingServerFonts([{ message: 'unknown font family: Font 12' }]), false) // deduplicated: no retry loop
+  assert.deepEqual([...c.selectServerFontCatalog('plain').map(f => f.id)], ['f12'])
+})
+
+test('pvCall omits font payloads once the worker applied that font signature', async () => {
+  const source = fs.readFileSync('web/js/50-preview.js', 'utf8'), sent = []
+  const context = vm.createContext({
+    setTimeout, clearTimeout, renderN: 1, pvMapped: true, pvSentSig: 's1', pvWorkerFail: false, pvWorkerOk: true,
+    pvJobs: new Map(), pvEnsureWorker: () => ({ postMessage: message => sent.push(message) }), t: key => key
+  })
+  vm.runInContext(source.slice(source.indexOf('let pvTail ='), source.indexOf('let typstT0 =')), context)
+  const tick = () => new Promise(resolve => setImmediate(resolve))
+  const job = (id, fontSig) => ({ id, sig: 's1', cmd: 'work', main: 'hi', fontSig, serverFonts: [{ id: 'a' }], projectFonts: [{ name: 'f.ttf' }] })
+  const p1 = context.pvCall(job(1, 'a|f.ttf:v1'), 1)
+  await tick()
+  assert.equal(sent[0].serverFonts.length, 1)
+  context.pvJobs.get(1).ok({ fontsApplied: true })
+  await p1
+  context.renderN = 2
+  const p2 = context.pvCall(job(2, 'a|f.ttf:v1'), 2)
+  await tick()
+  assert.equal(sent[1].serverFonts, undefined)
+  assert.equal(sent[1].projectFonts, undefined)
+  context.pvJobs.get(2).ok({ fontsApplied: true })
+  await p2
+})
+
+test('mediaInsert emits #set text(font: ...) for font files instead of #image(...)', () => {
+  const source = fs.readFileSync('web/js/80-files-images.js', 'utf8')
+  const fn = source.slice(source.indexOf('function mediaInsert('), source.indexOf('function renderMediaChips('))
+  const c = vm.createContext({ FONT_EXT: /\.(ttf|otf|ttc|otc)$/i, projectFontByPath: new Map([['fonts/Acme.ttf', ['Acme Sans']]]), refTo: p => p })
+  vm.runInContext(fn, c)
+  assert.equal(c.mediaInsert('fonts/Acme.ttf'), '#set text(font: "Acme Sans")')
+  assert.equal(c.mediaInsert('fonts/Fallback.otf'), '#set text(font: "Fallback")')
+  assert.equal(c.mediaInsert('img/a.png'), '#image("img/a.png", width: 80%)')
+})
