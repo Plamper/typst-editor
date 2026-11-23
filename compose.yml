@@ -15,6 +15,8 @@ services:
       - "127.0.0.1:8978:8978"
     volumes:
       - typst-data:/app/data
+      # Optional: mount custom server-wide fonts (.ttf/.otf/.ttc/.otc)
+      # - ./fonts:/usr/local/fonts:ro
     logging:
       driver: json-file
       options:
