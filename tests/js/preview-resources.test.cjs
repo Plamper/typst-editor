@@ -210,8 +210,11 @@ test('pvCall omits font payloads once the worker applied that font signature', a
 test('mediaInsert emits #set text(font: ...) for font files instead of #image(...)', () => {
   const source = fs.readFileSync('web/js/80-files-images.js', 'utf8')
   const fn = source.slice(source.indexOf('function mediaInsert('), source.indexOf('function renderMediaChips('))
-  const c = vm.createContext({ FONT_EXT: /\.(ttf|otf|ttc|otc)$/i, projectFontByPath: new Map([['fonts/Acme.ttf', ['Acme Sans']]]), refTo: p => p })
+  const c = vm.createContext({ FONT_EXT: /\.(ttf|otf|ttc|otc)$/i, projectFontByPath: new Map([['fonts/Acme.ttf', ['Acme Sans']], ['fonts/Odd.ttf', ['Say "Hi" \\o/']]]), refTo: p => p })
+  const preview = fs.readFileSync('web/js/50-preview.js', 'utf8')
+  vm.runInContext(preview.slice(preview.indexOf('const typstStr ='), preview.indexOf('const BUILTIN_FONTS =')), c)
   vm.runInContext(fn, c)
+  assert.equal(c.mediaInsert('fonts/Odd.ttf'), '#set text(font: "Say \\"Hi\\" \\\\o/")')
   assert.equal(c.mediaInsert('fonts/Acme.ttf'), '#set text(font: "Acme Sans")')
   assert.equal(c.mediaInsert('fonts/Fallback.otf'), '#set text(font: "Fallback")')
   assert.equal(c.mediaInsert('img/a.png'), '#image("img/a.png", width: 80%)')

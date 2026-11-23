@@ -127,7 +127,7 @@ function typstComplete(ctx) {
       for (const f of fonts) {
         if (fc.used.has(f.family.toLowerCase())) continue
         if (q && !fuzzy(q, f.family)) continue
-        const quotedVal = '"' + f.family + '"'
+        const quotedVal = typstStr(f.family)
         const pre = q && f.family.toLowerCase().startsWith(q) ? 10 : 0
         out.push({
           label: f.family,
@@ -241,10 +241,9 @@ function matchFontContext(before, pos) { // innermost unclosed text(... font: <s
   }
   const parseTail = s => {
     const qm = s.match(/^\s*(["„“”]([^"„“”\n\\]*))$/) // German/typographic quotes (keyboard autocorrect) count as the opening quote
-    if (qm) return { trail: qm[1], quoted: true, query: qm[2] }
+    if (qm) return { trail: qm[1], query: qm[2] }
     const bm = s.match(/^\s*([\p{ID_Continue}_-]*)$/u)
-    if (bm) return { trail: bm[1], quoted: false, query: bm[1] }
-    return null
+    return bm ? { trail: bm[1], query: bm[1] } : null
   }
   let topArgs = null
   for (let i = matches.length - 1; i >= 0; i--) {
@@ -257,10 +256,9 @@ function matchFontContext(before, pos) { // innermost unclosed text(... font: <s
   const fm = curArg.match(/^\s*font\s*:\s*([\s\S]*)$/)
   if (!fm) return null
   const val = fm[1], used = new Set()
-  if (!val.startsWith('(')) {
-    const tail = parseTail(val)
-    return tail ? { from: pos - tail.trail.length, ...tail, used } : null
-  }
+  const done = s => { const tail = s == null ? null : parseTail(s); return tail ? { from: pos - tail.trail.length, query: tail.query, used } : null }
+  const dictName = part => part.match(/^\s*name\s*:\s*([\s\S]*)$/)?.[1]
+  if (!val.startsWith('(')) return done(val)
   const inner = splitTop(val.slice(1))
   if (!inner) return null // tuple already closed
   for (let i = 0; i < inner.length - 1; i++) {
@@ -268,24 +266,13 @@ function matchFontContext(before, pos) { // innermost unclosed text(... font: <s
     const sm = s.match(/^["„“”]([^"„“”\n\\]+)["“”]$/) || s.match(/^\(\s*name\s*:\s*["„“”]([^"„“”\n\\]+)["“”]/)
     if (sm) used.add(sm[1].toLowerCase())
   }
-  const last = inner[inner.length - 1]
-  const trimmed = last.trimStart()
+  const last = inner[inner.length - 1], trimmed = last.trimStart()
   if (trimmed.startsWith('(')) { // nested dict in fallback array: font: ((name: "A"), (name: "B
     const dictParts = splitTop(trimmed.slice(1))
-    if (!dictParts) return null
-    const dm = dictParts[dictParts.length - 1].match(/^\s*name\s*:\s*([\s\S]*)$/)
-    if (!dm) return null
-    const tail = parseTail(dm[1])
-    return tail ? { from: pos - tail.trail.length, ...tail, used } : null
+    return dictParts ? done(dictName(dictParts[dictParts.length - 1])) : null
   }
-  if (splitTop(last) && /^[^"]*:/s.test(last)) { // direct dict form: font: (name: "A", covers: ...)
-    const dm = last.match(/^\s*name\s*:\s*([\s\S]*)$/)
-    if (!dm) return null
-    const tail = parseTail(dm[1])
-    return tail ? { from: pos - tail.trail.length, ...tail, used } : null
-  }
-  const tail = parseTail(last)
-  return tail ? { from: pos - tail.trail.length, ...tail, used } : null
+  if (splitTop(last) && /^[^"]*:/s.test(last)) return done(dictName(last)) // direct dict form: font: (name: "A", covers: ...)
+  return done(last)
 }
 function typstHover(view, pos) {
   if (urlAt(view.state.doc, pos)) return null // words inside web links: the link preview owns the hover

@@ -61,7 +61,7 @@ async function paintFontFile(box, name, bytes, key) { // font tab: quiet card li
   const wrap = el('div', 'fontFile')
   wrap.append(el('div', 'fontKind', t('editor.fontProject') + ' · ' + name.split('.').pop().toUpperCase()), sample, el('div', 'fontName', family),
     el('div', null, `${name} · ${t('files.sizeKb', { kb: Math.round(bytes.byteLength / 1024) })}`))
-  const usage = `#text(font: "${family}")[]`, use = el('div', 'fontUse'), copy = icoBtn('ibtn', ICO_DUP)
+  const usage = `#text(font: ${typstStr(family)})[]`, use = el('div', 'fontUse'), copy = icoBtn('ibtn', ICO_DUP)
   copy.title = t('common.copy'); copy.setAttribute('aria-label', copy.title)
   copy.onclick = () => copyTxt(usage)
   use.append(el('code', null, usage), copy)

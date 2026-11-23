@@ -106,6 +106,7 @@ onmessage = function (e) {
 let pvWorker = null, pvWorkerOk = false, pvWorkerFail = false, pvJobN = 0 // compile worker: null until first render, Fail sticks (fallback takes over)
 let pvMapped = false, pvSentSig = '', pvBibSig = '' // worker shadow state: remap only on change (same rule as main-thread shadowSig)
 const FONT_EXT = /\.(ttf|otf|ttc|otc)$/i
+const typstStr = s => '"' + s.replace(/[\\"]/g, '\\$&') + '"' // Typst string literal: font names may contain quotes or backslashes
 const BUILTIN_FONTS = ['DejaVu Sans Mono', 'Libertinus Serif', 'New Computer Modern', 'New Computer Modern Math']
 const SERVER_FONT_EAGER_FILES = 25, SERVER_FONT_EAGER_BYTES = 25 * 1024 * 1024
 let serverFonts = [], serverFontFamilies = [] // catalog from GET /api/fonts

@@ -22,7 +22,7 @@ async function putFile(url, body) { // raw PUT of a project file (?version= guar
   return j
 }
 function mediaInsert(name) { // manager chip: loader matches kind (csv is data, fonts set text, rest image)
-  if (FONT_EXT.test(name)) return `#set text(font: "${projectFontByPath.get(name)?.[0] || name.split('/').pop().replace(/\.[^.]+$/, '')}")`
+  if (FONT_EXT.test(name)) return `#set text(font: ${typstStr(projectFontByPath.get(name)?.[0] || name.split('/').pop().replace(/\.[^.]+$/, ''))})`
   name = refTo(name)
   if (/\.typ$/i.test(name)) return `#include "${name}"`
   if (/\.bib$/i.test(name)) return `#bibliography("${name}")`
