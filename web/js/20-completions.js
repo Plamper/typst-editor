@@ -55,6 +55,7 @@ function typstComplete(ctx) {
   if (window.__booted && !/\.typ$/i.test(tplName || tabName(activeFile))) return null
   const pos = ctx.pos
   const before = ctx.state.doc.sliceString(Math.max(0, pos - 256), pos)
+  const before512 = ctx.state.doc.sliceString(Math.max(0, pos - 512), pos)
   const fuzzy = (q, s) => s.toLowerCase().includes(q) // substring, not prefix-only
   const imp = before.match(/(import|include|image|bibliography|read|csv|json|yaml|toml|xml)\s*[( ]"([^"]*)$/)
   if (imp) { // after import/include/#image(": global templates + manager files
@@ -86,6 +87,7 @@ function typstComplete(ctx) {
     } }))
     return out.length ? { from: pos - ct[1].length, filter: false, options: out.slice(0, 50) } : null
   }
+  const fc = matchFontContext(before512, pos)
   const sr = (() => { // innermost unclosed `#set FUNC(` (nesting-aware; parens in strings ignored)
     const re = /#set\s+([\w.]+)\s*\(/g
     let m, last = null
@@ -105,7 +107,7 @@ function typstComplete(ctx) {
   const at = before.match(/@([\p{ID_Continue}_:.-]*)$/u) // @: keys from all .bib (vendor's label list is document-only)
   const kwm = before.match(/#([\p{ID_Continue}_-]*)$/u)
   let blocked = null // ancestor blocking completion (mirror of vendor blockedNodes + Error); one parse shared by the #word branches
-  if ((at || sr || kwm) && typeof typstParser !== 'undefined') {
+  if ((fc || at || sr || kwm) && typeof typstParser !== 'undefined') {
     try {
       const doc = ctx.state.doc
       if (doc.length <= 100000) { // huge docs: skip check (vendor turf, no fallback) instead of frame drops
@@ -116,6 +118,35 @@ function typstComplete(ctx) {
     } catch (e) { pcDoc = null; pcTree = null }
   }
   if (blocked === 'LineComment' || blocked === 'BlockComment') return null // comments: full silence (file/label/cite ran before; keywords/params stay silent like vendor)
+  if (fc && blocked !== 'Raw') {
+    const fonts = typeof availableFonts === 'function' ? availableFonts() : []
+    if (fonts.length) {
+      const q = fc.query.toLowerCase()
+      const srcDetail = s => s === 'project' ? t('editor.fontProject') : s === 'server' ? t('editor.fontServer') : t('editor.fontBuiltin')
+      const srcBoost = s => s === 'project' ? 2 : s === 'server' ? 1 : 0
+      const out = []
+      for (const f of fonts) {
+        if (fc.used.has(f.family.toLowerCase())) continue
+        if (q && !fuzzy(q, f.family)) continue
+        const quotedVal = '"' + f.family + '"'
+        const pre = q && f.family.toLowerCase().startsWith(q) ? 10 : 0
+        out.push({
+          label: f.family,
+          type: 'enum',
+          detail: srcDetail(f.source),
+          boost: 55 + pre + srcBoost(f.source),
+          apply: (view, completion, from, to) => { // auto-quote and consume an existing closing `"`
+            const end = view.state.sliceDoc(to, to + 1) === '"' ? to + 1 : to
+            view.dispatch({ changes: { from, to: end, insert: quotedVal }, selection: { anchor: from + quotedVal.length }, userEvent: 'input.complete' })
+          },
+        })
+      }
+      if (out.length) {
+        out.sort((a, b) => (b.boost - a.boost) || a.label.localeCompare(b.label))
+        return { from: fc.from, filter: false, options: out.slice(0, 80) }
+      }
+    }
+  }
   if (at && (!blocked || blocked === 'Ref') && bibKeys.length) { // refs and citations share .bib keys; vendor adds the document's <labels>
     const q = at[1].toLowerCase()
     const out = bibKeys.filter(k => fuzzy(q, k)).map(k => ({ label: k, type: 'variable' }))
@@ -173,13 +204,89 @@ function typstComplete(ctx) {
     if (out.length) return { from: pos - kwm[1].length, filter: false, options: out }
   }
   if (ctx.explicit) { // Ctrl-Space/Tab without context: files/templates only, no language noise
-    if (imp || rf || ct || sr) return null // context recognized but empty (no labels/keys/params): no file noise
+    if (imp || rf || ct || fc || sr) return null // context recognized but empty (no labels/keys/params): no file noise
     const w = ctx.matchBefore(/[\p{ID_Continue}.\-/]*$/u)
     const pre = (w ? w.text : '').toLowerCase()
     const files = fileRefs().filter(n => fuzzy(pre, n))
     return files.length ? { from: w ? w.from : pos, filter: false, options: files.slice(0, 50).map(n => ({ label: n, type: 'file' })) } : null
   }
   return null
+}
+function matchFontContext(before, pos) { // innermost unclosed text(... font: <str | tuple | (name: str)>)
+  const matches = [...before.matchAll(/(?<![\p{ID_Continue}_-])text\s*\(/gu)]
+  if (!matches.length) return null
+  const splitTop = str => {
+    const parts = []
+    let start = 0, inStr = false, esc = false
+    const stack = []
+    const pairs = { ')': '(', ']': '[', '}': '{' }
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i]
+      if (inStr) {
+        if (esc) { esc = false; continue }
+        if (ch === '\\') { esc = true; continue }
+        if (ch === '"') inStr = false
+        continue
+      }
+      if (ch === '"') { inStr = true; continue }
+      if (ch === '(' || ch === '[' || ch === '{') { stack.push(ch); continue }
+      if (pairs[ch]) {
+        if (!stack.length) return null // enclosing parens already closed
+        if (stack[stack.length - 1] === pairs[ch]) stack.pop()
+        continue
+      }
+      if (ch === ',' && !stack.length) { parts.push(str.slice(start, i)); start = i + 1 }
+    }
+    parts.push(str.slice(start))
+    return parts
+  }
+  const parseTail = s => {
+    const qm = s.match(/^\s*("([^"\n\\]*))$/)
+    if (qm) return { trail: qm[1], quoted: true, query: qm[2] }
+    const bm = s.match(/^\s*([\p{ID_Continue}_-]*)$/u)
+    if (bm) return { trail: bm[1], quoted: false, query: bm[1] }
+    return null
+  }
+  let topArgs = null
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const m = matches[i]
+    const parts = splitTop(before.slice(m.index + m[0].length))
+    if (parts) { topArgs = parts; break }
+  }
+  if (!topArgs) return null
+  const curArg = topArgs[topArgs.length - 1]
+  const fm = curArg.match(/^\s*font\s*:\s*([\s\S]*)$/)
+  if (!fm) return null
+  const val = fm[1], used = new Set()
+  if (!val.startsWith('(')) {
+    const tail = parseTail(val)
+    return tail ? { from: pos - tail.trail.length, ...tail, used } : null
+  }
+  const inner = splitTop(val.slice(1))
+  if (!inner) return null // tuple already closed
+  for (let i = 0; i < inner.length - 1; i++) {
+    const s = inner[i].trim()
+    const sm = s.match(/^"([^"\n\\]+)"$/) || s.match(/^\(\s*name\s*:\s*"([^"\n\\]+)"/)
+    if (sm) used.add(sm[1].toLowerCase())
+  }
+  const last = inner[inner.length - 1]
+  const trimmed = last.trimStart()
+  if (trimmed.startsWith('(')) { // nested dict in fallback array: font: ((name: "A"), (name: "B
+    const dictParts = splitTop(trimmed.slice(1))
+    if (!dictParts) return null
+    const dm = dictParts[dictParts.length - 1].match(/^\s*name\s*:\s*([\s\S]*)$/)
+    if (!dm) return null
+    const tail = parseTail(dm[1])
+    return tail ? { from: pos - tail.trail.length, ...tail, used } : null
+  }
+  if (splitTop(last) && /^[^"]*:/s.test(last)) { // direct dict form: font: (name: "A", covers: ...)
+    const dm = last.match(/^\s*name\s*:\s*([\s\S]*)$/)
+    if (!dm) return null
+    const tail = parseTail(dm[1])
+    return tail ? { from: pos - tail.trail.length, ...tail, used } : null
+  }
+  const tail = parseTail(last)
+  return tail ? { from: pos - tail.trail.length, ...tail, used } : null
 }
 function typstHover(view, pos) {
   if (urlAt(view.state.doc, pos)) return null // words inside web links: the link preview owns the hover
