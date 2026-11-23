@@ -22,11 +22,7 @@ async function putFile(url, body) { // raw PUT of a project file (?version= guar
   return j
 }
 function mediaInsert(name) { // manager chip: loader matches kind (csv is data, fonts set text, rest image)
-  if (typeof FONT_EXT !== 'undefined' && FONT_EXT.test(name)) {
-    const fams = typeof projectFontByPath !== 'undefined' ? projectFontByPath.get(name) : null
-    const fam = (fams && fams[0]) || name.split('/').pop().replace(/\.[^.]+$/, '')
-    return `#set text(font: "${fam}")`
-  }
+  if (FONT_EXT.test(name)) return `#set text(font: "${projectFontByPath.get(name)?.[0] || name.split('/').pop().replace(/\.[^.]+$/, '')}")`
   name = refTo(name)
   if (/\.typ$/i.test(name)) return `#include "${name}"`
   if (/\.bib$/i.test(name)) return `#bibliography("${name}")`
@@ -326,13 +322,11 @@ async function switchTab(name, nosave, preserveView = false) { // true = switche
   let text
   const file = lastFiles.find(f => f.path === name)
   if (!TEXT_EXT.test(name)) {
-    if (typeof FONT_EXT !== 'undefined' && FONT_EXT.test(name)) {
-      const fams = typeof projectFontByPath !== 'undefined' ? projectFontByPath.get(name) : null
-      const family = (fams && fams.length) ? fams.join(', ') : t('files.fontUnknown')
-      text = t('files.fontInfo', { name, kb: Math.round((file?.size || 0) / 1024), family, usage: `#set text(font: "${(fams && fams[0]) || family}")` })
-    } else text = t('files.binaryInfo', { name, kb: Math.round((file?.size || 0) / 1024) })
-  }
-  else {
+    const kb = Math.round((file?.size || 0) / 1024)
+    text = FONT_EXT.test(name)
+      ? t('files.fontInfo', { name, kb, family: projectFontByPath.get(name)?.join(', ') || t('files.fontUnknown'), usage: mediaInsert(name) })
+      : t('files.binaryInfo', { name, kb })
+  } else {
     let version
     try { ({ text, version } = await fileRead(name)) }
     catch (e) { if (my === tabSeq && dk === docId) toast(e.message); return false }
@@ -502,7 +496,7 @@ $('imgPick').onchange = async () => {
     if (TEXT_UP.test(f.name)) { const n = await upText(f); if (n) switchTab(n) }
     else {
       const name = await upFile(f)
-      if (name && typeof FONT_EXT !== 'undefined' && FONT_EXT.test(name)) toast(t('files.fontUploaded', { name }))
+      if (name && FONT_EXT.test(name)) toast(t('files.fontUploaded', { name }))
       else if (name && imgIns) insImage(name)
     }
   } catch (e) { toast(e.message) }

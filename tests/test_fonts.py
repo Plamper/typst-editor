@@ -103,7 +103,6 @@ def test_server_fonts_api_and_cache_invalidation(c, tmp_path, monkeypatch):
     assert body["families"] == ["Libertinus Serif"]
     assert len(body["fonts"]) == 1
     entry = body["fonts"][0]
-    assert entry["filename"] == "LibertinusSerif-Regular.otf"
     assert entry["url"] == f"/api/fonts/{entry['id']}"
 
     # Binary fetch uses immutable private cache and nosniff.
@@ -112,6 +111,10 @@ def test_server_fonts_api_and_cache_invalidation(c, tmp_path, monkeypatch):
     assert fb.content == _vendor_font("LibertinusSerif-Regular").read_bytes()
     assert "immutable" in fb.headers.get("cache-control", "")
     assert fb.headers.get("x-content-type-options") == "nosniff"
+
+    # A file replaced under the same path is not served under its old immutable id.
+    (font_dir / "LibertinusSerif-Regular.otf").write_bytes(_make_minimal_sfnt("Swapped"))
+    assert c.get(entry["url"]).status_code == 404
 
     # Unknown / malformed IDs return 404.
     assert c.get("/api/fonts/0000000000000000").status_code == 404

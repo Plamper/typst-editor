@@ -78,11 +78,6 @@ OIDC_REDIRECT_URI=https://typst.example.com/api/oidc/callback
 
 Set `OIDC_REDIRECT_URI` explicitly in production. Optional settings (`OIDC_PROVIDER_NAME`, `OIDC_ALLOWED_GROUPS`, `OIDC_AUTO_REGISTER`, `OIDC_AUTO_REDIRECT`, `DISABLE_PASSWORD_LOGIN`) are documented in [`.env.example`](.env.example) and [`config.example.toml`](config.example.toml).
 
-### Custom Fonts
-
-- **Per project:** upload `.ttf`, `.otf`, `.ttc`, or `.otc` font files into any project. They are automatically loaded into the browser preview, server-side exports, shared views, and editor font autocompletion (`#set text(font: "...")`).
-- **Server-wide:** place fonts in `DATA_DIR/fonts` or mount a host directory at `/usr/local/fonts` (or `/usr/local/share/fonts`, `/usr/share/fonts`), or set `FONTS_DIR` in `.env` / `config.toml`.
-
 ## Contributing
 
 Small, focused changes are easiest to review; open an issue first for anything larger and run `make check` before a PR. Details are in [CONTRIBUTING.md](CONTRIBUTING.md), and security reports go through [SECURITY.md](SECURITY.md).

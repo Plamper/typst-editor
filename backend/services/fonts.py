@@ -10,6 +10,7 @@ import hashlib
 import io
 import logging
 import os
+import stat
 import struct
 import threading
 import time
@@ -21,13 +22,13 @@ from backend import config
 
 log = logging.getLogger("typst.fonts")
 
-FONT_EXTS: frozenset[str] = frozenset({".ttf", ".otf", ".ttc", ".otc"})
 FONT_MIMES: dict[str, str] = {
     ".ttf": "font/ttf",
     ".otf": "font/otf",
     ".ttc": "font/collection",
     ".otc": "font/collection",
 }
+FONT_EXTS: frozenset[str] = frozenset(FONT_MIMES)
 _SFNT_TAGS: frozenset[bytes] = frozenset({b"\x00\x01\x00\x00", b"OTTO", b"true", b"typ1"})
 _VALID_HEADS: frozenset[bytes] = _SFNT_TAGS | frozenset({b"ttcf"})
 
@@ -42,7 +43,6 @@ _SCAN_TTL_S = 5.0
 @dataclass(frozen=True)
 class ServerFont:
     id: str
-    filename: str
     path: Path
     size: int
     families: tuple[str, ...]
@@ -121,7 +121,8 @@ def _parse_sfnt_face(stream: BinaryIO, offset: int) -> str:
             if nid not in (1, 16) or length == 0:
                 continue
             prio = _name_priority(pid, eid, lid)
-            if prio >= 99:
+            best = best_16 if nid == 16 else best_1
+            if prio >= 99 or (best is not None and prio >= best[0]):
                 continue
             start = str_off + off
             end = start + length
@@ -131,9 +132,8 @@ def _parse_sfnt_face(stream: BinaryIO, offset: int) -> str:
             if not val:
                 continue
             if nid == 16:
-                if best_16 is None or prio < best_16[0]:
-                    best_16 = (prio, val)
-            elif best_1 is None or prio < best_1[0]:
+                best_16 = (prio, val)
+            else:
                 best_1 = (prio, val)
         if best_16 is not None:
             return best_16[1]
@@ -163,7 +163,7 @@ def extract_font_families_stream(stream: BinaryIO) -> list[str]:
             if len(offs_raw) < num_fonts * 4:
                 return []
             offsets = struct.unpack(f">{num_fonts}I", offs_raw)
-            for off in offsets:
+            for off in dict.fromkeys(offsets):
                 fam = _parse_sfnt_face(stream, off)
                 if fam and fam.casefold() not in seen:
                     seen.add(fam.casefold())
@@ -264,12 +264,8 @@ def _scan(cfg: config.Config | None = None) -> tuple[tuple[ServerFont, ...], dic
     for root in dirs:
         if len(entries) >= MAX_SERVER_FONTS:
             break
-        try:
-            walker = os.walk(root, followlinks=True)
-        except OSError:
-            continue
         visited_dirs: set[tuple[int, int]] = set()
-        for dirpath, dirnames, filenames in walker:
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
             if len(entries) >= MAX_SERVER_FONTS:
                 break
             try:
@@ -297,7 +293,7 @@ def _scan(cfg: config.Config | None = None) -> tuple[tuple[ServerFont, ...], dic
                     if real in seen_real:
                         continue
                     st = os.stat(real)
-                    if not Path(real).is_file() or st.st_size <= 12 or st.st_size > MAX_SERVER_FONT_FILE_BYTES:
+                    if not stat.S_ISREG(st.st_mode) or st.st_size <= 12 or st.st_size > MAX_SERVER_FONT_FILE_BYTES:
                         continue
                 except OSError:
                     continue
@@ -318,11 +314,10 @@ def _scan(cfg: config.Config | None = None) -> tuple[tuple[ServerFont, ...], dic
                     continue
                 entry = ServerFont(
                     id=fid,
-                    filename=name,
                     path=Path(real),
                     size=st.st_size,
                     families=fams,
-                    mime=FONT_MIMES.get(ext, "application/octet-stream"),
+                    mime=FONT_MIMES[ext],
                 )
                 entries.append(entry)
                 by_id[fid] = entry
@@ -330,16 +325,7 @@ def _scan(cfg: config.Config | None = None) -> tuple[tuple[ServerFont, ...], dic
                     fam_by_cf.setdefault(fam.casefold(), fam)
 
     families = tuple(sorted(fam_by_cf.values(), key=str.casefold))
-    if entries:
-        h = hashlib.sha256()
-        for e in sorted(entries, key=lambda x: x.id):
-            h.update(e.id.encode("ascii"))
-            h.update(b":")
-            h.update(str(e.size).encode("ascii"))
-            h.update(b"\0")
-        fp = h.hexdigest()[:16]
-    else:
-        fp = "none"
+    fp = hashlib.sha256(",".join(sorted(by_id)).encode("ascii")).hexdigest()[:16] if by_id else "none"
 
     tup = tuple(entries)
     with _LOCK:
@@ -352,7 +338,14 @@ def list_server_fonts(cfg: config.Config | None = None) -> list[ServerFont]:
 
 
 def get_server_font(font_id: str, cfg: config.Config | None = None) -> ServerFont | None:
-    return _scan(cfg)[1].get(font_id)
+    entry = _scan(cfg)[1].get(font_id)
+    if entry is None:
+        return None
+    try:
+        st = entry.path.stat()
+    except OSError:
+        return None
+    return entry if _font_id_for(str(entry.path), st.st_mtime_ns, st.st_size) == font_id else None
 
 
 def server_font_families(cfg: config.Config | None = None) -> list[str]:

@@ -35,7 +35,7 @@ test('queued preview jobs remap after a superseded compile changed the worker re
 function fileContext(files, cache = new Map()) {
   const source = fs.readFileSync('web/js/50-preview.js', 'utf8')
   const c = vm.createContext({ docId: 'doc', docProject: 'p', openN: 1, docMain: () => '/__doc__.typ', fileUrl: path => '/api/projects/p/files/' + path,
-    renderMediaChips() {}, queueTabs() {}, lastMedia: '', docResReadonly: false, tabSig: '', console: { warn() {} },
+    renderMediaChips() {}, queueTabs() {}, updateProjectFontMeta() {}, lastMedia: '', docResReadonly: false, tabSig: '', console: { warn() {} },
     filesDirty: false, filesAt: Date.now(), FILES_TTL: 15000, lastFiles: files, fileCache: cache,
     activeFile: '', tabDirty: false, fetch: async () => ({ ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer }),
     api: async () => ({ files }), pvFileSig: n => n, pvBibSig: '', bibKeys: [], TextDecoder, Uint8Array,
@@ -168,7 +168,7 @@ test('JS OpenType parser extracts family names from vendored fonts and rejects c
   assert.deepEqual([...c.parseFontFamiliesJS(new Uint8Array([1, 2, 3, 4]))], [])
 })
 
-test('server font selection is eager for small sets, on-demand for large sets, and notes missing families once', async () => {
+test('server font selection is eager for small sets and limited to quoted families for large sets', async () => {
   const source = fs.readFileSync('web/js/50-preview.js', 'utf8')
   let nextResp = { fonts: [], families: [] }
   const c = vm.createContext({ Uint8Array, DataView, Map, Set, TextDecoder, fileCache: new Map(), api: async () => nextResp, docId: '', queueRender() {} })
@@ -181,9 +181,7 @@ test('server font selection is eager for small sets, on-demand for large sets, a
   nextResp = { fonts: Array.from({ length: 30 }, (_, i) => ({ id: 'f' + i, families: ['Font ' + i], size: 1000, url: '/api/fonts/f' + i })), families: [] }
   await c.loadServerFonts()
   assert.deepEqual([...c.selectServerFontCatalog('#set text(font: "Font 7")').map(f => f.id)], ['f7'])
-  assert.equal(c.noteMissingServerFonts([{ message: 'unknown font family: Font 12' }]), true)
-  assert.equal(c.noteMissingServerFonts([{ message: 'unknown font family: Font 12' }]), false) // deduplicated: no retry loop
-  assert.deepEqual([...c.selectServerFontCatalog('plain').map(f => f.id)], ['f12'])
+  assert.deepEqual([...c.selectServerFontCatalog('plain').map(f => f.id)], [])
 })
 
 test('pvCall omits font payloads once the worker applied that font signature', async () => {

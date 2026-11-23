@@ -55,7 +55,6 @@ function typstComplete(ctx) {
   if (window.__booted && !/\.typ$/i.test(tplName || tabName(activeFile))) return null
   const pos = ctx.pos
   const before = ctx.state.doc.sliceString(Math.max(0, pos - 256), pos)
-  const before512 = ctx.state.doc.sliceString(Math.max(0, pos - 512), pos)
   const fuzzy = (q, s) => s.toLowerCase().includes(q) // substring, not prefix-only
   const imp = before.match(/(import|include|image|bibliography|read|csv|json|yaml|toml|xml)\s*[( ]"([^"]*)$/)
   if (imp) { // after import/include/#image(": global templates + manager files
@@ -87,7 +86,7 @@ function typstComplete(ctx) {
     } }))
     return out.length ? { from: pos - ct[1].length, filter: false, options: out.slice(0, 50) } : null
   }
-  const fc = matchFontContext(before512, pos)
+  const fc = matchFontContext(ctx.state.doc.sliceString(Math.max(0, pos - 512), pos), pos)
   const sr = (() => { // innermost unclosed `#set FUNC(` (nesting-aware; parens in strings ignored)
     const re = /#set\s+([\w.]+)\s*\(/g
     let m, last = null
@@ -119,7 +118,7 @@ function typstComplete(ctx) {
   }
   if (blocked === 'LineComment' || blocked === 'BlockComment') return null // comments: full silence (file/label/cite ran before; keywords/params stay silent like vendor)
   if (fc && blocked !== 'Raw') {
-    const fonts = typeof availableFonts === 'function' ? availableFonts() : []
+    const fonts = availableFonts()
     if (fonts.length) {
       const q = fc.query.toLowerCase()
       const srcDetail = s => s === 'project' ? t('editor.fontProject') : s === 'server' ? t('editor.fontServer') : t('editor.fontBuiltin')

@@ -14,7 +14,7 @@ test('late session initialization respects an already-started document navigatio
       api: async () => ({ user: 'alice' }), loadSpell() {}, paintMe() {},
       $: () => ({ style: {}, classList: { add() {} } }), cm: { measure() {} },
       openN, docId: '', tplName: '', URLSearchParams, location: { search: '' },
-      sidebar: async () => {}, watchSidebar() {}, loadInbox: async () => {}, loadTpl: async () => {}, checkJoin: async () => false,
+      sidebar: async () => {}, watchSidebar() {}, loadInbox: async () => {}, loadServerFonts: async () => {}, loadTpl: async () => {}, checkJoin: async () => false,
       lastOwn: [{ id: 'tutorial', title: 'Tutorial' }], lastShared: [], openDoc: id => opened.push(id),
       console,
     })
@@ -32,7 +32,7 @@ test('boot exchanges a URL token and reports an invalid one after the session ch
   const bootContext = extra => vm.createContext({
     api: async () => ({ user: 'alice' }), loadSpell() {}, paintMe() {},
     $: id => nodes[id] || { style: {}, classList: { add() {} } }, cm: { measure() {} },
-    sidebar: async () => {}, watchSidebar() {}, loadInbox: async () => {}, loadTpl: async () => {},
+    sidebar: async () => {}, watchSidebar() {}, loadInbox: async () => {}, loadServerFonts: async () => {}, loadTpl: async () => {},
     checkJoin: async () => false, lastOwn: [], lastShared: [], openDoc() {},
     openN: 1, docId: '', tplName: '', URLSearchParams, location: { search: '', hash: '' }, console,
     hadOidcErr: false, hadInvite: false, t: k => k, loadAuthConfig: async () => {},

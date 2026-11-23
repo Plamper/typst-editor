@@ -175,7 +175,7 @@ async def no_cache_html(req: Request, call: Any):
     if res.status_code == 200 and (
             req.url.path.rsplit("/", 1)[-1] in deps.IMMUTABLE_SHELL or req.url.path.startswith("/vendor/")):
         res.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-    elif res.status_code == 200 and req.url.path.startswith("/api/fonts/") and len(req.url.path) > len("/api/fonts/"):
+    elif res.status_code == 200 and req.url.path.startswith("/api/fonts/"):
         res.headers["Cache-Control"] = "private, max-age=31536000, immutable"
     elif req.url.path == "/" or req.url.path.endswith((".html", ".js")) or req.url.path.startswith("/api/"):
         res.headers["Cache-Control"] = "no-store"

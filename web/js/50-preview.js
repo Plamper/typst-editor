@@ -32,35 +32,14 @@ function fix(v, n) {
 async function applyWorkerFonts(j) {
   if (!M || !T || j.fontSig === loadedFontSig) return
   var fb = await M.TypstSnippet.buildLocalFontResolver.call(T)
-  for (var bi = 0; bi < baseFontBytes.length; bi++) {
-    try { await fb.addFontData(baseFontBytes[bi]) } catch (e) {}
-  }
-  var sf = j.serverFonts || []
-  for (var si = 0; si < sf.length; si++) {
-    try { await fb.addFontData(new Uint8Array(sf[si].bytes)) } catch (e) {}
-  }
-  var pf = j.projectFonts || []
-  var byPath = {}
-  for (var pi = 0; pi < pf.length; pi++) {
-    var pb = new Uint8Array(pf[pi].bytes)
-    try {
-      var info = await fb.getFontInfo(pb)
-      var fams = []
-      if (Array.isArray(info)) {
-        for (var fi = 0; fi < info.length; fi++) {
-          var fn = info[fi] && (info[fi].family || info[fi].name)
-          if (fn && fams.indexOf(fn) < 0) fams.push(fn)
-        }
-      }
-      if (fams.length) byPath[pf[pi].name] = fams
-      await fb.addFontData(pb)
-    } catch (e) {}
+  var all = baseFontBytes.concat((j.serverFonts || []).concat(j.projectFonts || []).map(function (f) { return new Uint8Array(f.bytes) }))
+  for (var i = 0; i < all.length; i++) {
+    try { await fb.addFontData(all[i]) } catch (e) {}
   }
   var c = await T.getCompiler()
   await fb.build(function (resolver) { c.setFonts(resolver) })
   await c.reset()
   loadedFontSig = j.fontSig
-  postMessage({ kind: 'fonts', byPath: byPath })
 }
 var queued = [], initFailed = false
 onmessage = function (e) {
@@ -93,12 +72,10 @@ onmessage = function (e) {
   ;(async function () {
     var diags = []
     var mapped = !j.full // incremental: the shadow files are still the ones the client sent last time
-    var fontsApplied = j.fontSig === loadedFontSig
+    var fontsApplied = false
     try {
-      if (j.fontSig !== loadedFontSig) {
-        await applyWorkerFonts(j)
-        fontsApplied = true
-      }
+      await applyWorkerFonts(j)
+      fontsApplied = true
       if (j.full) { // files changed: full remap once, else only the document text below (reset would wipe the shadow)
         await T.resetShadow()
         var fs = j.files || []
@@ -132,7 +109,7 @@ const FONT_EXT = /\.(ttf|otf|ttc|otc)$/i
 const BUILTIN_FONTS = ['DejaVu Sans Mono', 'Libertinus Serif', 'New Computer Modern', 'New Computer Modern Math']
 const SERVER_FONT_EAGER_FILES = 25, SERVER_FONT_EAGER_BYTES = 25 * 1024 * 1024
 let serverFonts = [], serverFontFamilies = [] // catalog from GET /api/fonts
-const serverFontBytes = new Map(), serverFontDemand = new Set() // id -> Uint8Array; lowercased families requested via diagnostics
+const serverFontBytes = new Map() // id -> Uint8Array
 let projectFontByPath = new Map(), projectFontFamilies = [], pvFontMetaSig = ''
 let typstMod = null, mainBaseFonts = null, mainFontSig = '|' // main-thread WASM font state (client PDF/SVG export + fallback)
 function isValidFontBytes(b) {
@@ -140,7 +117,7 @@ function isValidFontBytes(b) {
   const tag = String.fromCharCode(b[0], b[1], b[2], b[3])
   return (b[0] === 0 && b[1] === 1 && b[2] === 0 && b[3] === 0) || tag === 'OTTO' || tag === 'ttcf' || tag === 'true' || tag === 'typ1'
 }
-function parseFontFamiliesJS(bytes) { // fast pure-JS SFNT/TTC name-table parser (immediate metadata before WASM finishes)
+function parseFontFamiliesJS(bytes) { // pure-JS SFNT/TTC name-table parser: project font families for autocomplete and insert
   if (!isValidFontBytes(bytes)) return []
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const u16 = o => dv.getUint16(o, false), u32 = o => dv.getUint32(o, false)
@@ -174,11 +151,13 @@ function parseFontFamiliesJS(bytes) { // fast pure-JS SFNT/TTC name-table parser
     if (!no || nl < 6 || no + nl > bytes.length) return ''
     const cnt = u16(no + 2), so = u16(no + 4)
     if (!cnt || 6 + cnt * 12 > nl || so > nl) return ''
-    let b16 = null, b1 = null
-    for (let i = 0; i < cnt; i++) {
+    let b16 = null, b1 = null, decodes = 0
+    for (let i = 0; i < cnt && decodes < 32; i++) { // decode only records that would win: hostile name tables stay cheap
       const r = no + 6 + i * 12, pid = u16(r), eid = u16(r + 2), lid = u16(r + 4), nid = u16(r + 6), ln = u16(r + 8), off = u16(r + 10)
       if ((nid !== 1 && nid !== 16) || !ln) continue
-      const pr = prio(pid, eid, lid); if (pr >= 99) continue
+      const pr = prio(pid, eid, lid), best = nid === 16 ? b16 : b1
+      if (pr >= 99 || (best && pr >= best[0])) continue
+      decodes++
       const val = decode(no + so + off, ln, pid, eid); if (!val) continue
       if (nid === 16) { if (!b16 || pr < b16[0]) b16 = [pr, val] }
       else if (!b1 || pr < b1[0]) b1 = [pr, val]
@@ -188,9 +167,10 @@ function parseFontFamiliesJS(bytes) { // fast pure-JS SFNT/TTC name-table parser
   try {
     const out = [], seen = new Set()
     if (tagAt(0) === 'ttcf') {
-      const n = Math.min(256, u32(8))
-      for (let i = 0; i < n && 12 + (i + 1) * 4 <= bytes.length; i++) {
-        const f = face(u32(12 + i * 4))
+      const n = Math.min(256, u32(8)), offs = new Set()
+      for (let i = 0; i < n && 12 + (i + 1) * 4 <= bytes.length; i++) offs.add(u32(12 + i * 4))
+      for (const o of offs) {
+        const f = face(o)
         if (f && !seen.has(f.toLowerCase())) { seen.add(f.toLowerCase()); out.push(f) }
       }
     } else {
@@ -200,23 +180,19 @@ function parseFontFamiliesJS(bytes) { // fast pure-JS SFNT/TTC name-table parser
     return out
   } catch (e) { return [] }
 }
-function rebuildProjectFontFamilies() {
-  const seen = new Map()
-  for (const fams of projectFontByPath.values())
-    for (const f of fams) if (f && !seen.has(f.toLowerCase())) seen.set(f.toLowerCase(), f)
-  projectFontFamilies = [...seen.values()].sort((a, b) => a.localeCompare(b))
-}
-function updateProjectFontMeta(sig) {
+function updateProjectFontMeta() {
+  const sig = [...fileCache].filter(([n]) => FONT_EXT.test(n)).map(([n, c]) => pvFileSig(n, c)).join(',')
   if (sig === pvFontMetaSig) return
   pvFontMetaSig = sig
-  const next = new Map()
+  projectFontByPath = new Map()
+  const seen = new Map()
   for (const [n, c] of fileCache) {
     if (!FONT_EXT.test(n) || !c?.bytes) continue
     const fams = parseFontFamiliesJS(c.bytes)
-    if (fams.length) next.set(n, fams)
+    if (fams.length) projectFontByPath.set(n, fams)
+    for (const f of fams) if (!seen.has(f.toLowerCase())) seen.set(f.toLowerCase(), f)
   }
-  projectFontByPath = next
-  rebuildProjectFontFamilies()
+  projectFontFamilies = [...seen.values()].sort((a, b) => a.localeCompare(b))
 }
 function availableFonts() { // unified deduplicated list for editor autocomplete (project > server > builtin)
   const map = new Map()
@@ -241,7 +217,7 @@ function selectServerFontCatalog(main) {
   if (!serverFonts.length) return []
   const totalBytes = serverFonts.reduce((s, f) => s + (f.size || 0), 0)
   if (serverFonts.length <= SERVER_FONT_EAGER_FILES && totalBytes <= SERVER_FONT_EAGER_BYTES) return serverFonts
-  const refs = new Set(serverFontDemand)
+  const refs = new Set()
   const scan = txt => {
     for (const m of String(txt || '').matchAll(/"([^"\n]{1,120})"/g)) refs.add(m[1].trim().toLowerCase())
   }
@@ -272,20 +248,6 @@ async function collectRenderFonts(main) { // active server fonts (fetched + cach
   const fontSig = sFonts.map(f => f.id).join(',') + '|' + pFonts.map(f => f.sig).join(',')
   return { serverFonts: sFonts, projectFonts: pFonts, fontSig }
 }
-function noteMissingServerFonts(diags) { // @preview package or dynamic font: auto-demand matching server fonts once
-  if (!serverFonts.length || !Array.isArray(diags) || !diags.length) return false
-  let added = false
-  for (const d of diags) {
-    const m = String((d && d.message) || '').match(/unknown font family:\s*(.+)$/i)
-    if (!m) continue
-    const fam = m[1].trim().replace(/^["']|["']$/g, '').toLowerCase()
-    if (!fam || serverFontDemand.has(fam)) continue
-    if (serverFonts.some(f => Array.isArray(f.families) && f.families.some(x => x.toLowerCase() === fam))) {
-      serverFontDemand.add(fam); added = true
-    }
-  }
-  return added
-}
 let pvTextDone = [] // per-page text index state: raster fills it early, pvTextAll fills the rest
 const PV_HASH_MAX = 262144 // hash files up to 256KB: live same-length edits change the sig, big binaries use mtime+length only
 function pvHash(b) { // FNV-1a over bytes: cheap change detector for text files (no crypto needed)
@@ -312,10 +274,10 @@ const typstFonts = [ // self-hosted default text set (see vendor/manifest.json):
 function ensureTypst() {
   if (typstPm) return typstPm
   typstPm = import(PV_WORKER_URL).then(async m => { // pinned, self-hosted (see vendor/); bundles Typst 0.15.1 (= CLI 0.15.1), RC chosen deliberately for compiler parity
-    typstMod = m
-    if (!window.$typst) window.$typst = m.$typst || m.default || m // ESM bundle sets no global: adopt it
     const raw = await Promise.all(typstFonts.map(u => fetch(u).then(r => r.ok ? r.arrayBuffer() : null).then(b => b ? new Uint8Array(b) : null).catch(() => null)))
     mainBaseFonts = raw.filter(Boolean)
+    typstMod = m
+    if (!window.$typst) window.$typst = m.$typst || m.default || m // ESM bundle sets no global: adopt it
     // bundle default points to missing WASM (404): pin explicitly (see docs example)
     const fontLoader = (m.preloadRemoteFonts || m.loadFonts)(mainBaseFonts, { assets: false }) // local fonts, no remote fetch
     window.$typst.setCompilerInitOptions({ getModule: () => '/vendor/typst-compiler-0.8.0-rc3-85a071522388.wasm', beforeBuild: [fontLoader] })
@@ -332,9 +294,9 @@ async function syncMainFonts(main) { // keep main-thread $typst (client PDF/SVG 
   const rf = await collectRenderFonts(main)
   if (rf.fontSig === mainFontSig) return
   const fb = await typstMod.TypstSnippet.buildLocalFontResolver.call(window.$typst)
-  for (const b of (mainBaseFonts || [])) { try { await fb.addFontData(b) } catch (e) {} }
-  for (const f of rf.serverFonts) { try { await fb.addFontData(f.bytes) } catch (e) {} }
-  for (const f of rf.projectFonts) { try { await fb.addFontData(f.bytes) } catch (e) {} }
+  for (const b of [...(mainBaseFonts || []), ...rf.serverFonts.map(f => f.bytes), ...rf.projectFonts.map(f => f.bytes)]) {
+    try { await fb.addFontData(b) } catch (e) {}
+  }
   const c = await window.$typst.getCompiler()
   await fb.build(resolver => c.setFonts(resolver))
   await c.reset()
@@ -367,14 +329,6 @@ function pvEnsureWorker() { // compile worker (Blob URL: no shell/backend change
         pvJobs.clear()
       } else { pvWorkerOk = true; $('cdnLine').style.display = 'none'; updExports(); if (docId) render() }
       if (m.fail && docId) render() // worker dead on arrival: fall back without waiting for the watchdog
-      return
-    }
-    if (m.kind === 'fonts') {
-      if (m.byPath && typeof m.byPath === 'object') {
-        for (const [p, fams] of Object.entries(m.byPath))
-          if (Array.isArray(fams) && fams.length && fileCache.has(p)) projectFontByPath.set(p, fams)
-        rebuildProjectFontFamilies()
-      }
       return
     }
     if (m.kind !== 'done') return
@@ -518,7 +472,7 @@ async function pvFilesOnce() { // file list + bytes + bib keys (no compiler mapp
       try { collect(dec.decode(c.bytes)) } catch (e) {}
     }
   }
-  if (typeof updateProjectFontMeta === 'function') updateProjectFontMeta(sig)
+  updateProjectFontMeta()
   return { sig, doc: myDoc }
 }
 async function shadowAll(main) { // project files as shadow, the document at docMain(): main-thread fallback and PDF/SVG export share it
@@ -579,20 +533,13 @@ async function render() {
     const pf = await pvFiles()
     if (!pf) { if (myEpoch === openN && myDoc === docId) queueRender(); return } // a resource poll superseded the list load: retry, no other render would
     if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted compile
-    const rf = typeof collectRenderFonts === 'function' ? await collectRenderFonts(main) : { fontSig: '|', serverFonts: [], projectFonts: [] }
+    const rf = await collectRenderFonts(main)
     if (pvStale(id, myDoc, myTplName)) return
     const job = { cmd: 'work', id: ++pvJobN, main, mainPath: docMain(), sig: pf.sig,
       files: [...fileCache].map(([n, c]) => ({ name: n, bytes: c.bytes })),
       fontSig: rf.fontSig, serverFonts: rf.serverFonts, projectFonts: rf.projectFonts }
-    let m = await pvCall(job, id) // compile off the main thread: typing stays fluid
+    const m = await pvCall(job, id) // compile off the main thread: typing stays fluid
     if (!m || m.skip || pvStale(id, myDoc, myTplName)) return
-    if (typeof noteMissingServerFonts === 'function' && noteMissingServerFonts(m.diags)) { // @preview package requested a server font not quoted in source: fetch & recompile once
-      const rf2 = await collectRenderFonts(main)
-      if (!pvStale(id, myDoc, myTplName) && rf2.fontSig !== rf.fontSig) {
-        m = await pvCall({ ...job, id: ++pvJobN, fontSig: rf2.fontSig, serverFonts: rf2.serverFonts, projectFonts: rf2.projectFonts }, id)
-        if (!m || m.skip || pvStale(id, myDoc, myTplName)) return
-      }
-    }
     wDiags = m.diags
     if (pvStale(id, myDoc, myTplName)) return
     doc = await pdfjsLib.getDocument({ data: m.pdf }).promise
@@ -1243,15 +1190,10 @@ async function renderDirect(id, preview) { // fallback: no worker (exotic browse
     renderDirect.tail = new Promise(r => { release = r })
     await prev
     try {
-      const main = window.changeSession ? sessionMainText() : activeFile ? shadow : getT()
-      await shadowAll(main) // file tab: preview still compiles the document text
+      await shadowAll(window.changeSession ? sessionMainText() : activeFile ? shadow : getT()) // file tab: preview still compiles the document text
       if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted full compile
       const compiler = await $typst.getCompiler()
       cmp = await compiler.compile({ mainFilePath: docMain(), format: 1, diagnostics: 'full' }) // 1 = pdf: bytes + diagnostics in one compile
-      if (typeof noteMissingServerFonts === 'function' && noteMissingServerFonts(cmp.diagnostics) && !pvStale(id, myDoc, myTplName)) {
-        await syncMainFonts(main)
-        cmp = await compiler.compile({ mainFilePath: docMain(), format: 1, diagnostics: 'full' })
-      }
     } finally { release() }
     if (pvStale(id, myDoc, myTplName)) return // stale: skip wasted pdfjs work
     doc = await pdfjsLib.getDocument({ data: cmp.result }).promise

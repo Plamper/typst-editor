@@ -68,7 +68,7 @@ async function login(u, p) {
     const hadJoin = !!new URLSearchParams(location.search).get('join')
     try { await sidebar(); } catch (e) {}
     loadInbox().catch(() => {}) // bell + unread count do not wait for the SSE stream
-    if (typeof loadServerFonts === 'function') loadServerFonts().catch(() => {})
+    loadServerFonts()
     watchSidebar()
     await loadTpl(); const joined = await checkJoin()
     if (openN === 0 && !docId && !tplName && !hadJoin && !joined) {
@@ -390,7 +390,7 @@ bootSession().then(async d => { // session via cookie only (HttpOnly)
   const hadJoin = !!new URLSearchParams(location.search).get('join')
   try { await sidebar(); } catch (e) {}
   loadInbox().catch(() => {}) // bell + unread count do not wait for the SSE stream
-  if (typeof loadServerFonts === 'function') loadServerFonts().catch(() => {})
+  loadServerFonts()
   watchSidebar()
   await loadTpl(); const joined = await checkJoin()
   if (openN === 0 && !docId && !tplName && !hadJoin && !joined) {
