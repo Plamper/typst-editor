@@ -31,7 +31,7 @@ const SIDEBAR_MENU = {
   useInProject: ['menu.useInProject', 'menu.useInProjectHint'],
   trash: ['menu.actionTrash', 'menu.trashHint'],
 }
-const MENU_WHAT = { file: 'menu.whatFile', folder: 'menu.whatFolder', document: 'menu.whatDocument', module: 'menu.whatModule', project: 'menu.whatProject' }
+const MENU_WHAT = { file: 'menu.whatFile', folder: 'menu.whatFolder', document: 'menu.whatDocument', module: 'menu.whatModule', project: 'menu.whatProject', selection: 'menu.whatSelection' }
 function menuWhat(what) { return what && MENU_WHAT[what] ? t(MENU_WHAT[what]) : '' }
 function sidebarMenuItem(key, run, extra = {}) {
   const { what, ...rest } = extra
@@ -66,6 +66,7 @@ function compactSidebarActions(host, keep = 0, decorate = null) {
   more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false')
   more.dataset.sideMenu = '' // ui-layer opens the dropdown below the button
   more.sideMenuItems = () => {
+    if (sideSelHolds(host)) return sideSelMenuItems()
     const s = window.changeSession
     const staged = s && host.closest('.project-group')?.dataset.projectId === s.project ? s.files.get(host.dataset.packageKey) : null
     if (staged?.action === 'delete') return [{ label: t('packages.discardFile'), danger: true, run: () => discardSessionFile(staged).catch(e => toast(e.message)) }]
@@ -251,7 +252,7 @@ function paintProjects(box, shared) {
         const rename = projectAction(row, ICO_EDIT, t('files.renameHead'), () => renameProjectEntry(p, name, row))
         rename.dataset.menuKey = 'rename'; rename.dataset.menuLabel = t('menu.renameShort'); rename.dataset.menuHint = 'menu.renameHint'
       }
-      projectDrag(row, p, entry)
+      projectDrag(row, p, entry); sidebarSelectable(row, p, entry)
       projectDropTarget(row, p, folder, dropVisual(folder)) // dropping on a file targets the folder it lives in
       if (projectEditable(p) || canStageProjectDelete(p.id)) {
         const trash = projectAction(row, ICO_TRASH, t('docs.moveTrash'), () => deleteProjectEntry(p, name))
@@ -275,7 +276,8 @@ function paintProjects(box, shared) {
       if (trash) { trash.dataset.menuKey = 'trash'; trash.dataset.menuLabel = t('menu.actionTrash'); trash.dataset.menuHint = 'menu.trashHint' }
       compactSidebarActions(row, 0, actions => entryMenuItems(p, { kind: 'document', doc_id: d.id, name: d.title, folder: d.folder || '' }, actions))
       projectDropTarget(row, p, folder, dropVisual(folder)) // dropping on a document targets the folder it lives in
-      projectDrag(row, p, { kind: 'document', doc_id: d.id, name: d.title, folder: d.folder || '' }); group.appendChild(row)
+      const entry = { kind: 'document', doc_id: d.id, name: d.title, folder: d.folder || '' }
+      projectDrag(row, p, entry); sidebarSelectable(row, p, entry); group.appendChild(row)
     }
     const folderRow = (path, level) => {
       const fkey = 'folder:' + p.id + ':' + path, base = path.split('/').pop()
@@ -302,6 +304,7 @@ function paintProjects(box, shared) {
       }
       compactSidebarActions(row, 1, actions => folderMenuItems(p, path, actions))
       projectDrag(row, p, { kind: 'folder', name: path }) // folders move/copy like entries; the drop target rejects descendants
+      sidebarSelectable(row, p, { kind: 'folder', name: path })
       projectDropTarget(row, p, path)
       group.appendChild(row)
       return open
@@ -326,6 +329,7 @@ function paintProjects(box, shared) {
     if (!searching) revealActiveFolder(p, tree)
     paintDir('', 0)
   })
+  if (box.querySelector('.sel')) paintSideSel() // a selected run only joins once all its rows are painted (no mark before boot ends)
 }
 async function newProjectDoc(id, folder = '') {
   const choice = await askNewDoc()
@@ -974,6 +978,8 @@ function projectDropTarget(row, target, folder = '', visual = row) {
   if (!projectEditable(target)) return
   const invalidDrop = data => {
     if (!data || data.trashed || data.personal) return false
+    if (data.items) return data.items.every(x => x.project === target.id && entryFolder(x.entry) === folder) ||
+      data.items.some(x => x.project === target.id && x.entry.kind === 'folder' && insideFolder(folder, x.entry.name))
     if (data.project === target.id && entryFolder(data.entry) === folder) return true // already here: no target, no drop
     return data.entry.kind === 'folder' && insideFolder(folder, data.entry.name) // never into itself or a descendant
   }
@@ -993,6 +999,7 @@ function projectDropTarget(row, target, folder = '', visual = row) {
       const data = JSON.parse(e.dataTransfer.getData('application/x-typst-project-entry'))
       if (invalidDrop(data)) return
       if (data.trashed) { await restoreSidebarDocument(data, target); return }
+      if (data.items) { await sideSelDrop(sideSelResolve(data.items), target, folder, !e.ctrlKey && !e.metaKey); return }
       if (data.personal) { await pullLibrary({ source_scope: 'personal', source: data.entry.name, folder: data.entry.folder || '' }, { scope: 'project', project_id: target.id }, folder); return }
       const source = projects.find(p => p.id === data.project)
       if (!source) return

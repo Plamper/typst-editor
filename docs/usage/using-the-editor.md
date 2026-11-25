@@ -27,6 +27,14 @@ Documents cannot be included in other documents; put shared content into `.typ` 
 
 Packages from the Typst package registry (`#import "@preview/..."`) are loaded by the browser from `packages.typst.org`.
 
+### Selecting several entries
+
+Files, documents and folders in the sidebar can be selected together, also across projects:
+
+- Ctrl+click (Cmd+click on macOS) adds or removes an entry, Shift+click selects a range, Ctrl+Shift+click adds a range.
+- Up/Down move between rows, Shift+Up/Down extend the selection, Ctrl+Space toggles a row, Ctrl+A selects every visible entry and Esc clears the selection.
+- The menu of a selected row (three dots or right-click) duplicates, copies, moves or trashes the whole selection. Dragging a selected row takes all of them along, Delete moves them to the trash.
+
 ### Templates and trash
 
 - Save a document as a personal template and start new documents from it.
