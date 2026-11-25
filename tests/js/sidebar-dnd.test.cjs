@@ -13,7 +13,7 @@ function context(extra = {}) {
     createElement: () => ({ style: {}, classList: { add() {}, remove() {} }, appendChild() {}, setAttribute() {} }),
     ...documentExtra,
   }
-  const c = vm.createContext({ TEXT_EXT: /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i, t: key => key, window: {}, toast: message => assert.fail(message), document, ...rest })
+  const c = vm.createContext({ TEXT_EXT: /\.(typ|bib|csv|tsv|json|yaml|yml|toml|xml|txt|csl)$/i, t: key => key, window: {}, toast: message => assert.fail(message), sideSelDragData: () => null, document, ...rest })
   vm.runInContext(source, c)
   return c
 }
@@ -134,4 +134,18 @@ test('restoration refreshes the source project before moving to the target folde
   assert.equal(calls[1][0], original)
   assert.equal(calls[1][1].folder, 'a/b')  // cross-project restore keeps the folder path
   assert.equal(calls[1][3], target)
+})
+test('a dragged selection only drops onto the trash or a project folder', async () => {
+  const items = [{ project: 'a', entry: { kind: 'file', name: 'x.typ' } }, { project: 'b', entry: { kind: 'folder', name: 'f' } }]
+  let dropped
+  const c = context({ projectEditable: () => true, insideFolder: (path, folder) => path === folder || path.startsWith(folder + '/'), sideSelResolve: list => list, sideSelDrop: async (...args) => dropped = args })
+  assert.equal(c.sidebarCanDrop({ project: 'a', entry: items[0].entry, items }, 'trash'), true)
+  assert.equal(c.sidebarCanDrop({ project: 'a', entry: items[0].entry, items }, 'modules'), false)
+  vm.runInContext(projectCode.slice(projectCode.indexOf('function projectDropTarget'), projectCode.indexOf('async function renamePersonalResource')), c)
+  const host = row(); c.projectDropTarget(host, { id: 'b' }, 'f/sub')
+  await host.ondrop(drop({ project: 'a', entry: items[0].entry, items }))
+  assert.equal(dropped, undefined) // a selected folder never lands inside itself
+  const other = row(), target = { id: 'c' }; c.projectDropTarget(other, target, 'g')
+  await other.ondrop(drop({ project: 'a', entry: items[0].entry, items }))
+  assert.deepEqual(plain(dropped), [items, { id: 'c' }, 'g', true])
 })
