@@ -13,12 +13,12 @@ def test_file_server_name_and_rename_preview(page):
     page.locator('#submenu button').filter(has_text='.typ').first.click()
     page.fill('#mInp', 'Änderungen')
     page.click('#mYes')
-    # File names use the server's ASCII normalization; the UI must open that returned name.
-    tab = page.locator('#tabs button.tab').filter(has_text='_nderungen.typ')
+    # The UI opens the name the server returns (NFC-normalized, umlauts kept).
+    tab = page.locator('#tabs button.tab').filter(has_text='Änderungen.typ')
     expect(tab).to_have_attribute('aria-selected', 'true')
     tab.dblclick()
     page.fill('#mInp', 'renamed.typ')
     page.click('#mYes')  # nothing quotes the file: renamed at once, no confirmation dialog
     expect(page.locator('#modal')).to_be_hidden()
     expect(page.locator('#tabs button.tab').filter(has_text='renamed.typ')).to_be_visible()
-    expect(page.locator('#tabs button.tab').filter(has_text='_nderungen.typ')).to_have_count(0)
+    expect(page.locator('#tabs button.tab').filter(has_text='Änderungen.typ')).to_have_count(0)

@@ -472,7 +472,7 @@ function insImage(name) { // #image() at cursor
   cm.dispatch({ changes: { from: m.from, to: m.to, insert: ins }, selection: { anchor: m.from + ins.length } })
   cm.focus()
 }
-const uploadName = n => n.replace(/[^A-Za-z0-9._ ()-]+/g, '_').replace(/^\.+/, '') // what the server accepts as a path segment
+const uploadName = n => n.normalize('NFC').replace(/[\\/:*?"<>|\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069\ud800-\udfff]+/gu, '_').replace(/^\.+/, '') // what the server accepts as a path segment: any script, not the file system's delimiters
 async function upFile(f) { // upload into the document's folder, returns the project path ('' on error)
   const path = (docFolder ? docFolder + '/' : '') + uploadName(f.name)
   try { return (await putFile(fileUrl(path), f)).path }
@@ -525,7 +525,7 @@ cm.contentDOM.addEventListener('paste', async e => { // paste screenshot/image: 
   for (const f of imgs) {
     const ext = ((f.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/\+.*$/, '')).toLowerCase()
     const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
-    const named = new File([f], (f.name && f.name !== 'image.png' ? f.name.replace(/[^A-Za-z0-9._-]+/g, '_') : `paste-${stamp}-${Math.random().toString(36).slice(2, 6)}.${ext}`), { type: f.type })
+    const named = new File([f], (f.name && f.name !== 'image.png' ? uploadName(f.name) : `paste-${stamp}-${Math.random().toString(36).slice(2, 6)}.${ext}`), { type: f.type })
     try { const name = await upFile(named); if (name) insImage(name) } catch (err) { toast(err.message) }
   }
   queueRender()

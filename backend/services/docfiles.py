@@ -8,7 +8,6 @@ from __future__ import annotations
 import abc
 import logging
 import os
-import re
 import secrets
 from pathlib import Path
 from typing import NamedTuple
@@ -17,6 +16,7 @@ from fastapi import HTTPException
 
 from backend import deps
 from backend.constants import MAX_FOLDER_DEPTH
+from backend.services import resources
 
 log = logging.getLogger("typst.main")
 
@@ -170,7 +170,7 @@ def safe_name(name: str, *, new: bool = False) -> str:
     for s in segs:
         if s in ("", "."):
             continue
-        n = re.sub(r"[^A-Za-z0-9._ ()-]", "_", s.strip().lstrip("."))[:100]
+        n = resources.clean_segment(s)
         if not n:
             raise HTTPException(400, "Unsupported file type or path")
         parts.append(n)

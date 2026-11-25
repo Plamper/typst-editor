@@ -236,7 +236,7 @@ def test_quota_check_observes_uncommitted_project_bytes(c, monkeypatch):
 def test_project_file_returns_normalized_name(c):
     register_user(c, "unicode_module")
     project = c.post("/api/projects", json={"title": "Normalization"}).json()["id"]
-    response = put_file(c, project, "\u00c4nderungen.typ", b"Text")
+    response = put_file(c, project, "A\u0308nderungen.typ", b"Text")
     assert response.status_code == 200, response.text
-    assert response.json()["path"] == "_nderungen.typ"
-    assert _paths(c, project) == ["_nderungen.typ"]
+    assert response.json()["path"] == "\u00c4nderungen.typ"
+    assert _paths(c, project) == ["\u00c4nderungen.typ"]

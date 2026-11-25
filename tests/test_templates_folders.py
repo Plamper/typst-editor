@@ -32,3 +32,11 @@ def test_tplfolders_rename_drop(c):
     assert c.delete("/api/tplfolders/Neu").status_code == 200
     assert c.get("/api/tplfolders").json()["folders"] == []
     assert c.get("/api/templates").json()["templates"][0]["folder"] == ""
+
+
+def test_templates_keep_umlauts_in_names(c):
+    register_user(c, "alice")
+    assert c.post("/api/templates", json={"name": "Gr\u00f6\u00dfe.typ", "content": "x"}).status_code == 200
+    r = c.post("/api/templates/Gr\u00f6\u00dfe.typ/rename", json={"name": "\u00dcbersicht \u00e0.typ"})
+    assert r.status_code == 200, r.text
+    assert [t["name"] for t in c.get("/api/templates").json()["templates"]] == ["\u00dcbersicht \u00e0.typ"]

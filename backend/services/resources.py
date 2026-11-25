@@ -9,6 +9,7 @@ from __future__ import annotations
 import posixpath
 import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -24,6 +25,17 @@ REACHABLE_MAX = 500
 # The compile entry file is the doc itself: a resource by that name would shadow it in
 # every compile. New/updated resources reject it; get/read/delete keep working for any pre-existing rows.
 RESERVED_NAMES = frozenset({ENTRY})
+# What a path segment cannot hold: file system and quoted-reference delimiters, control, line-separator and bidi-override
+# characters, lone surrogates. Every other character, any script and emoji included, is a valid name.
+NAME_BAD = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069\ud800-\udfff]')
+NAME_MAX_BYTES = 200  # a file system caps a name at 255 bytes, the atomic-write tmp suffix needs the rest
+
+
+def clean_segment(raw: str) -> str:
+    n = NAME_BAD.sub("_", unicodedata.normalize("NFC", raw.strip().lstrip(".")))[:100]
+    while len(n.encode()) > NAME_MAX_BYTES:
+        n = n[:-1]
+    return n
 
 
 def kind_of(name: str) -> str:
@@ -31,7 +43,7 @@ def kind_of(name: str) -> str:
 
 
 def res_name(raw: str) -> str:
-    n = re.sub(r"[^A-Za-z0-9._ ()-]", "_", Path(raw or "").name.strip().lstrip("."))[:100]
+    n = clean_segment(Path(raw or "").name)
     if not n or kind_of(n) == "":
         raise HTTPException(400, "Unsupported text resource extension")
     return n
