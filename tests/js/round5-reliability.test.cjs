@@ -336,7 +336,7 @@ test('imgPick performs the one-shot swap in a session and the plain upload other
     upText: async f => { picked.push(['txt', f.name]); return 'x' },
   })
   swaps = c.swaps = []; picked = c.picked = []
-  vm.runInContext(files.slice(files.indexOf("$('imgPick').addEventListener('cancel',"), files.indexOf("$('editWrap').addEventListener('dragover'")), c)
+  vm.runInContext(files.slice(files.indexOf("$('imgPick').addEventListener('cancel',"), files.indexOf("cm.contentDOM.addEventListener('paste'")), c)
   assert.equal(typeof input.onchange, 'function')
   const file = { name: 'new.png' }
   c.pendingReplace = 'pic.png'

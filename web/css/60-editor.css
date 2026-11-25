@@ -186,3 +186,8 @@ aside .doc .package-accept-action { visibility: visible; }
 #cmWrap .cm-suggestion.cm-hl-claim, #cmWrap .cm-draft-change.cm-hl-claim { background: color-mix(in srgb, var(--editor) 68%, #955ae1); cursor: pointer; }
 
 .bibList button.bibEntryPending { color: #9560d5; box-shadow: inset 3px 0 #9560d5; }
+/* Drop into the editor: a tinted ring around the text, an accent caret (images) or line (statements) where the drop lands */
+#editWrap.editor-drop::after { content: ''; position: absolute; inset: 0; z-index: 1; box-shadow: var(--ring); background: color-mix(in srgb, var(--acc-soft) 35%, transparent); pointer-events: none; }
+.editorDrop { position: fixed; z-index: var(--z-pop); height: 2px; margin-top: -1px; background: var(--acc); border-radius: 1px; pointer-events: none; }
+.editorDrop.inline { width: 2px; margin: 0 0 0 -1px; }
+.editorDrop span { position: absolute; left: 0; bottom: calc(100% + 4px); max-width: 360px; padding: 3px 8px; background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r-xs); box-shadow: var(--sh-pop); color: var(--acc); font: 12px/1.4 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
