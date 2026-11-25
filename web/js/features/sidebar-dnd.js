@@ -16,6 +16,7 @@ function sidebarWatchDrop() { // OS-file drags: no dragend reaches our rows, dro
 }
 function sidebarCanDrop(data, target) {
   if (!data?.entry) return false
+  if (data.items) return target === 'trash'
   if (target === 'trash') return ['document', 'resource', 'file'].includes(data.entry.kind) && !data.trashed // resource = a personal module row
   if (target === 'documents') return !!data.trashed && data.entry.kind === 'document' && !data.trashId
   if (data.trashed) return !!data.trashId && (data.entry.kind !== 'file' || TEXT_EXT.test(data.entry.name))
@@ -37,16 +38,17 @@ function sidebarDrag(row, data, effect = 'copy') {
   row.draggable = true
   row.ondragstart = e => {
     if (e.target.closest('button,input')) { e.preventDefault(); return }
-    e.stopPropagation(); sidebarDragData = data
-    row.classList.add('dragging'); document.body.classList.add('dnd-active')
-    const ghost = dragGhost(row)
+    const many = sideSelDragData(row, data) // a selected row carries the whole selection
+    e.stopPropagation(); sidebarDragData = many || data
+    ;(many ? sideSelRows().filter(r => sideSel.has(r.dataset.selKey)) : [row]).forEach(r => r.classList.add('dragging')); document.body.classList.add('dnd-active')
+    const ghost = dragGhost(row, many && t('menu.selCount', { n: many.items.length }))
     if (ghost) e.dataTransfer.setDragImage(ghost, 12, 16)
-    e.dataTransfer.setData(SIDEBAR_DRAG, JSON.stringify(data)); e.dataTransfer.effectAllowed = effect
+    e.dataTransfer.setData(SIDEBAR_DRAG, JSON.stringify(sidebarDragData)); e.dataTransfer.effectAllowed = effect
   }
   row.ondragend = sidebarDragEnd
 }
-function dragGhost(row) { // small card under the cursor instead of the browser's faded row snapshot
-  const label = (row.querySelector('.t') || row.querySelector('b'))?.textContent?.trim()
+function dragGhost(row, text) { // small card under the cursor instead of the browser's faded row snapshot
+  const label = text || (row.querySelector('.t') || row.querySelector('b'))?.textContent?.trim()
   if (!label) return null
   const g = el('div', 'dndGhost', label)
   document.body.appendChild(g)
@@ -82,6 +84,7 @@ function sidebarDropTarget(row, target) {
 const TRASH_KINDS = new Set(['personal', 'file'])
 function trashEntryUrl(entry) { return (TRASH_KINDS.has(entry.kind) ? '/api/trash/' : '/api/docs/') + entry.id }
 async function trashSidebarEntry(data) {
+  if (data.items) return sideSelTrash(sideSelResolve(data.items))
   if (data.entry.kind === 'document') return trashSidebarDocument(data.entry.doc_id)
   if (data.personal) {
     if (!await flushTpl()) return

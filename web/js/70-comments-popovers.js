@@ -149,7 +149,7 @@ const el = (tag, cls, text) => {
 function kb(row, fn) { // rows via keyboard: Tab in, Enter/Space opens (minis via :focus-within)
   if (!row.hasAttribute('role')) row.setAttribute('role', 'button') // folders/rows: role even if caller forgot
   row.tabIndex = 0
-  row.onkeydown = e => { if (e.target === row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); fn() } }
+  row.onkeydown = e => { if (e.target === row && !e.ctrlKey && !e.metaKey && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); fn() } }
   return row
 }
 let askRes = null // open modal: new ask resolves old with null (no hanging promise)
