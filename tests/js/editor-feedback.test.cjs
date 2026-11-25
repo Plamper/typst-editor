@@ -231,7 +231,7 @@ test('project completions requery every prefiltered context', () => {
 test('image view renders a typed blob, ignores stale loads and releases its URL', async () => {
   const elements = { editWrap: { appendChild: node => { elements.imageFile = node } }, cmWrap: { hidden: false } }
   const urls = [], revoked = [], requests = []
-  const c = vm.createContext({ window: {}, docId: 'd', docProject: 'p', lastFiles: [], fileUrl: path => '/api/projects/p/files/' + path, activeFile: 'plot.svg', tplName: '',
+  const c = vm.createContext({ window: {}, docId: 'd', docProject: 'p', lastFiles: [], FONT_EXT: /\.(ttf|otf|ttc|otc)$/i, fileUrl: path => '/api/projects/p/files/' + path, activeFile: 'plot.svg', tplName: '',
     $: id => elements[id], el: tag => ({ tag, dataset: {}, replaceChildren(...nodes) { this.children = nodes } }),
     fetch: url => new Promise(resolve => requests.push({ url, resolve })), Blob,
     URL: { createObjectURL: blob => { urls.push(blob); return 'blob:' + urls.length }, revokeObjectURL: url => revoked.push(url) } })

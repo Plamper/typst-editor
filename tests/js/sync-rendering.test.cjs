@@ -146,6 +146,7 @@ function renderContext() {
     docId: 'doc', tplName: '', openN: 1, activeFile: '', shadow: '', fileCache: new Map(),
     getT: () => 'main', pvWorkerFail: false, pvWorkerOk: true, pvEnsureWorker: () => true,
     pvBar() {}, pvFiles: async () => ({ sig: 'sig' }), docMain: () => '/__doc__.typ',
+    collectRenderFonts: async () => ({ fontSig: '|', serverFonts: [], projectFonts: [] }),
     pvCall: (job, id) => new Promise(resolve => pending.set(id, pdf => resolve({ pdf, diags: [] }))),
     pvScale: 2, pvZoom: 100, pvHasImages: () => false,
     pvCssW: w => w, pvBlank() {}, pvModeApply() {}, pvDraw: async () => {},

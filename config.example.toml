@@ -1,6 +1,7 @@
 HOST = "127.0.0.1" # Parsed config value; local commands pin 127.0.0.1. Compose sets HOST=0.0.0.0; keep that for published ports.
 PORT = 8978 # Parsed config value; local commands pin 8978. Compose pins 8978.
 DATA_DIR = "./data" # SQLite + files directory.
+FONTS_DIR = "" # Optional server-wide font directory (or OS path-separated list) of .ttf/.otf/.ttc/.otc files. Empty = auto-detect DATA_DIR/fonts, /usr/local/fonts, /usr/local/share/fonts, /usr/share/fonts.
 TRUST_PROXY = false # Trust X-Forwarded-Proto/For from the reverse proxy. Set in config.toml or via env; env wins.
 FORWARDED_ALLOW_IPS = "127.0.0.1,::1" # Peers allowed to send X-Forwarded-* (comma-separated, CIDR ok). Also passed to uvicorn via env (see Dockerfile/.env.example) — keep both in sync; env wins. Never '*' with TRUST_PROXY=true (refuses to start).
 COOKIE_SECURE = "auto" # auto|true|false.

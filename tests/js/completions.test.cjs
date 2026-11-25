@@ -6,10 +6,10 @@ const vm = require('node:vm')
 const source = fs.readFileSync('web/js/20-completions.js', 'utf8')
 const complete = source.slice(source.indexOf('function typstComplete'), source.indexOf('function typstHover'))
 
-function completionContext(bibKeys, parser) {
+function completionContext(bibKeys, parser, fonts = []) {
   const c = vm.createContext({
     window: {}, tplName: '', activeFile: '', tabName: () => '', bibKeys, mediaNames: [], getT: () => '',
-    fileRefs: () => [], t: key => key, T_KW: [], T_SNIP: [], T_BLOCKED: new Set(['LineComment', 'Str', 'Label', 'Ref']),
+    fileRefs: () => [], availableFonts: () => fonts, typstStr: s => '"' + s.replace(/[\\"]/g, '\\$&') + '"', t: key => key, T_KW: [], T_SNIP: [], T_BLOCKED: new Set(['LineComment', 'BlockComment', 'Raw', 'Str', 'Label', 'Ref']),
     typstParser: parser, typstBuiltinSignatures: undefined, pcDoc: null, pcTree: null,
   })
   vm.runInContext(complete, c)
@@ -54,4 +54,70 @@ test('#cite(< completes a label and consumes an existing closing angle bracket',
 
 test('#cite(" does not offer bibliography keys for the invalid string form', () => {
   assert.equal(completionContext(['smith2020']).typstComplete(editor('#cite("smi')), null)
+})
+
+const SAMPLE_FONTS = [
+  { family: 'Acme Sans', source: 'project' },
+  { family: 'Inter', source: 'server' },
+  { family: 'Libertinus Serif', source: 'builtin' },
+  { family: 'DejaVu Sans Mono', source: 'builtin' },
+]
+
+test('font completion covers #set text, #text, bare set text, and auto-quotes', () => {
+  const c = completionContext([], undefined, SAMPLE_FONTS)
+  // Quoted inside #set text(font: "...")
+  const r1 = c.typstComplete(editor('#set text(font: "'))
+  assert.equal(r1.from, 16)
+  assert.deepEqual([...r1.options.map(o => o.label)], ['Acme Sans', 'Inter', 'DejaVu Sans Mono', 'Libertinus Serif'])
+  assert.equal(r1.options[0].detail, 'editor.fontProject')
+  assert.equal(r1.options[1].detail, 'editor.fontServer')
+
+  // Apply consumes existing closing quote from closeBrackets
+  const changes = []
+  const view = { state: { sliceDoc: (f, t) => '#set text(font: "Int")'.slice(f, t) }, dispatch: tr => changes.push(tr) }
+  const r2 = c.typstComplete(editor('#set text(font: "Int'))
+  assert.equal(r2.from, 16)
+  assert.equal(r2.options[0].label, 'Inter')
+  r2.options[0].apply(view, r2.options[0], r2.from, 20)
+  assert.deepEqual(JSON.parse(JSON.stringify(changes[0])), { changes: { from: 16, to: 21, insert: '"Inter"' }, selection: { anchor: 23 }, userEvent: 'input.complete' })
+
+  // Unquoted after font: auto-quotes
+  const r3 = c.typstComplete(editor('#text(12pt, font: Acm'))
+  assert.equal(r3.from, 18)
+  assert.equal(r3.options[0].label, 'Acme Sans')
+
+  // German / typographic opening quotes (keyboard autocorrect) complete and normalize to straight quotes
+  const r5 = c.typstComplete(editor('#set text(font: „Int'))
+  assert.equal(r5.from, 16)
+  assert.equal(r5.options[0].label, 'Inter')
+  const smart = []
+  r5.options[0].apply({ state: { sliceDoc: (f, t) => '#set text(font: „Int“)'.slice(f, t) }, dispatch: tr => smart.push(tr) }, r5.options[0], r5.from, 20)
+  assert.deepEqual(JSON.parse(JSON.stringify(smart[0].changes)), { from: 16, to: 21, insert: '"Inter"' })
+  assert.equal(c.typstComplete(editor('#set text(font: ("Inter", „')).options.some(o => o.label === 'Inter'), false)
+
+  // Bare set text inside #show rule
+  const r4 = c.typstComplete(editor('#show raw: set text(font: "Deja'))
+  assert.equal(r4.options[0].label, 'DejaVu Sans Mono')
+})
+
+test('font completion supports fallback arrays and dictionary forms, deduplicating used fonts', () => {
+  const c = completionContext([], undefined, SAMPLE_FONTS)
+  const r1 = c.typstComplete(editor('#set text(font: ("Inter", "'))
+  assert.equal(r1.options.some(o => o.label === 'Inter'), false)
+  assert.equal(r1.options.some(o => o.label === 'Libertinus Serif'), true)
+
+  const r2 = c.typstComplete(editor('#set text(font: (name: "Acm'))
+  assert.equal(r2.options[0].label, 'Acme Sans')
+
+  const r3 = c.typstComplete(editor('#set text(font: ((name: "Inter", covers: "latin-in-cjk"), (name: "'))
+  assert.equal(r3.options.some(o => o.label === 'Inter'), false)
+  assert.equal(r3.options.some(o => o.label === 'Acme Sans'), true)
+
+  // Stays quiet in covers:, other params, other functions, and comments/raw
+  assert.equal(c.typstComplete(editor('#set text(font: (name: "Inter", covers: "')), null)
+  assert.equal(c.typstComplete(editor('#set text(font: "Inter", fill: "')), null)
+  assert.equal(c.typstComplete(editor('#my_text(font: "')), null)
+  const tree = name => ({ resolveInner: () => ({ name, parent: null }) })
+  assert.equal(completionContext([], { parse: () => tree('LineComment') }, SAMPLE_FONTS).typstComplete(editor('// #set text(font: "')), null)
+  assert.equal(completionContext([], { parse: () => tree('Raw') }, SAMPLE_FONTS).typstComplete(editor('`#set text(font: "`')), null)
 })

@@ -762,7 +762,7 @@ pvFiles = async () => {
   for (const f of s.files.values()) if (f.kind === 'file') {
     const bytes = sessionBytes(f, s.original)
     if (!s.original && (f.action === 'delete' || f.action === 'rename')) fileCache.delete(f.path)
-    if (bytes && (s.original || f.action !== 'delete')) fileCache.set(!s.original && f.action === 'rename' ? f.target : f.path, { bytes, mtime: 'proposal' })
+    if (bytes && (s.original || f.action !== 'delete')) fileCache.set(!s.original && f.action === 'rename' ? f.target : f.path, { bytes, mtime: 'proposal', version: 'proposal:' + s.previewRevision + ':' + s.original })
   }
   pf.sig += '\u0002package:' + s.previewRevision + ':' + s.original
   return pf

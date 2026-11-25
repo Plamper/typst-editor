@@ -21,6 +21,7 @@ class Config:
     HOST: str = "127.0.0.1"
     PORT: int = 8978
     DATA_DIR: Path = ROOT / "data"
+    FONTS_DIR: str = ""
     TRUST_PROXY: bool = False
     FORWARDED_ALLOW_IPS: str = "127.0.0.1,::1"
     COOKIE_SECURE: str = "auto"
@@ -128,6 +129,7 @@ def _raw() -> dict:
 # but normalization would still be wrong for future tokens like '*').
 _STR_KEYS = (
     "HOST",
+    "FONTS_DIR",
     "FORWARDED_ALLOW_IPS",
     "COOKIE_SECURE",
     "REGISTRATION",
@@ -222,7 +224,7 @@ def load() -> Config:
     if vals["COOKIE_SECURE"] not in ("auto", "true", "false"):
         log.warning("COOKIE_SECURE=%r invalid, using default %r", vals["COOKIE_SECURE"], d.COOKIE_SECURE)
         vals["COOKIE_SECURE"] = d.COOKIE_SECURE
-    for k in ("OIDC_ISSUER_URL", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_REDIRECT_URI",
+    for k in ("FONTS_DIR", "OIDC_ISSUER_URL", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_REDIRECT_URI",
               "OIDC_PROVIDER_NAME", "OIDC_SCOPES", "OIDC_USERNAME_CLAIM", "OIDC_ALLOWED_GROUPS"):
         vals[k] = str(vals[k] or "").strip()
     if not vals["OIDC_PROVIDER_NAME"]:
