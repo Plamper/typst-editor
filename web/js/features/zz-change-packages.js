@@ -615,7 +615,7 @@ function sessionFileName(raw) { // backend-safe path: sanitize each segment, kee
   const parts = String(raw || '').replace(/\\/g, '/').split('/').filter(seg => seg && seg !== '.')
   if (!parts.length || parts.some(seg => seg === '..')) throw Error(t('files.nameBad'))
   const clean = parts.map((seg, i) => {
-    let s = seg.replace(/[^A-Za-z0-9._ ()-]/g, '_').replace(/^[.]+/, '')
+    let s = uploadName(seg)
     if (!s) throw Error(t('files.nameBad'))
     if (s.length <= 100) return s
     const dot = i === parts.length - 1 ? s.lastIndexOf('.') : -1

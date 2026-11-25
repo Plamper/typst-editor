@@ -4,6 +4,8 @@ const fs = require('node:fs')
 const vm = require('node:vm')
 const packages = fs.readFileSync('web/js/features/zz-change-packages.js', 'utf8')
 const pullWrapper = packages.slice(packages.indexOf('const sessionPullLibrary'), packages.indexOf('const sessionOriginalLinePop'))
+const files = fs.readFileSync('web/js/80-files-images.js', 'utf8')
+const uploadName = files.slice(files.indexOf('const uploadName'), files.indexOf('async function upFile'))
 const nameHelper = packages.slice(packages.indexOf('function sessionFileName'), packages.indexOf('async function sessionAddFile'))
 
 function context(extra = {}) {
@@ -15,6 +17,7 @@ function context(extra = {}) {
     baseCalls: [], added: [], window: { changeSession: null }, ...extra,
   })
   vm.runInContext(pullWrapper, c)
+  vm.runInContext(uploadName, c)
   vm.runInContext(nameHelper, c)
   return c
 }
@@ -47,4 +50,6 @@ test('change-session uploads keep nested folder paths and the file extension', a
   assert.equal(name, folder + 'x'.repeat(96) + '.typ')
   assert.equal(c.sessionFileName('src/nested/helper.typ'), 'src/nested/helper.typ')
   assert.throws(() => c.sessionFileName('../escape.typ'))
+  assert.equal(c.sessionFileName('Bilder/Gr\u00f6\u00dfe \u00e0\u5831.png'), 'Bilder/Gr\u00f6\u00dfe \u00e0\u5831.png')
+  assert.equal(c.sessionFileName('A\u0308/a:b.png'), '\u00c4/a_b.png')
 })

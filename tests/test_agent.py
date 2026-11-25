@@ -302,7 +302,7 @@ def test_paths_are_returned_as_stored_and_junk_is_refused(solo):
     assert a("read", path=made["path"])["content"] == "x"  # the echoed path is the one that works
     a("write", path="/Report/Doc", content="d")
     pic = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
-    assert a("write", path="/Report/ü bild.png", content_base64=pic)["path"] == "/Report/_ bild.png"
+    assert a("write", path="/Report/ü bild.png", content_base64=pic)["path"] == "/Report/ü bild.png"
     assert a.fail("write", path="/Report/x/__doc__.typ", content="x")["code"] == "bad_request"
     assert a.fail("delete", path="/Report/Nowhere/")["code"] == "not_found"
     assert a.fail("read", path="/Report/Doc", limit=-1)["code"] == "bad_request"

@@ -49,7 +49,7 @@ async function newResource(kind, chosenExt) {
   const selected = await askNewTpl('file' + ext, t('templates.newTitle'))
   const raw = selected?.name
   if (!raw?.trim()) return
-  let name = raw.trim().replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '')
+  let name = uploadName(raw.trim())
   if (!TEXT_EXT.test(name)) name += ext
   await loadTpl()
   if (myTpl.some(x => x.name === name)) { toast(t('common.nameExists')); return }

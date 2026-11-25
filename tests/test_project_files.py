@@ -69,6 +69,23 @@ def test_move_rewrites_references(c):
     assert c.get(f"/api/projects/{pid}/files/Parts/deep/part.typ").content == b'#image("../../img/b.png")'
 
 
+def test_any_script_is_a_valid_file_name(c):
+    register_user(c, "alice")
+    pid, _ = _project(c)
+    names = ["\u00c4\u00d6\u00dc\u00e4\u00f6\u00fc\u00df.png", "\u00e0\u00e1\u00e2\u00e7\u00f1.png", "\u041f\u0440\u0438\u0432\u0435\u0442.png", "\u5831\u544a\u66f8.png", "\U0001f600 smile.png"]
+    for name in names:
+        r = _put(c, pid, f"img/{name}", b"x")
+        assert r.status_code == 200, r.text
+        assert r.json()["path"] == f"img/{name}"
+        assert c.get(f"/api/projects/{pid}/files/img/{name}").content == b"x"
+    r = c.post(f"/api/projects/{pid}/files-move", json={"path": f"img/{names[0]}", "target": "Bilder/Gr\u00f6\u00dfe.png", "version": project_files.version(b"x")})
+    assert r.status_code == 200, r.text
+    assert r.json()["path"] == "Bilder/Gr\u00f6\u00dfe.png"
+    r = c.post(f"/api/projects/{pid}/files-move", json={"path": f"img/{names[1]}", "target": "img/a:b?.png", "version": project_files.version(b"x")})
+    assert r.json()["path"] == "img/a_b_.png"  # delimiters are still replaced
+    assert _put(c, pid, "img/" + "\u5831" * 120 + ".png", b"x").status_code == 200  # 255 bytes is the file system's limit, not 100 characters
+
+
 def test_guest_sees_only_what_their_document_reaches(c):
     register_user(c, "alice")
     pid, did = _project(c, content='#include "a.typ"')

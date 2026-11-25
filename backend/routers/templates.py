@@ -5,7 +5,6 @@ One table, extension decides the kind (see services/resources.py). Old
 """
 from __future__ import annotations
 
-import re
 import sqlite3
 from pathlib import Path
 
@@ -351,7 +350,7 @@ def drop_tpl_folder(name: str, req: Request, user: str = Depends(deps.me)) -> di
 
 def tpl_name(name: str) -> str:
     """Backwards-compat name (old UI/MCP import it); .typ-only like before."""
-    n = re.sub(r"[^A-Za-z0-9._-]", "_", Path(name or "").name.strip().lstrip("."))[:100]
+    n = res.clean_segment(Path(name or "").name)
     if not n.endswith(".typ"):
         raise HTTPException(404, "Template gone")
     return n
