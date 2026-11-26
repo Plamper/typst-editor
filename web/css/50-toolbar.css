@@ -58,11 +58,11 @@
 #tabs button.tab { display: inline-flex; align-items: center; gap: 7px; padding: 2px 12px; min-height: 36px; border-radius: 0; background: none; border: 0; box-shadow: none; color: var(--sub); font: 500 12.5px/1.35 var(--ui); }
 #tabs .tabw.on button.tab { background: none; color: var(--text); font-weight: 600; }
 #tabs .tabw:hover button.tab { color: var(--text); background: var(--hover); }
-#tabs .ti { flex: none; width: 15px; height: 15px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font: 700 8px/1 var(--mono); letter-spacing: -.2px; text-transform: uppercase; color: var(--on-ink); background: var(--faint); }
-#tabs .ti::before { content: attr(data-kind); }
-#tabs .ti[data-kind="typ"] { background: var(--acc); }
-#tabs .ti[data-kind="bib"] { background: #c47a12; }
-#tabs .ti[data-kind="csv"] { background: #2f9e5b; }
+#tabs .ti, .editorDrop .ti { flex: none; width: 15px; height: 15px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font: 700 8px/1 var(--mono); letter-spacing: -.2px; text-transform: uppercase; color: var(--on-ink); background: var(--faint); }
+#tabs .ti::before, .editorDrop .ti::before { content: attr(data-kind); }
+#tabs .ti[data-kind="typ"], .editorDrop .ti[data-kind="typ"] { background: var(--acc); }
+#tabs .ti[data-kind="bib"], .editorDrop .ti[data-kind="bib"] { background: #c47a12; }
+#tabs .ti[data-kind="csv"], .editorDrop .ti[data-kind="csv"] { background: #2f9e5b; }
 #tabs .tn { max-width: 200px; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; padding: 1px 0; } /* descenders (main.typ, test.typ) must not clip */
 #tabs .te { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font: 700 10px/16px var(--ui); text-align: center; }
 #tabs button.tx { display: none; align-self: center; margin-left: -8px; margin-right: 4px; min-width: 20px; min-height: 20px; padding: 0 3px; border-radius: 10px; color: var(--faint); background: none; border: 0; box-shadow: none; }
@@ -71,7 +71,7 @@
 #tabs .tsp { flex: 1; }
 #tabs button.tab:focus-visible, #tabs button.tx:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
 @media (max-width: 720px) { #tabs button.tab { min-height: 40px; } #tabs button.tx { display: inline-flex; align-items: center; } }
-#tabs .ti { width: auto; min-width: 17px; padding: 0 3px; height: 15px; font-size: 8.5px; }
+#tabs .ti, .editorDrop .ti { width: auto; min-width: 17px; padding: 0 3px; height: 15px; font-size: 8.5px; }
 
 #tools .type-hidden { display: none !important; }
 #tools .fileTools button { padding: 0 5px; min-width: 28px; width: 28px; }

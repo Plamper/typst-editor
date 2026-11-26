@@ -40,17 +40,18 @@ def test_image_lands_at_the_pointer_and_data_on_its_own_line(page):
     _project(page)
     line = page.locator("#cm .cm-line").first
     _drag(page, _row(page, "pic.png"), line, (40, 8))
-    mark = page.locator(".editorDrop")
-    expect(mark).to_be_visible()  # the drop spot and the line it writes show while dragging
-    expect(mark).to_contain_text('#image("pic.png", width: 80%)')
-    expect(page.locator("#editWrap")).to_have_class("editor-drop")
+    chip = page.locator(".editorDrop .edChip")
+    expect(chip).to_have_text('#image("pic.png", width: 80%)')  # the spot and the text it writes show while dragging
+    assert page.locator("#cm .cm-content").inner_text().splitlines()[0] == "First line"  # the text itself never moves
     page.mouse.up()
-    expect(mark).to_have_count(0)
+    expect(chip).to_have_count(0)
+    assert "".join(page.locator("#cm .cm-dropGlow").all_inner_texts()) == '#image("pic.png", width: 80%)'  # and glows once it is in
     text = _text(page)
     assert '#image("pic.png", width: 80%)' in text.splitlines()[0] and text.splitlines()[0] != '#image("pic.png", width: 80%)'
 
     second = page.locator("#cm .cm-line").nth(1)
     _drag(page, _row(page, "data.csv"), second, (60, 2))
+    expect(page.locator(".editorDrop:not(.inline) .edChip")).to_have_text('#csv("data.csv")')
     page.mouse.up()
     assert _text(page).splitlines()[1] == '#csv("data.csv")'  # a statement goes on a line of its own
 

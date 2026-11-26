@@ -186,8 +186,16 @@ aside .doc .package-accept-action { visibility: visible; }
 #cmWrap .cm-suggestion.cm-hl-claim, #cmWrap .cm-draft-change.cm-hl-claim { background: color-mix(in srgb, var(--editor) 68%, #955ae1); cursor: pointer; }
 
 .bibList button.bibEntryPending { color: #9560d5; box-shadow: inset 3px 0 #9560d5; }
-/* Drop into the editor: a tinted ring around the text, an accent caret (images) or line (statements) where the drop lands */
-#editWrap.editor-drop::after { content: ''; position: absolute; inset: 0; z-index: 1; box-shadow: var(--ring); background: color-mix(in srgb, var(--acc-soft) 35%, transparent); pointer-events: none; }
-.editorDrop { position: fixed; z-index: var(--z-pop); height: 2px; margin-top: -1px; background: var(--acc); border-radius: 1px; pointer-events: none; }
-.editorDrop.inline { width: 2px; margin: 0 0 0 -1px; }
-.editorDrop span { position: absolute; left: 0; bottom: calc(100% + 4px); max-width: 360px; padding: 3px 8px; background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r-xs); box-shadow: var(--sh-pop); color: var(--acc); font: 12px/1.4 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Drop into the editor: an accent caret (images) or insertion line glides to the drop spot, a chip names the text it writes, and that text glows once it is in */
+.editorDrop { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; animation: dropIn .12s ease-out; }
+.editorDrop .edCaret, .editorDrop .edChip { position: absolute; left: 0; top: 0; }
+.editorDrop .edCaret { height: 2px; margin-top: -1px; border-radius: 2px; background: var(--acc); }
+.editorDrop .edCaret::before { content: ''; position: absolute; left: -4px; top: -3px; width: 4px; height: 4px; border: 2px solid var(--acc); border-radius: 50%; background: var(--editor); }
+.editorDrop.inline .edCaret { width: 2px; margin: 0 0 0 -1px; }
+.editorDrop.inline .edCaret::before { display: none; }
+.editorDrop .edChip { display: inline-flex; align-items: center; gap: 7px; max-width: min(420px, 70%); padding: 4px 9px 4px 5px; background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r-sm); box-shadow: var(--sh-pop); }
+.editorDrop .edChip code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sub); font: 12px/1.4 var(--mono); }
+.editorDrop.on .edCaret, .editorDrop.on .edChip { transition: transform .09s cubic-bezier(.2, .8, .2, 1), width .09s ease-out; }
+#cmWrap .cm-dropGlow { animation: dropGlow 1.2s ease-out; }
+@keyframes dropIn { from { opacity: 0; } }
+@keyframes dropGlow { from { background: var(--acc-soft); } to { background: transparent; } }
