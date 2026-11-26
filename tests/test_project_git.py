@@ -235,6 +235,7 @@ def test_export_carries_git_history_and_import_takes_it_over(c, monkeypatch, tmp
     monkeypatch.setattr(project_git, "check_remote", lambda url: url.strip())
     pid, did = _project(c)
     assert c.put(f"/api/projects/{pid}/versioning", json=_settings(git=True, remote="https://example.org/me/thesis.git", branch="drafts", token="secret-token")).status_code == 200
+    project_git.drain()  # the first commit (newest version so far) lands before the next version exists
     assert c.post(f"/api/projects/{pid}/snapshots", json={"label": "Draft 1"}).status_code == 200
     project_git.drain()
     data = c.get(f"/api/projects/{pid}/export-zip").content
