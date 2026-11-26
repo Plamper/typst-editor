@@ -86,8 +86,15 @@ def _zip(entries) -> bytes:
 
 
 def _import(page, name, data):
-    page.set_input_files("#docPick", files=[{"name": name, "mimeType": "application/zip", "buffer": data}])
-    expect(page.locator("#mHead")).to_have_text(f"New project “{name.removesuffix('.zip')}”")
+    head = page.locator("#mHead")
+    for _ in range(10):  # a pick while the previous import still refreshes the sidebar is ignored (upBusy): pick again
+        page.set_input_files("#docPick", files=[{"name": name, "mimeType": "application/zip", "buffer": data}])
+        try:
+            expect(head).to_have_text(f"New project “{name.removesuffix('.zip')}”", timeout=1500)
+            break
+        except AssertionError:
+            pass
+    expect(head).to_have_text(f"New project “{name.removesuffix('.zip')}”")
     expect(page.locator("#mInp")).to_be_hidden()  # no title prompt: the project is named after the file
 
 
