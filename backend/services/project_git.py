@@ -110,14 +110,17 @@ def _safe(path: str) -> bool:
 
 
 def tree(state: dict) -> dict[str, bytes]:
-    """Files of a version as the repository holds them: documents as <folder>/<title>.typ next to the project files."""
+    """Files of a version as the repository holds them: documents named like in the project ZIP export
+    (<folder>/<sanitized title>.typ) next to the project files, so an exported ZIP is a clean checkout."""
+    from backend.render import _export_stem
+
     files = {path: base64.b64decode(encoded) for path, encoded in state["files"].items()}
     taken = {path.casefold() for path in files}
     for d in sorted(state["documents"], key=lambda d: d["id"]):
-        title = d["title"].replace("/", "_").replace("\\", "_").lstrip(".") or d["id"]
+        title = _export_stem(d["title"])
         path = posixpath.join(d.get("folder") or "", title + ".typ")
         if path.casefold() in taken:
-            path = posixpath.join(d.get("folder") or "", f"{title} ({d['id']}).typ")
+            path = posixpath.join(d.get("folder") or "", f"{title}_{d['id']}.typ")
         taken.add(path.casefold())
         files[path] = d["content"].encode("utf-8", errors="surrogateescape")
     return {path: data for path, data in files.items() if _safe(path)}
@@ -331,6 +334,114 @@ def run_now(fn: Callable[..., str], *args: str) -> str:
             log.warning("Git job for %s failed: %s", args[0] if args else "", e)
             return "Git failed on the server"
     return _pool.submit(job).result(timeout=180)
+
+
+def _config(repo: Path, s: dict) -> bytes:
+    """A clean config for an exported .git: the remote and branch, never a token."""
+    lines = ["[core]", "\trepositoryformatversion = 0", "\tfilemode = true", "\tbare = false"]
+    if s["remote"]:
+        local = _git(repo, "symbolic-ref", "--short", "HEAD").strip() or "main"
+        lines += ['[remote "origin"]', f"\turl = {s['remote']}", "\tfetch = +refs/heads/*:refs/remotes/origin/*",
+                  f'[branch "{local}"]', "\tremote = origin", f"\tmerge = refs/heads/{s['branch']}"]
+    return ("\n".join(lines) + "\n").encode()
+
+
+def _export_files(project_id: str) -> dict[str, bytes]:
+    from backend.services import project_history
+
+    repo = repo_dir(project_id)
+    if not (repo / ".git").is_dir() or not _head(repo):
+        return {}
+    _git(repo, "repack", "-a", "-d", "-q")  # a few pack files instead of one file per object
+    con = db.connect()
+    try:
+        s = project_history.settings(con, project_id)
+    finally:
+        con.close()
+    out = {".git/config": _config(repo, s)}
+    for path in sorted((repo / ".git").rglob("*")):
+        rel = path.relative_to(repo / ".git").as_posix()
+        if path.is_file() and not path.is_symlink() and rel != "config" and not rel.startswith("hooks/") and not rel.endswith(".lock"):
+            out[".git/" + rel] = path.read_bytes()
+    return out
+
+
+def export_files(project_id: str) -> dict[str, bytes]:
+    """The project's .git for a ZIP export ({} without Git history), made on the worker so no commit runs meanwhile."""
+    try:
+        return _pool.submit(_export_files, project_id).result(timeout=180)
+    except (OSError, ValueError, sqlite3.Error, subprocess.SubprocessError, TimeoutError) as e:
+        log.warning("Git export of %s skipped: %s", project_id, e)
+        return {}
+
+
+_HEX = re.compile(rb"[0-9a-f]{40}([0-9a-f]{24})?\n?")
+_KEEP = re.compile(r"HEAD|packed-refs|refs/(heads|tags)/[A-Za-z0-9._/-]{1,200}|objects/[0-9a-f]{2}/[0-9a-f]{38,62}|objects/pack/pack-[0-9a-f]{40,64}\.(pack|idx|rev)")
+
+
+def remote_of(git: dict[str, bytes]) -> tuple[str, str]:
+    """Remote URL (as https) and remote branch named by an imported .git/config; ('', '') when there is none."""
+    sections: dict[tuple[str, str], dict[str, str]] = {}
+    current: dict[str, str] | None = None
+    for raw in git.get("config", b"").decode("utf-8", errors="replace").splitlines():
+        line = raw.split("#")[0].split(";")[0].strip()
+        if m := re.fullmatch(r'\[\s*([A-Za-z][\w.-]*)(?:\s+"([^"]*)")?\s*\]', line):
+            current = sections.setdefault((m[1].lower(), m[2] or ""), {})
+        elif current is not None and "=" in line:
+            key, value = (x.strip() for x in line.split("=", 1))
+            current[key.lower()] = value.strip('"')
+    remotes = {name: v["url"] for (kind, name), v in sections.items() if kind == "remote" and v.get("url")}
+    url = remotes.get("origin") or next(iter(remotes.values()), "")
+    if m := re.fullmatch(r"(?:ssh://)?git@([^:/]+)[:/](.+)", url):  # scp-style SSH clone URL: the same repository over https
+        url = f"https://{m[1]}/{m[2]}"
+    parts = urlsplit(url)
+    if parts.scheme not in ("https", "http") or not parts.hostname:
+        return "", ""
+    url = f"https://{parts.hostname}{f':{parts.port}' if parts.port else ''}{parts.path}"  # drop any user:token@
+    head = git.get("HEAD", b"").decode("utf-8", errors="replace").strip()
+    local = head.removeprefix("ref: refs/heads/") if head.startswith("ref: refs/heads/") else ""
+    merge = sections.get(("branch", local), {}).get("merge", "")
+    branch = merge.removeprefix("refs/heads/") or local or "main"
+    return url, branch if BRANCH_RE.fullmatch(branch) else "main"
+
+
+def adopt(project_id: str, git: dict[str, bytes]) -> None:
+    """Take over an imported .git: its history (objects and refs only, never config, hooks or alternates, which
+    could run commands or reach other repositories on the server) and its remote and branch. Git stays on, push off."""
+    remote, branch = remote_of(git)
+    try:
+        remote = check_remote(remote) if remote else ""
+    except HTTPException:
+        remote = ""
+    history = False
+    if available():
+        repo = repo_dir(project_id)
+        try:
+            shutil.rmtree(repo, ignore_errors=True)
+            repo.mkdir(parents=True)
+            _git(repo, "init", "-q", "-b", "main")
+            for rel, data in git.items():
+                if not _KEEP.fullmatch(rel) or ".." in rel:
+                    continue
+                if rel.startswith("refs/") and not _HEX.fullmatch(data):
+                    continue
+                if rel == "HEAD" and not (_HEX.fullmatch(data) or re.fullmatch(rb"ref: refs/heads/[A-Za-z0-9._/-]{1,100}\n?", data)):
+                    continue
+                target = repo / ".git" / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            _git(repo, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+            _git(repo, "fsck", "--connectivity-only", "--no-dangling", "--no-progress")
+            history = True
+        except (OSError, subprocess.SubprocessError) as e:
+            log.warning("Imported Git history of %s not usable: %s", project_id, e)
+            shutil.rmtree(repo, ignore_errors=True)
+    if not history and not remote:
+        return
+    with db.tx() as con:
+        con.execute("INSERT INTO project_versioning (project_id,git,remote,branch) VALUES (?,?,?,?) "
+                    "ON CONFLICT(project_id) DO UPDATE SET git=excluded.git,remote=excluded.remote,branch=excluded.branch",
+                    (project_id, int(history), remote, branch))
 
 
 def drain() -> None:

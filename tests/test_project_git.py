@@ -85,7 +85,7 @@ def test_tree_lays_out_documents_next_to_files():
                            {"id": "d_2", "title": "notes", "folder": "ch", "content": "b"},
                            {"id": "d_3", "title": "../x", "folder": "", "content": "c"}],
              "files": {"Main.typ": "eA==", "ch/img.png": "AA=="}}
-    assert project_git.tree(state) == {"Main.typ": b"x", "ch/img.png": b"\x00", "Main (d_1).typ": b"a", "ch/notes.typ": b"b", "_x.typ": b"c"}
+    assert project_git.tree(state) == {"Main.typ": b"x", "ch/img.png": b"\x00", "Main_d_1.typ": b"a", "ch/notes.typ": b"b", "x.typ": b"c"}
 
 
 @needs_git
@@ -207,3 +207,91 @@ def test_automatic_versions_can_be_turned_off(c):
     assert c.put(f"/api/projects/{pid}/versioning", json=_settings(auto_minutes=0)).json()["auto"] is True
     project_history.auto(pid)
     assert len(c.get(f"/api/projects/{pid}/snapshots").json()["snapshots"]) == 2
+
+
+def _zip(files):
+    import io
+    import zipfile
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return out.getvalue()
+
+
+def test_remote_of_reads_the_tracked_branch_and_drops_credentials():
+    config = b'[core]\n\tbare = false\n[remote "origin"]\n\turl = https://user:tok@github.com/me/thesis.git\n[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/drafts\n'
+    assert project_git.remote_of({"config": config, "HEAD": b"ref: refs/heads/main\n"}) == ("https://github.com/me/thesis.git", "drafts")
+    ssh = b'[remote "origin"]\n\turl = git@github.com:me/thesis.git\n'
+    assert project_git.remote_of({"config": ssh, "HEAD": b"ref: refs/heads/work\n"}) == ("https://github.com/me/thesis.git", "work")
+    assert project_git.remote_of({"config": b'[remote "o"]\n\turl = file:///etc\n'}) == ("", "")
+
+
+@needs_git
+def test_export_carries_git_history_and_import_takes_it_over(c, monkeypatch, tmp_path):
+    import io
+    import json
+    import zipfile
+    monkeypatch.setattr(project_git, "check_remote", lambda url: url.strip())
+    pid, did = _project(c)
+    assert c.put(f"/api/projects/{pid}/versioning", json=_settings(git=True, remote="https://example.org/me/thesis.git", branch="drafts", token="secret-token")).status_code == 200
+    assert c.post(f"/api/projects/{pid}/snapshots", json={"label": "Draft 1"}).status_code == 200
+    project_git.drain()
+    data = c.get(f"/api/projects/{pid}/export-zip").content
+    names = zipfile.ZipFile(io.BytesIO(data)).namelist()
+    config = zipfile.ZipFile(io.BytesIO(data)).read(".git/config").decode()
+    assert "Main.typ" in names and ".git/HEAD" in names and any(n.startswith(".git/objects/pack/") for n in names)
+    assert not any(n.startswith(".git/hooks/") for n in names) and b"secret-token" not in data
+    assert "url = https://example.org/me/thesis.git" in config and "merge = refs/heads/drafts" in config
+    checkout = tmp_path / "checkout"
+    zipfile.ZipFile(io.BytesIO(data)).extractall(checkout)
+    assert subprocess.run(["git", "status", "--porcelain"], cwd=checkout, capture_output=True, text=True, check=True).stdout == ""  # a clean clone
+    login(c, "bob")
+    assert ".git/HEAD" in zipfile.ZipFile(io.BytesIO(c.get(f"/api/projects/{pid}/export-zip").content)).namelist()  # editors get the history too
+    preview = c.post("/api/zip-preview", files={"f": ("thesis.zip", data)}).json()
+    assert preview["git"] == {"history": True, "remote": "https://example.org/me/thesis.git", "branch": "drafts"}
+    assert not any(n.startswith(".git/") for n in preview["others"])
+    out = c.post("/api/docs/import-zip", files={"f": ("thesis.zip", data)}, data={"name": "thesis.zip", "documents": json.dumps(["Main.typ"])}).json()
+    new = out["project_id"]
+    assert c.get(f"/api/projects/{new}").json()["files"] == []  # .git never becomes project files
+    s = c.get(f"/api/projects/{new}/versioning").json()
+    assert (s["git"], s["remote"], s["branch"], s["has_token"], s["push"]) == (True, "https://example.org/me/thesis.git", "drafts", False, False)
+    project_git.drain()
+    assert _git(new, "log", "--format=%s").splitlines() == ["Draft 1", "Automatic version"]  # history kept
+    assert c.get(f"/api/projects/{new}/snapshots").json()["snapshots"][0]["commit_hash"] == _git(new, "rev-parse", "HEAD").strip()  # same files: no new commit
+    assert c.post(f"/api/docs/{out['id']}/save", json={"content": "changed after import"}).status_code == 200
+    assert c.post(f"/api/projects/{new}/snapshots", json={"label": "After import"}).status_code == 200
+    project_git.drain()
+    assert _git(new, "log", "--format=%s").splitlines() == ["After import", "Draft 1", "Automatic version"]
+    login(c, "alice")
+    backup = zipfile.ZipFile(io.BytesIO(c.get("/api/export.zip").content)).namelist()
+    assert f"projects/{pid}/.git/HEAD" in backup
+
+
+@needs_git
+def test_imported_git_config_hooks_and_alternates_are_ignored(c, tmp_path):
+    import json
+    register_user(c, "alice")
+    login(c, "alice")
+    src = tmp_path / "src"
+    src.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(src)], check=True)
+    (src / "Main.typ").write_text("hi")
+    env = {"GIT_AUTHOR_NAME": "x", "GIT_AUTHOR_EMAIL": "x@x", "GIT_COMMITTER_NAME": "x", "GIT_COMMITTER_EMAIL": "x@x", "PATH": "/usr/bin:/bin"}
+    subprocess.run(["git", "-C", str(src), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(src), "commit", "-q", "-m", "Old"], check=True, env=env)
+    files = {"Main.typ": b"hi"}
+    for path in (src / ".git").rglob("*"):
+        if path.is_file():
+            files[".git/" + path.relative_to(src / ".git").as_posix()] = path.read_bytes()
+    marker = tmp_path / "pwned"
+    files[".git/config"] = f'[core]\n\tfsmonitor = touch {marker}\n[remote "origin"]\n\turl = https://example.org/x.git\n'.encode()
+    files[".git/hooks/post-commit"] = f"#!/bin/sh\ntouch {marker}\n".encode()
+    files[".git/objects/info/alternates"] = str(tmp_path).encode()
+    out = c.post("/api/docs/import-zip", files={"f": ("x.zip", _zip(files))}, data={"name": "x.zip", "documents": json.dumps(["Main.typ"])}).json()
+    project_git.drain()
+    repo = project_git.repo_dir(out["project_id"])
+    assert "fsmonitor" not in (repo / ".git" / "config").read_text()
+    assert not (repo / ".git" / "objects" / "info" / "alternates").exists() and not (repo / ".git" / "hooks" / "post-commit").exists()
+    assert not marker.exists()
+    assert "Old" in _git(out["project_id"], "log", "--format=%s")

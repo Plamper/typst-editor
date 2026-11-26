@@ -76,11 +76,12 @@ The project owner can turn on **Save versions as Git commits** in the version se
 - The project owner is the author of every commit. Everyone else who changed the project since the previous version is listed as `Co-authored-by`, if they entered a **Git email** under Settings → Account (saving or naming a version is no change). Use the address of your GitHub account to have the commits linked to your profile.
 - Versions without a commit (from before Git was turned on) can be committed from their ⋯ menu; versions the remote does not have yet can be pushed from there too.
 - Deleting or renaming a version does not change commits that already exist.
+- Uploading such a ZIP as a new project keeps its Git history and fills in the remote and branch; only the access token has to be entered again. Hooks and the repository config from the ZIP are never used.
 
 ## Export
 
 - A single document as `.typ`, PDF, SVG or PNG.
-- A whole project as ZIP.
+- A whole project as ZIP. With Git turned on, the ZIP contains the project's `.git` (history, remote and branch, never the token), and so does the backup under Settings → Backup and storage.
 
 ## Account settings
 
