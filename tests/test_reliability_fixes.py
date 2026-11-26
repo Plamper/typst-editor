@@ -104,7 +104,7 @@ def test_save_survives_auto_document_failure(c, monkeypatch):
     register_user(c, "alice")
     did = make_doc(c, "SnapFail", "old")
 
-    def broken(doc_id):
+    def broken(doc_id, **_kw):
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(project_history, "auto_document", broken)

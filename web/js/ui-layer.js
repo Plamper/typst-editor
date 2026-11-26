@@ -430,7 +430,7 @@
   function show(anchor, list, name, align) {
     var r = anchor.getBoundingClientRect() // before closing a parent popover: its child would otherwise measure 0x0
     close(false)
-    if (window.closeFloatPanels) window.closeFloatPanels() // one floating panel at a time (popovers, watch menu, comment card)
+    if (window.closeFloatPanels) window.closeFloatPanels(null, anchor) // one floating panel at a time (popovers, watch menu, comment card); the popover holding the anchor stays
     document.querySelectorAll('#sharePop,#setPop,#tplPop,#histPop,#symPop,#inboxPop,#watchBox').forEach(function (p) { // fallback when the module hook is not ready
       if (p.contains(anchor)) return
       if (p.id === 'watchBox') { if (typeof closeWatchBox === 'function') closeWatchBox(); else p.remove() } else p.style.display = 'none'

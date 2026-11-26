@@ -8,8 +8,10 @@ Everything lives in `DATA_DIR` (`/app/data` in the container):
 
 | Path | Content |
 |---|---|
-| `app.db` | SQLite database: accounts, projects, documents, comments, checkpoints, API keys. |
+| `app.db` | SQLite database: accounts, projects, documents, comments, versions, API keys. |
 | `files/` | Uploaded project files (images, bibliographies, fonts, modules). |
+| `git/` | Git repositories of projects that save their versions with Git. |
+| `.secret_key` | Key that encrypts the Git access tokens in `app.db`. Kept out of the backup archive on purpose; without it, project owners enter their tokens again. |
 | `.invite_token` | Generated invite code, if you did not set `REGISTRATION_INVITE_TOKEN`. |
 | `backup/` | Backups written by the backup script. |
 
@@ -17,7 +19,7 @@ Your `.env` or `config.toml` holds the rest of the state worth keeping.
 
 ## Creating a backup
 
-[`scripts/backup.py`](../../scripts/backup.py) is part of the image. It writes a consistent copy of the database (`VACUUM INTO`, safe while the app is running), checks it with `PRAGMA integrity_check` and archives `files/` next to it:
+[`scripts/backup.py`](../../scripts/backup.py) is part of the image. It writes a consistent copy of the database (`VACUUM INTO`, safe while the app is running), checks it with `PRAGMA integrity_check` and archives `files/` and `git/` next to it:
 
 ```bash
 docker compose exec app python scripts/backup.py

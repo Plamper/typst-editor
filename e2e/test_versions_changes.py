@@ -25,8 +25,8 @@ def test_name_checkpoint_rename_compare_and_delete(page):
     page.click("#mYes")
     expect(page.locator("#histPop .srow", has_text="Draft one")).to_have_count(1)
     row = page.locator("#histPop .srow", has_text="Draft one")
-    row.get_by_role("button", name="Menu").click()
-    page.get_by_role("menuitem", name="Rename snapshot").click()
+    row.locator(".histMore").click()
+    page.get_by_role("menuitem", name="Rename version").click()
     page.fill("#mInp", "Release")
     page.click("#mYes")
     expect(page.locator("#histPop .srow", has_text="Release")).to_have_count(1)
@@ -42,7 +42,8 @@ def test_name_checkpoint_rename_compare_and_delete(page):
     page.keyboard.type("\nline 21 appended")
     page.wait_for_timeout(1200)
     page.click("#histBtn")
-    page.locator("#histPop .srow", has_text="Release").get_by_role("button", name="Show changes vs current").click()
+    page.locator("#histPop .srow", has_text="Release").locator(".histMore").click()
+    page.get_by_role("menuitem", name="Compare").click()
     card = page.locator(".chgCard")
     expect(card).to_be_visible()
     expect(card.locator(".chgFile", has_text="Main.typ")).to_have_count(1)  # sidebar path, never main.typ
@@ -60,7 +61,7 @@ def test_name_checkpoint_rename_compare_and_delete(page):
     if not page.locator("#histPop").is_visible():
         page.click("#histBtn")
     # delete again
-    page.locator("#histPop .srow", has_text="Release").get_by_role("button", name="Menu").click()
-    page.get_by_role("menuitem", name="Delete snapshot").click()
+    page.locator("#histPop .srow", has_text="Release").locator(".histMore").click()
+    page.get_by_role("menuitem", name="Delete version").click()
     page.click("#mYes")
     expect(page.locator("#histPop .srow", has_text="Release")).to_have_count(0)

@@ -4,13 +4,16 @@ MAX_TXT = 200_000
 MAX_FOLDER_DEPTH = 2  # folder levels inside a project (a/b/file.typ); projects themselves do not count
 SNAP_MAX = 50
 SNAP_EVERY = 900
-# Project checkpoints re-embed every attachment (base64 inside the JSON
-# blob), so each checkpoint roughly duplicates the project size. Automatic
-# (system-created, kind='auto') checkpoints are therefore pruned
-# aggressively on every checkpoint write: the newest few verbatim plus one
-# per older week. kind='manual' rows are never auto-pruned.
-AUTO_SNAP_KEEP = 10       # newest automatic checkpoints kept verbatim
-AUTO_SNAP_KEEP_WEEKS = 5  # extra weekly-decay checkpoints (auto total <= 15)
+# Project versions re-embed every attachment (base64 inside the JSON
+# blob), so each version roughly duplicates the project size. Automatic
+# (system-created, kind='auto') versions are therefore pruned on every
+# version write down to the project's auto_keep newest. kind='manual' rows
+# are never auto-pruned. Both defaults are per-project settings
+# (project_versioning), bounded by the ranges below.
+AUTO_SNAP_MINUTES = 30    # minimum gap between automatic versions (0 = every change)
+AUTO_SNAP_KEEP = 15       # automatic versions kept
+AUTO_SNAP_MINUTES_RANGE = (0, 10080)
+AUTO_SNAP_KEEP_RANGE = (1, 200)
 AWARE_MAX = 64 * 1024
 CACHE_TTL = 10.0
 TITLE_MAX = 100

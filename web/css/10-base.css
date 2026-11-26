@@ -33,7 +33,7 @@ input::placeholder { color: var(--faint); }
 /* :not(:disabled) outranks the bib editor field borders. Text inputs keep the
    same specificity as the CSV cell rule so its own inset outline still wins. */
 input[type=text]:focus, input[type=search]:focus:not(:disabled), input:not([type]):focus, input[type=password]:focus,
-select:focus:not(:disabled), #mInp:focus, #mExtra input[type=text]:focus, textarea:focus:not(:disabled) { border-color: var(--acc); box-shadow: var(--ring); }
+select:focus:not(:disabled), #mInp:focus, #mExtra input:is([type=text], [type=number], [type=url]):focus, textarea:focus:not(:disabled) { border-color: var(--acc); box-shadow: var(--ring); }
 select {
   appearance: none; padding-right: 26px;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239aa0ae' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");

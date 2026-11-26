@@ -59,14 +59,23 @@ Downgrading a member from editor to reviewer takes effect immediately, including
 - **Proposals**: reviewers (and agents in proposal mode) hand in changes as a proposal package. Owners and editors look at the diff and accept or discard it hunk by hunk. Nothing changes before a human accepts it.
 - **Inbox**: mentions, proposals and review results arrive in your inbox.
 
-## Checkpoints
+## Versions
 
-Checkpoints are versions of the whole project, including its files. You can compare a checkpoint with the current state and roll back to it.
+A version is a saved state of the whole project, including its files. Unnamed versions are listed by the time they were saved; hovering a version shows when it was saved, whether by hand or automatically, who edited the project since the previous version and, with Git, its commit. Compare, rename, restore and delete are in the version's ⋯ menu.
 
-- Manual checkpoints are kept until you delete them.
-- Automatic checkpoints are thinned out: the newest 10 are kept, and of the older ones one per week up to five weeks back. The first checkpoint of a project is always kept.
+- Versions you save yourself are kept until you delete them. Naming an automatic version keeps it too.
+- Automatic versions are saved while you edit, but only when something changed since the last version. The project owner can turn them off. The project owner sets the minimum interval between two automatic versions (from *Immediately* to 7 days, default 30 minutes) and how many of them are kept (default 15) under **Version settings** (the slider icon in the version history). The first version of a project is always kept.
 
-Each checkpoint stores a full copy of the project's files, so checkpoints count toward the storage of a project.
+Each version stores a full copy of the project's files, so versions count toward the storage of a project.
+
+### Git
+
+The project owner can turn on **Save versions as Git commits** in the version settings. From then on every version, automatic or manual, becomes a commit in a repository on the server, starting with the newest version. Documents appear as `<folder>/<title>.typ` next to the project files. Unnamed versions without changes add no commit; a named version always gets one, so its name shows up in the history.
+
+- Optionally enter a remote repository (`https://` only) with a branch and an access token with push rights, for example a GitHub fine-grained token with *Contents: read and write* on that repository. With **Push after every version** each new commit is pushed; otherwise push a version from its ⋯ menu. The token is stored encrypted and never shown again. The push never forces: if the remote branch has other commits, the push fails and the reason is shown.
+- The project owner is the author of every commit. Everyone else who changed the project since the previous version is listed as `Co-authored-by`, if they entered a **Git email** under Settings → Account (saving or naming a version is no change). Use the address of your GitHub account to have the commits linked to your profile.
+- Versions without a commit (from before Git was turned on) can be committed from their ⋯ menu; versions the remote does not have yet can be pushed from there too.
+- Deleting or renaming a version does not change commits that already exist.
 
 ## Export
 

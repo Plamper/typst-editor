@@ -286,6 +286,8 @@ function renderSettings() {
   const storage = el('div', 'storageUsage')
   put('storage', grp(t('settings.storageTitle'), sec(storage)))
   api('GET', '/api/me').then(d => {
+    const ge = p.querySelector('[data-setting-field="gitEmail"]')
+    if (ge && !fieldValues.has('gitEmail')) ge.value = d.git_email || ''
     if (!storage.isConnected || !d.storage) return
     const mib = bytes => new Intl.NumberFormat(langCur, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(bytes / 1048576)
     const used = Math.max(0, Number(d.storage.used) || 0), limit = Math.max(0, Number(d.storage.limit) || 0)
@@ -312,6 +314,15 @@ function renderSettings() {
     .catch(e => settingsError(e.message)).finally(() => nok.disabled = false) }
   if (hasPassword) nr.append(nameField, namePasswordField, nok); else nr.append(nameField, nok)
   put('account', grp(t('settings.nameGroup'), sec(nr)))
+  const gr = el('div', 'accountForm')
+  const ge = keepField(el('input'), 'gitEmail'); ge.type = 'text'; ge.inputMode = 'email'; ge.name = 'git-email'; ge.autocomplete = 'email'; ge.maxLength = 254; ge.placeholder = t('settings.gitEmailPh'); ge.setAttribute('aria-label', t('settings.gitEmail'))
+  const gitField = el('label', 'accountField'); gitField.append(el('span', null, t('settings.gitEmail')), ge)
+  const gok = el('button', null, t('common.save'))
+  gok.onclick = () => { if (gok.disabled) return; gok.disabled = true; api('POST', '/api/me/git-email', { git_email: ge.value.trim() })
+    .then(d => { ge.value = d.git_email; toast(t('settings.gitEmailSaved')) })
+    .catch(e => settingsError(e.message)).finally(() => gok.disabled = false) }
+  gr.append(gitField, gok, el('p', 'keyHelp', t('settings.gitEmailHint')))
+  put('account', grp(t('settings.gitGroup'), sec(gr)))
   if (hasPassword) {
     const pr = el('div', 'accountForm')
     const po = keepField(el('input'), 'passwordCurrentPassword'); po.type = 'password'; po.name = 'current-password-change'; po.autocomplete = 'current-password'; po.placeholder = t('settings.currentPasswordPlaceholder'); po.setAttribute('aria-label', t('settings.confirmCurrentPassword'))

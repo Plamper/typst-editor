@@ -43,7 +43,7 @@ make dev      # http://127.0.0.1:8978, data in ./data, registration open
 |---|---|
 | `backend/main.py` | App setup: lifespan, middleware, router registration. |
 | `backend/routers/` | HTTP and WebSocket endpoints, one module per area. |
-| `backend/services/` | Shared logic: access checks, quotas, checkpoints, proposals, OIDC, and more. |
+| `backend/services/` | Shared logic: access checks, quotas, versions and their Git mirror, proposals, OIDC, and more. |
 | `backend/mcp_*.py` | MCP server and its tools. |
 | `backend/config.py` | All settings, defaults and parsing. |
 | `backend/db.py`, `backend/schema.sql` | Database setup and append-only migrations. |

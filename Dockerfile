@@ -7,10 +7,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 # typst CLI for server-side view rendering (installed as root so /usr/local/bin/typst is 0755 for user app).
-# Single layer: curl/xz only temporary (purge + apt lists cleanup at the end).
+# Single layer: curl/xz only temporary (purge + apt lists cleanup at the end); git stays for the project Git mirror.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends curl ca-certificates xz-utils; \
+    apt-get install -y --no-install-recommends curl ca-certificates xz-utils git; \
     case "${TARGETARCH:-amd64}" in \
       amd64) TYPST_TRIPLE="x86_64-unknown-linux-musl" ;; \
       arm64) TYPST_TRIPLE="aarch64-unknown-linux-musl" ;; \

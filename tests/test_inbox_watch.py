@@ -92,16 +92,19 @@ def test_proposals_follow_the_watch_level(c):
     assert [(i['type'], i['text'], i['actor'], i['ref']) for i in alice] == [('proposal', 'Fix two', 'bob', r.json()['id'])]
 
 
-def test_changes_notice_for_level_all_is_coalesced_and_seen_moves_the_baseline(c, monkeypatch):
+def test_changes_notice_for_level_all_is_coalesced_and_seen_moves_the_baseline(c):
     did, pid = _project(c)
     login(c, 'bob')
     c.put(f'/api/projects/{pid}/watch', json={'level': 'all'})
     login(c, 'carol')
     c.put(f'/api/projects/{pid}/watch', json={'level': 'proposals'})
-    monkeypatch.setattr('backend.constants.SNAP_EVERY', -1)
+    with db.tx() as con:
+        con.execute('INSERT INTO project_versioning (project_id,auto_minutes) VALUES (?,0)', (pid,))
     login(c, 'alice')
-    project_history.auto(pid)
-    project_history.auto(pid)
+    for text in ('one\ntwo\nthree', 'one\ntwo\nthree\nfour'):
+        with db.tx() as con:
+            con.execute('UPDATE docs SET content=? WHERE id=?', (text, did))
+        project_history.auto(pid)
     bob = _inbox(c, 'bob')['items']
     assert [(i['type'], i['is_read']) for i in bob] == [('changes', False)]  # one item, refreshed
     assert _inbox(c, 'carol')['items'] == []

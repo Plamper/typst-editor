@@ -585,8 +585,10 @@ def accept(
             room["dirty_since"] = 0.0
             room["saved"] = time.monotonic()
     # Snapshot only after commit and lock release: project checkpoints acquire upload locks themselves.
+    from backend.services import notifications
     from backend.services import snapshots as snapsvc
 
+    notifications.note_writer(project, proposal["author"])  # the proposal's author wrote the accepted change
     for doc_id, before in doc_before.items():
         try:
             snapsvc.auto_snap(doc_id, before, label="proposal-accept")
@@ -594,7 +596,6 @@ def accept(
             log.warning("proposal accept snap %s: %s", doc_id, e)
     quota.invalidate_quota_cache(owner)
     projects.notify(project)
-    from backend.services import notifications
     notifications.notify_reviewed(project, user, proposal["author"], package, proposal["title"],
                                   "accepted" if not result["files"] else "partly accepted")
     return result, updates, deleted_documents

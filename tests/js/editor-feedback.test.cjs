@@ -250,10 +250,10 @@ test('image view renders a typed blob, ignores stale loads and releases its URL'
   assert.equal(elements.imageFile.hidden, true)
 })
 
-test('confirmation dialog and toast clicks do not close the history popover', () => {
+test('confirmation dialog, toast and row menu clicks do not close the history popover', () => {
   const src = read('88-share-offline.js')
-  const handler = src.slice(src.indexOf("document.addEventListener('click'"), src.indexOf("document.addEventListener('click'" ) + 120)
-  assert.ok(handler.includes("if (e.target.closest('#modal,#toast')) return"))
+  const handler = src.slice(src.indexOf("document.addEventListener('click'"), src.indexOf("document.addEventListener('click'" ) + 160)
+  assert.ok(handler.includes("if (e.target.closest('#modal,#toast,#menu,#submenu,[role^=menuitem]')) return"))
 })
 
 test('word mapping follows reflowed lines and inline markup', () => {

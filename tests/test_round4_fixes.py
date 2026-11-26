@@ -34,74 +34,104 @@ def _snapshots(pid):
             "ORDER BY created_at DESC,rowid DESC", (pid,)).fetchall()
 
 
-def test_auto_checkpoints_stay_bounded_and_manuals_survive(c, monkeypatch):
-    pid, _did = project(c)
+def _every_change(pid, keep=constants.AUTO_SNAP_KEEP):
+    """No minimum gap between automatic versions, so every changed state is saved."""
+    with db.tx() as con:
+        con.execute("INSERT INTO project_versioning (project_id,auto_minutes,auto_keep) VALUES (?,0,?)", (pid, keep))
+
+
+def _edit(did, text):
+    with db.tx() as con:
+        con.execute("UPDATE docs SET content=? WHERE id=?", (text, did))
+
+
+def test_auto_checkpoints_stay_bounded_and_manuals_survive(c):
+    pid, did = project(c)
     assert c.post(f"/api/projects/{pid}/snapshots", json={"label": "Manual"}).status_code == 200
     assert c.post(f"/api/projects/{pid}/snapshots", json={}).status_code == 200  # UI manual save (empty label)
     base = _snapshots(pid)
     manuals = {r["id"] for r in base if r["kind"] == "manual"}
     assert len(base) == 3 and len(manuals) == 2  # creation anchor (auto) + both manuals
-    monkeypatch.setattr(constants, "SNAP_EVERY", 0)  # auto() re-imports SNAP_EVERY per call
-    for _ in range(15):
+    _every_change(pid, keep=5)
+    for n in range(12):
+        _edit(did, f"v{n:03d}")
         project_history.auto(pid)
     rows = _snapshots(pid)
     autos = [r for r in rows if r["kind"] == "auto"]
     assert {r["id"] for r in rows if r["kind"] == "manual"} == manuals  # never pruned
-    assert len(autos) <= constants.AUTO_SNAP_KEEP + 1 + constants.AUTO_SNAP_KEEP_WEEKS
-    assert len(autos) >= constants.AUTO_SNAP_KEEP  # auto() really saved, not only warned
+    assert len(autos) == 5 + 1  # the newest five plus the creation anchor
 
 
-def test_creation_anchor_and_newest_auto_survive_pruning(c, monkeypatch):
+def test_unchanged_project_gets_no_automatic_version(c):
+    pid, did = project(c)
+    _every_change(pid)
+    for _ in range(3):
+        project_history.auto(pid)
+    assert len(_snapshots(pid)) == 1  # only the creation anchor
+    _edit(did, "changed")
+    project_history.auto(pid)
+    project_history.auto(pid)
+    assert len(_snapshots(pid)) == 2
+
+
+def test_minimum_gap_between_automatic_versions(c):
+    pid, did = project(c)
+    with db.tx() as con:  # the creation anchor is an hour old, the gap is two hours
+        con.execute("INSERT INTO project_versioning (project_id,auto_minutes) VALUES (?,120)", (pid,))
+        hour_ago = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
+        con.execute("UPDATE project_snapshots SET created_at=? WHERE project_id=?", (hour_ago, pid))
+    _edit(did, "changed")
+    project_history.auto(pid)
+    assert len(_snapshots(pid)) == 1
+    with db.tx() as con:
+        con.execute("UPDATE project_versioning SET auto_minutes=30 WHERE project_id=?", (pid,))
+    project_history.auto(pid)
+    assert len(_snapshots(pid)) == 2
+
+
+def test_creation_anchor_and_newest_auto_survive_pruning(c):
     pid, did = project(c)
     anchor = _snapshots(pid)[0]["id"]  # the one row so far: the creation checkpoint
-    monkeypatch.setattr(constants, "SNAP_EVERY", 0)
-    for _ in range(12):
+    _every_change(pid, keep=3)
+    for n in range(8):
+        _edit(did, f"v{n:03d}")
         project_history.auto(pid)
     rows = _snapshots(pid)
     assert anchor in {r["id"] for r in rows}
     newest = rows[0]
     assert newest["kind"] == "auto"
+    _edit(did, "later")
     # Restoring the newest kept checkpoint keeps working after pruning.
     response = c.post(f"/api/projects/{pid}/snapshots/{newest['id']}/restore", json={})
     assert response.status_code == 200, response.text
-    assert c.get(f"/api/docs/{did}").json()["content"] == "base"
+    assert c.get(f"/api/docs/{did}").json()["content"] == "v007"
 
 
-def test_weekly_decay_keeps_one_per_week_within_the_window(c):
-    pid, _did = project(c)
-    state = {"documents": [], "resources": {}}
-    with db.tx() as con:
-        project_history.save(con, pid, state, label="Mine", kind="manual")
-        now = datetime.datetime.now(datetime.UTC)
-        # Oldest first, so every intermediate _retain keeps by the cap window.
-        ages = [9, 8, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0]
-        for age in ages:
-            sid = project_history.save(con, pid, state, kind="auto")
-            con.execute("UPDATE project_snapshots SET created_at=? WHERE id=?",
-                        ((now - datetime.timedelta(weeks=age)).isoformat(), sid))
-    with db.tx() as con:
-        project_history.save(con, pid, state, kind="auto")  # next save runs retention
-    now = datetime.datetime.now(datetime.UTC)  # as-of moment after the trigger save
-    rows = _snapshots(pid)
-    manuals = [r for r in rows if r["kind"] == "manual"]
-    assert len(manuals) == 1  # manual checkpoints are never pruned
-    autos = [r for r in rows if r["kind"] == "auto"]
-    assert len(autos) <= constants.AUTO_SNAP_KEEP + constants.AUTO_SNAP_KEEP_WEEKS
-    weeks = sorted((now - datetime.datetime.fromisoformat(r["created_at"])).days // 7
-                   for r in autos)
-    # week-8 rows are pruned; the week-9 row stays as the project's oldest row
-    # (creation-anchor rule); week 0 rides in the newest-10 window.
-    assert weeks == [0] * 9 + [1, 2, 3, 4, 9]
+def test_version_settings_bound_automatic_versions(c):
+    pid, did = project(c)
+    _every_change(pid)
+    for n in range(6):
+        _edit(did, f"v{n:03d}")
+        project_history.auto(pid)
+    assert len([r for r in _snapshots(pid) if r["kind"] == "auto"]) == 7
+    body = {"auto_minutes": 5, "auto_keep": 2}
+    response = c.put(f"/api/projects/{pid}/versioning", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["auto_keep"] == 2 and not response.json()["git"]
+    assert len([r for r in _snapshots(pid) if r["kind"] == "auto"]) == 3  # lowering the cap prunes at once (+ anchor)
+    assert c.put(f"/api/projects/{pid}/versioning", json={**body, "auto_minutes": 10081}).status_code == 400
 
 
-def test_retention_frees_snapshot_bytes(c, monkeypatch):
+def test_retention_frees_snapshot_bytes(c):
     from backend.services import quota
-    pid, _did = project(c)
-    monkeypatch.setattr(constants, "SNAP_EVERY", 0)
-    for _ in range(12):
+    pid, did = project(c)
+    _every_change(pid, keep=3)
+    for n in range(6):
+        _edit(did, f"v{n:03d}")
         project_history.auto(pid)
     before = quota.user_bytes("alice")
-    project_history.auto(pid)  # every save past the cap prunes older week-0 autos
+    _edit(did, "v999")
+    project_history.auto(pid)  # every save past the cap prunes the oldest automatic version
     assert quota.user_bytes("alice") <= before
 
 

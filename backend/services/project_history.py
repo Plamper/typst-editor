@@ -9,12 +9,12 @@ import posixpath
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 
 from backend import db, sync
-from backend.constants import AUTO_SNAP_KEEP, AUTO_SNAP_KEEP_WEEKS
+from backend.constants import AUTO_SNAP_KEEP, AUTO_SNAP_MINUTES
 from backend.services import quota
 from backend.services.docfiles import store
 
@@ -29,7 +29,7 @@ def stamp(con: sqlite3.Connection, project_id: str) -> tuple:
 
 def unchanged(con: sqlite3.Connection, project_id: str, expected: tuple) -> None:
     if stamp(con, project_id) != expected:
-        raise HTTPException(409, "Project changed; retry checkpoint operation")
+        raise HTTPException(409, "Project changed; try again")
 
 
 @contextmanager
@@ -99,48 +99,69 @@ def load(content: str) -> dict:
     return state
 
 
-def _retain(con: sqlite3.Connection, project_id: str) -> None:
-    """Retention for automatic checkpoints (runs inside every save tx).
+def settings(con: sqlite3.Connection, project_id: str) -> dict:
+    row = con.execute("SELECT * FROM project_versioning WHERE project_id=?", (project_id,)).fetchone()
+    if row:
+        return dict(row)
+    return {"project_id": project_id, "auto": 1, "auto_minutes": AUTO_SNAP_MINUTES, "auto_keep": AUTO_SNAP_KEEP, "git": 0, "git_head": "",
+            "remote": "", "branch": "main", "token": "", "push": 0, "push_status": "", "pushed_at": "", "pushed_hash": ""}
 
-    Each checkpoint embeds document contents and all project files base64 - pruning a checkpoint frees those bytes for real
-    (asset bytes are per-checkpoint copies, not deduped). Policy: keep the
-    newest AUTO_SNAP_KEEP automatic checkpoints, plus one per older week
-    within AUTO_SNAP_KEEP_WEEKS weeks. Manual checkpoints (kind='manual')
-    and the project's oldest row (creation anchor) are never removed.
+
+def retain(con: sqlite3.Connection, project_id: str) -> None:
+    """Retention for automatic versions (runs inside every save tx).
+
+    Each version embeds document contents and all project files base64 - pruning a version frees those bytes for real
+    (asset bytes are per-version copies, not deduped). Policy: keep the project's auto_keep newest automatic
+    versions. Manual versions (kind='manual') and the project's oldest row (creation anchor, the inbox's
+    fallback baseline) are never removed.
     """
+    keep_autos = settings(con, project_id)["auto_keep"]
     rows = con.execute(
-        "SELECT id,kind,created_at FROM project_snapshots WHERE project_id=? "
+        "SELECT id,kind FROM project_snapshots WHERE project_id=? "
         "ORDER BY created_at DESC,rowid DESC", (project_id,)).fetchall()
-    if len(rows) <= AUTO_SNAP_KEEP:
-        return  # autos alone are within the flat cap; nothing prunable
-    autos: list[tuple[str, str]] = [(r["id"], r["created_at"]) for r in rows if r["kind"] == "auto"]
+    autos = [r["id"] for r in rows if r["kind"] == "auto"]
+    if len(autos) <= keep_autos:
+        return  # autos alone are within the cap; nothing prunable
     # Manual checkpoints and the project's oldest row (creation anchor)
     # never enter the delete set, whatever the auto backlog looks like.
-    keep = {r["id"] for r in rows if r["kind"] == "manual"}
-    keep.add(rows[-1]["id"])
-    keep.update(sid for sid, _created in autos[:AUTO_SNAP_KEEP])
-    seen_weeks: set[int] = set()
-    now = datetime.now(UTC)
-    for sid, created in autos[AUTO_SNAP_KEEP:]:
-        week = (now - datetime.fromisoformat(created)).days // 7
-        if week < AUTO_SNAP_KEEP_WEEKS and week not in seen_weeks:
-            seen_weeks.add(week)
-            keep.add(sid)
+    keep = {r["id"] for r in rows if r["kind"] == "manual"} | {rows[-1]["id"]} | set(autos[:keep_autos])
     con.execute(
         "DELETE FROM project_snapshots WHERE project_id=? AND id NOT IN "
         f"({','.join('?' * len(keep))})", (project_id, *keep))
 
 
-def save(con: sqlite3.Connection, project_id: str, state: dict, label: str = '', kind: str = 'manual', author: str = '', check: bool = True) -> str:
+def _entries(state: dict) -> dict[str, tuple[str, str]]:
+    out = {f"d:{d['id']}": (posixpath.join(d.get('folder') or '', d['title'] + '.typ'), d['content']) for d in state['documents']}
+    out.update({f"f:{path}": (path, encoded) for path, encoded in state.get('files', {}).items()})
+    return out
+
+
+def summary(old: dict | None, new: dict) -> str:
+    """Short list of what changed since `old`, for version names and commit messages: "main.typ, refs.bib +2"."""
+    if old is None:
+        return ''
+    a, b = _entries(old), _entries(new)
+    names = sorted({posixpath.basename((b.get(k) or a[k])[0]) for k in a.keys() | b.keys() if a.get(k) != b.get(k)}, key=str.casefold)
+    return ', '.join(names[:3]) + (f' +{len(names) - 3}' if len(names) > 3 else '')
+
+
+def save(con: sqlite3.Connection, project_id: str, state: dict, label: str = '', kind: str = 'manual', author: str = '', check: bool = True,
+         editors: list[str] | None = None) -> str:
     content = json.dumps(state, ensure_ascii=False, sort_keys=True)
     owner = con.execute('SELECT owner FROM projects WHERE id=?', (project_id,)).fetchone()[0]
+    prev = con.execute('SELECT content FROM project_snapshots WHERE project_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', (project_id,)).fetchone()
     sid = db.new_id('ps_')
-    con.execute('INSERT INTO project_snapshots (id,project_id,content,label,created_at,kind,author) VALUES (?,?,?,?,?,?,?)',
-                (sid, project_id, content, label, db.now_iso(), kind, author))
-    _retain(con, project_id)
+    con.execute('INSERT INTO project_snapshots (id,project_id,content,label,created_at,kind,author,summary,editors) VALUES (?,?,?,?,?,?,?,?,?)',
+                (sid, project_id, content, label, db.now_iso(), kind, author, summary(load(prev[0]) if prev else None, state), ','.join(editors or [])))
+    retain(con, project_id)
     if check:  # a restore checks the final state itself (it may free space)
         quota.check_quota(owner, 0, con)
     return sid
+
+
+def latest(con: sqlite3.Connection, project_id: str, kind: str = '') -> sqlite3.Row | None:
+    return con.execute('SELECT content,created_at FROM project_snapshots WHERE project_id=? AND (?=\'\' OR kind=?) ORDER BY created_at DESC,rowid DESC LIMIT 1',
+                       (project_id, kind, kind)).fetchone()
 
 
 def _readable(data: bytes) -> str:
@@ -198,19 +219,22 @@ def diff_text(state: dict) -> str:
     return '\n\n'.join(f'=== {name} ===\n{content}' for name, content in sorted(diff_files(state).items()))
 
 
-def auto(project_id: str, present: frozenset[str] = frozenset()) -> None:
-    from datetime import UTC, datetime, timedelta
+def _due(con: sqlite3.Connection, project_id: str) -> bool:
+    s = settings(con, project_id)
+    last = latest(con, project_id, 'auto')
+    if not last:
+        return True  # the creation anchor, also with automatic versions off: the inbox needs a baseline
+    return bool(s['auto']) and last['created_at'] < (datetime.now(UTC) - timedelta(minutes=s['auto_minutes'])).isoformat()
 
-    from backend.constants import SNAP_EVERY
+
+def auto(project_id: str, present: frozenset[str] = frozenset()) -> None:
+    from backend.services import notifications, project_git
 
     try:
         con = db.connect()
         try:
             p = con.execute('SELECT owner,archived FROM projects WHERE id=?', (project_id,)).fetchone()
-            if not p or p['archived']:
-                return
-            last = con.execute('SELECT created_at FROM project_snapshots WHERE project_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', (project_id,)).fetchone()
-            if last and last[0] >= (datetime.now(UTC) - timedelta(seconds=SNAP_EVERY)).isoformat():
+            if not p or p['archived'] or not _due(con, project_id):
                 return
         finally:
             con.close()
@@ -220,19 +244,21 @@ def auto(project_id: str, present: frozenset[str] = frozenset()) -> None:
             # The owner only authorises the capture; the actor is whoever
             # last wrote through a route (note_editor), not the owner.
             projects.require(con, project_id, p['owner'], edit=True, note=False)
-            last = con.execute('SELECT created_at FROM project_snapshots WHERE project_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', (project_id,)).fetchone()
-            if last and last[0] >= (datetime.now(UTC) - timedelta(seconds=SNAP_EVERY)).isoformat():
+            if not _due(con, project_id):
                 return
             unchanged(con, project_id, expected)
-            save(con, project_id, state, kind='auto')
+            newest = latest(con, project_id)
+            if newest and newest['content'] == json.dumps(state, ensure_ascii=False, sort_keys=True):
+                return  # nothing changed since the last version
+            save(con, project_id, state, kind='auto', editors=notifications.take_writers(project_id))
         quota.invalidate_quota_cache(p['owner'])
-        from backend.services import notifications
+        project_git.schedule(project_id)
         notifications.notify_changes(project_id, present)
     except (HTTPException, sqlite3.Error, OSError) as e:
         log.warning('Project auto checkpoint skipped: %s', e)
 
 
-def auto_document(doc_id: str, present: frozenset[str] = frozenset(), actor: str = "") -> None:
+def auto_document(doc_id: str, present: frozenset[str] = frozenset(), actor: str = "", writers: frozenset[str] = frozenset()) -> None:
     # Warn-only: callers (save_doc / op_edit / files routes) have already
     # committed their mutation and only catch HTTPException, so a busy DB
     # here must not turn into a post-commit 500.
@@ -246,8 +272,10 @@ def auto_document(doc_id: str, present: frozenset[str] = frozenset(), actor: str
         log.warning('auto_document %s lookup skipped: %s', doc_id, e)
         return
     if row and row[0]:
-        if actor:
-            from backend.services import notifications
+        from backend.services import notifications
 
+        if actor:
             notifications.note_editor(row[0], actor)
+        for writer in writers:
+            notifications.note_writer(row[0], writer)
         auto(row[0], present)

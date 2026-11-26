@@ -39,7 +39,7 @@
 .mTop { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .mTop button { min-height: 30px; padding: 4px 12px; }
 #mExtra label { display: block; margin-top: 12px; font-size: 12px; font-weight: 600; color: var(--sub); }
-#mExtra input[type=text] { margin-top: 6px; border-radius: var(--r-md); }
+#mExtra input:is([type=text], [type=number], [type=url], [type=password]) { margin-top: 6px; border-radius: var(--r-md); }
 .pk { display: flex; align-items: center; gap: 12px; width: 100%; margin-top: 6px; padding: 10px 14px; text-align: left; background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r-md); color: var(--text); }
 .pk:hover { background: var(--hover); }
 .pk.on { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
@@ -53,8 +53,23 @@
 .pk.gal img { width: 100%; height: 84px; object-fit: contain; background: var(--hover); border-radius: var(--r-sm); }
 .pk.gal.on img { background: var(--sel); }
 /* Export dialog fields */
-#mExtra select, #mExtra input[type=text] { width: 100%; margin-top: 6px; min-height: 38px; padding: 8px 12px; font-size: 14px; color: var(--text); background: var(--field); border: 1px solid var(--line-2); border-radius: var(--r-md); }
+#mExtra select, #mExtra input:is([type=text], [type=number], [type=url], [type=password]) { width: 100%; margin-top: 6px; min-height: 38px; padding: 8px 12px; font-size: 14px; color: var(--text); background-color: var(--field); border: 1px solid var(--line-2); border-radius: var(--r-md); }
 #mExtra .sub { margin: 12px 0 0; font-size: 12px; color: var(--faint); }
+#mExtra .vsSecret { position: relative; margin-top: 6px; }
+#mExtra .vsSecret input { margin-top: 0; padding-right: 66px; }
+#mExtra .vsTools { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); display: flex; gap: 2px; }
+#mExtra .vsTools button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--r-sm); background: none; color: var(--sub); box-shadow: none; }
+#mExtra .vsTools button:hover { background: var(--hover); color: var(--text); }
+#mExtra .vsTools button:focus-visible { outline: 2px solid var(--acc); outline-offset: 1px; }
+#mExtra label.vsSwitch { display: flex; align-items: center; gap: 12px; font-size: 13px; font-weight: 400; color: var(--text); cursor: pointer; }
+#mExtra .mLabel { margin: 20px 0 0; }
+#mExtra .vsSep { margin: 18px 0 0; border: 0; border-top: 1px solid var(--line); }
+#mExtra .vsSep + .mLabel { margin-top: 14px; }
+#mExtra .mLabel:first-child { margin-top: 4px; }
+#mExtra .vsRow { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+#mExtra .vsRow.vsWide { grid-template-columns: 2fr 1fr; }
+#mExtra .off { opacity: .45; }
+#mExtra .off :is(input, select) { color: var(--faint); }
 /* Mobile notice: only phones get here (see features/mobile-notice.js) */
 #mobileWarn {
   position: fixed; inset: 0; z-index: 310; display: flex; align-items: center; justify-content: center;

@@ -44,6 +44,7 @@ from backend.routers import (
 from backend.routers.auth import _cookie_secure  # noqa: F401
 from backend.routers.export import prune_old_exports  # noqa: F401
 from backend.routers.frontend import FRONT_FILES  # noqa: F401
+from backend.services import project_git
 from backend.services.locks import (  # noqa: F401
     _DOC_LOCKS,
     _DOC_LOCKS_GUARD,
@@ -124,6 +125,10 @@ async def _app_lifespan(app: FastAPI):
         log.info("trash sweep: %s", reap_trash_dirs())
     except Exception as e:
         log.warning("trash sweep failed: %s", e)
+    try:
+        log.info("git sweep: %s removed", project_git.reap())
+    except Exception as e:
+        log.warning("git sweep failed: %s", e)
     try:
         yield
     finally:

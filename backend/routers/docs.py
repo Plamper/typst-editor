@@ -183,7 +183,7 @@ async def save_doc(doc_id: str, b: DocSave, req: Request, user: str = Depends(de
     else:
         sync.persist(doc_id)
     try:
-        auto_snap(doc_id, content)
+        auto_snap(doc_id, content, actor=user)
     except HTTPException as e:
         log.warning("save_doc snap: %s", e.detail)
     return {"ok": True}

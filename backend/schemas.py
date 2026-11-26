@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from backend.constants import AUTO_SNAP_KEEP_RANGE, AUTO_SNAP_MINUTES_RANGE
+
 
 class Login(BaseModel):
     username: str = Field(max_length=20)
@@ -107,6 +109,18 @@ class SnapRename(BaseModel):
 class SnapRestore(BaseModel):
     force: bool = False
 
+
+class VersionSettings(BaseModel):
+    auto: bool = True
+    auto_minutes: int = Field(ge=AUTO_SNAP_MINUTES_RANGE[0], le=AUTO_SNAP_MINUTES_RANGE[1])
+    auto_keep: int = Field(ge=AUTO_SNAP_KEEP_RANGE[0], le=AUTO_SNAP_KEEP_RANGE[1])
+    git: bool = False
+    remote: str = Field(default="", max_length=300)
+    branch: str = Field(default="main", max_length=100)
+    token: str | None = Field(default=None, max_length=500)  # None keeps the stored token, "" removes it
+    push: bool = False
+
+
 class InviteNew(BaseModel):
     role: str = Field(default="reviewer", max_length=20)  # editor | reviewer
 
@@ -123,6 +137,10 @@ class PwChange(BaseModel):
 class NameChange(BaseModel):
     name: str = Field(max_length=20)
     password: str = Field(default="", max_length=200)
+
+
+class GitEmail(BaseModel):
+    git_email: str = Field(default="", max_length=254, pattern=r"^([^@\s<>,]+@[^@\s<>,]+)?$")
 
 
 class PwOnly(BaseModel):

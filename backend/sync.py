@@ -528,7 +528,8 @@ async def _flush_one(doc_id: str, r: dict) -> bool:
         log.warning("flush_one %s text_len update failed: %s", doc_id, e)
     try:
         from backend.services.project_history import auto_document
-        await asyncio.to_thread(auto_document, doc_id, frozenset(u for u in r.get("users", {}).values() if u))
+        writers = frozenset(u for u in r.pop("writers", ()) if u)
+        await asyncio.to_thread(auto_document, doc_id, frozenset(u for u in r.get("users", {}).values() if u), writers=writers)
     except Exception as e:
         log.warning("Project checkpoint %s failed: %s", doc_id, e)
     return True
@@ -1237,6 +1238,7 @@ async def handle(ws: WebSocket, doc_id: str) -> None:
                     # every WRITE_BEHIND_FLUSH_SECONDS; the final disconnect
                     # below flushes immediately. No DB here.
                     _mark_dirty(doc_id, r)
+                    r.setdefault("writers", set()).add(user)
                     try:
                         await bcast(r["conns"], ws, blob(write_var(MSG_SYNC), write_var(UPDATE),
                                                          write_var(len(payload)), payload))

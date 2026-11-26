@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS users (
     migration_bytes INTEGER NOT NULL DEFAULT 0,
     spell_language TEXT NOT NULL DEFAULT 'auto',
     oidc_issuer TEXT NOT NULL DEFAULT '',
-    oidc_sub TEXT NOT NULL DEFAULT ''
+    oidc_sub TEXT NOT NULL DEFAULT '',
+    git_email TEXT NOT NULL DEFAULT '' -- commit trailer address for projects with Git
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -210,7 +211,21 @@ CREATE TABLE IF NOT EXISTS project_snapshots (
  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
  content TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
  kind TEXT NOT NULL DEFAULT 'manual', -- 'auto' (system, pruned by retention) vs 'manual' (never auto-pruned)
- author TEXT NOT NULL DEFAULT '' -- who saved it ('' = system/older)
+ author TEXT NOT NULL DEFAULT '', -- who saved it ('' = system/older)
+ summary TEXT NOT NULL DEFAULT '', -- changed entries since the previous version
+ editors TEXT NOT NULL DEFAULT '', -- comma-separated users who wrote since the previous version
+ commit_hash TEXT NOT NULL DEFAULT '' -- Git commit holding this version ('' = not committed)
+);
+
+-- project_versioning: automatic version rules and the optional Git mirror. A missing row = defaults.
+CREATE TABLE IF NOT EXISTS project_versioning (
+ project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+ auto_minutes INTEGER NOT NULL DEFAULT 30, auto_keep INTEGER NOT NULL DEFAULT 15,
+ auto INTEGER NOT NULL DEFAULT 1, -- 0: only versions saved by hand
+ git INTEGER NOT NULL DEFAULT 0, git_head TEXT NOT NULL DEFAULT '', -- created_at of the last committed version
+ remote TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT 'main', token TEXT NOT NULL DEFAULT '', -- Fernet-encrypted with DATA_DIR/.secret_key
+ push INTEGER NOT NULL DEFAULT 0, push_status TEXT NOT NULL DEFAULT '', pushed_at TEXT NOT NULL DEFAULT '',
+ pushed_hash TEXT NOT NULL DEFAULT '' -- last commit the remote branch is known to have
 );
 
 CREATE TABLE IF NOT EXISTS trash_entries (

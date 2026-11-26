@@ -19,7 +19,7 @@ def prune_snaps(con: sqlite3.Connection, doc_id: str) -> None:
                 (doc_id, doc_id, SNAP_MAX))
 
 
-def auto_snap(doc_id: str, content: str, label: str = "") -> None:
+def auto_snap(doc_id: str, content: str, label: str = "", actor: str = "") -> None:
     con = db.connect()
     try:
         try:
@@ -28,10 +28,10 @@ def auto_snap(doc_id: str, content: str, label: str = "") -> None:
             log.warning("auto_snap %s busy, skipped: %s", doc_id, e)
             return
         try:
-            last = con.execute("SELECT created_at FROM snapshots WHERE doc_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            last = con.execute("SELECT content, created_at FROM snapshots WHERE doc_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
                                (doc_id,)).fetchone()
             cut = (datetime.now(UTC) - timedelta(seconds=SNAP_EVERY)).isoformat()
-            if label or not last or last["created_at"] < cut:
+            if label or not last or (last["created_at"] < cut and last["content"] != content):
                 row = con.execute("SELECT owner FROM docs WHERE id=?", (doc_id,)).fetchone()
                 if row:
                     try:
@@ -58,7 +58,7 @@ def auto_snap(doc_id: str, content: str, label: str = "") -> None:
     from backend.services.project_history import auto_document
 
     try:
-        auto_document(doc_id)
+        auto_document(doc_id, actor=actor)
     except (HTTPException, sqlite3.Error, OSError) as e:
         # Same warning pattern as auto_snap above: the snapshot already
         # succeeded (or was skipped), the checkpoint is best-effort.

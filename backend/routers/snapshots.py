@@ -1,4 +1,4 @@
-"""Version snapshot routes."""
+"""Version routes: document and project versions, version settings and the Git mirror."""
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +7,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from backend import config, db, deps, sync
-from backend.schemas import SnapNew, SnapRename, SnapRestore
+from backend.schemas import SnapNew, SnapRename, SnapRestore, VersionSettings
 from backend.services import quota
 from backend.services.snapshots import prune_snaps
 
@@ -61,7 +61,7 @@ def get_snap(doc_id: str, sid: str, req: Request, user: str = Depends(deps.me)) 
         r = con.execute("SELECT content, label, created_at FROM snapshots WHERE id=? AND doc_id=?",
                         (sid, doc_id)).fetchone()
         if not r:
-            raise HTTPException(404, "Snapshot gone")
+            raise HTTPException(404, "Version not found")
         return dict(r)
     finally:
         con.close()
@@ -83,7 +83,7 @@ async def restore_snap(doc_id: str, sid: str, req: Request, user: str = Depends(
                 raise HTTPException(403, "Reviewer can only comment")
             s = con.execute("SELECT content FROM snapshots WHERE id=? AND doc_id=?", (sid, doc_id)).fetchone()
             if not s:
-                raise HTTPException(404, "Snapshot gone")
+                raise HTTPException(404, "Version not found")
             cur = con.execute("SELECT content, trashed FROM docs WHERE id=?", (doc_id,)).fetchone()
             if not cur:
                 raise HTTPException(404, "Doc gone")
@@ -111,7 +111,7 @@ def delete_snap(doc_id: str, sid: str, req: Request, user: str = Depends(deps.me
     deps.limited(req, "snapshots")
     with db.tx() as con:
         if deps._tx_role(con, user, doc_id) != "owner":
-            raise HTTPException(403, "Only owner can delete snapshots")
+            raise HTTPException(403, "Only the owner can delete versions")
         con.execute("DELETE FROM snapshots WHERE id=? AND doc_id=?", (sid, doc_id))
     quota.invalidate_quota_cache(user)
     return {"ok": True}
@@ -123,22 +123,29 @@ def list_project_snaps(project_id: str, req: Request, user: str = Depends(deps.m
     deps.limited(req, "files_list")
     con = db.connect()
     try:
+        from backend.services import project_git, project_history
         projects.require(con, project_id, user)
-        return {"snapshots": [dict(r) for r in con.execute("SELECT id,label,kind,author,created_at,LENGTH(CAST(content AS BLOB)) AS size FROM project_snapshots WHERE project_id=? ORDER BY created_at DESC,rowid DESC", (project_id,))]}
+        rows = [dict(r) for r in con.execute("SELECT id,label,kind,author,summary,editors,commit_hash,created_at,LENGTH(CAST(content AS BLOB)) AS size FROM project_snapshots WHERE project_id=? ORDER BY created_at DESC,rowid DESC", (project_id,))]
+        s = project_history.settings(con, project_id)
+        pushed = project_git.pushed(project_id, s["pushed_hash"]) if s["remote"] else set()
+        for r in rows:
+            r["pushed"] = bool(r["commit_hash"]) and r["commit_hash"] in pushed
+        return {"snapshots": rows, "git": bool(s["git"]), "remote": bool(s["git"] and s["remote"])}
     finally:
         con.close()
 
 
 @router.post("/api/projects/{project_id}/snapshots")
 def make_project_snap(project_id: str, b: SnapNew, req: Request, user: str = Depends(deps.me)) -> dict:
-    from backend.services import project_history, projects, quota
+    from backend.services import notifications, project_git, project_history, projects, quota
     deps.limited(req, "snapshots")
     with project_history.prepared(project_id, user) as (state, expected), db.tx() as con:
-        projects.require(con, project_id, user, edit=True)
+        projects.require(con, project_id, user, edit=True, note=False)  # saving a version changes nothing: no co-author for it
         project_history.unchanged(con, project_id, expected)
-        sid = project_history.save(con, project_id, state, b.label.strip(), author=user)
+        sid = project_history.save(con, project_id, state, b.label.strip(), author=user, editors=notifications.take_writers(project_id))
         owner = con.execute("SELECT owner FROM projects WHERE id=?", (project_id,)).fetchone()[0]
     quota.invalidate_quota_cache(owner)
+    project_git.schedule(project_id)
     return {"id": sid}
 
 
@@ -153,12 +160,12 @@ def get_project_snap(project_id: str, sid: str, req: Request, against: str = "cu
         projects.require(con, project_id, user)
         row = con.execute("SELECT content,label,kind,author,created_at FROM project_snapshots WHERE id=? AND project_id=?", (sid, project_id)).fetchone()
         if not row:
-            raise HTTPException(404, "Checkpoint not found")
+            raise HTTPException(404, "Version not found")
         other = None
         if against != "current":
             other = con.execute("SELECT content,label,created_at FROM project_snapshots WHERE id=? AND project_id=?", (against, project_id)).fetchone()
             if not other:
-                raise HTTPException(404, "Checkpoint not found")
+                raise HTTPException(404, "Version not found")
         saved = project_history.load(row["content"])
         if other:
             current = project_history.load(other["content"])
@@ -179,12 +186,12 @@ def rename_project_snap(project_id: str, sid: str, b: SnapRename, req: Request, 
     deps.limited(req, "snapshots")
     label = b.label.strip()
     with db.tx() as con:
-        role = projects.require(con, project_id, user, edit=True)
+        role = projects.require(con, project_id, user, edit=True, note=False)
         row = con.execute("SELECT kind,author FROM project_snapshots WHERE id=? AND project_id=?", (sid, project_id)).fetchone()
         if not row:
-            raise HTTPException(404, "Checkpoint not found")
+            raise HTTPException(404, "Version not found")
         if role != "owner" and user != row["author"]:
-            raise HTTPException(403, "Only the owner or the author can rename a checkpoint")
+            raise HTTPException(403, "Only the owner or the author can rename a version")
         kind = "manual" if label else row["kind"]
         con.execute("UPDATE project_snapshots SET label=?,kind=? WHERE id=?", (label, kind, sid))
     return {"label": label, "kind": kind}
@@ -195,13 +202,13 @@ def delete_project_snap(project_id: str, sid: str, req: Request, user: str = Dep
     from backend.services import projects, quota
     deps.limited(req, "snapshots")
     with db.tx() as con:
-        projects.require(con, project_id, user, edit=True)
+        projects.require(con, project_id, user, edit=True, note=False)
         owner = con.execute("SELECT owner FROM projects WHERE id=?", (project_id,)).fetchone()[0]
         row = con.execute("SELECT author FROM project_snapshots WHERE project_id=? AND id=?", (project_id, sid)).fetchone()
         if not row:
-            raise HTTPException(404, "Checkpoint not found")
+            raise HTTPException(404, "Version not found")
         if user != owner and user != row["author"]:
-            raise HTTPException(403, "Only the owner or the author can delete a checkpoint")
+            raise HTTPException(403, "Only the owner or the author can delete a version")
         con.execute("DELETE FROM project_snapshots WHERE project_id=? AND id=?", (project_id, sid))
     quota.invalidate_quota_cache(owner)
     return {"ok": True}
@@ -228,7 +235,7 @@ def _restore_project_state(project_id: str, sid: str, b: SnapRestore, user: str)
                 project_history.unchanged(con, project_id, expected_stamp)
                 row = con.execute("SELECT content FROM project_snapshots WHERE id=? AND project_id=?", (sid, project_id)).fetchone()
                 if not row:
-                    raise HTTPException(404, "Checkpoint not found")
+                    raise HTTPException(404, "Version not found")
                 state = project_history.load(row['content'])
                 owner = con.execute("SELECT owner FROM projects WHERE id=?", (project_id,)).fetchone()[0]
                 current = [r[0] for r in con.execute("SELECT id FROM docs WHERE project_id=?", (project_id,))]
@@ -276,10 +283,11 @@ def _restore_project_state(project_id: str, sid: str, b: SnapRestore, user: str)
 
 @router.post("/api/projects/{project_id}/snapshots/{sid}/restore")
 async def restore_project_snap(project_id: str, sid: str, b: SnapRestore, req: Request, user: str = Depends(deps.me)) -> dict:
-    from backend.services import projects, quota
+    from backend.services import project_git, projects, quota
 
     deps.limited(req, "snapshots")
     state, current, owner = await asyncio.to_thread(_restore_project_state, project_id, sid, b, user)
+    project_git.schedule(project_id)
     for d in state['documents']:
         await sync.replace_text(d['id'], d['content'])
     for did in set(current) - {d['id'] for d in state['documents']}:
@@ -287,3 +295,81 @@ async def restore_project_snap(project_id: str, sid: str, b: SnapRestore, req: R
     quota.invalidate_quota_cache(owner)
     await asyncio.to_thread(projects.notify, project_id)
     return {"ok": True, "documents": [d['id'] for d in state['documents']]}
+
+
+def _versioning(con: sqlite3.Connection, project_id: str) -> dict:
+    from backend.services import project_git, project_history
+    s = project_history.settings(con, project_id)
+    return {"auto": bool(s["auto"]), "auto_minutes": s["auto_minutes"], "auto_keep": s["auto_keep"], "git": bool(s["git"]), "git_available": project_git.available(),
+            "remote": s["remote"], "branch": s["branch"], "has_token": bool(s["token"]), "push": bool(s["push"]),
+            "push_status": s["push_status"], "pushed_at": s["pushed_at"]}
+
+
+@router.get("/api/projects/{project_id}/versioning")
+def get_versioning(project_id: str, req: Request, user: str = Depends(deps.me)) -> dict:
+    from backend.services import projects
+    deps.limited(req, "files_list")
+    con = db.connect()
+    try:
+        projects.require(con, project_id, user, owner=True)
+        return _versioning(con, project_id)
+    finally:
+        con.close()
+
+
+@router.put("/api/projects/{project_id}/versioning")
+def set_versioning(project_id: str, b: VersionSettings, req: Request, user: str = Depends(deps.me)) -> dict:
+    from backend.services import project_git, project_history, projects
+    deps.limited(req, "snapshots")
+    if b.git and not project_git.available():
+        raise HTTPException(400, "Git is not installed on this server")
+    branch = project_git.check_branch(b.branch)
+    con = db.connect()
+    try:
+        projects.require(con, project_id, user, owner=True)
+        old = project_history.settings(con, project_id)
+    finally:
+        con.close()
+    remote = b.remote.strip() if b.remote.strip() == old["remote"] else project_git.check_remote(b.remote)  # resolving runs outside the tx
+    with db.tx() as con:
+        projects.require(con, project_id, user, owner=True)
+        token = old["token"] if b.token is None else project_git.seal(b.token.strip())
+        con.execute("INSERT INTO project_versioning (project_id,auto,auto_minutes,auto_keep,git,remote,branch,token,push) VALUES (?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(project_id) DO UPDATE SET auto=excluded.auto,auto_minutes=excluded.auto_minutes,auto_keep=excluded.auto_keep,git=excluded.git,"
+                    "remote=excluded.remote,branch=excluded.branch,token=excluded.token,push=excluded.push",
+                    (project_id, int(b.auto), b.auto_minutes, b.auto_keep, int(b.git), remote, branch, token, int(b.push)))
+        if remote != old["remote"] or branch != old["branch"]:
+            con.execute("UPDATE project_versioning SET push_status='',pushed_at='',pushed_hash='' WHERE project_id=?", (project_id,))
+        project_history.retain(con, project_id)
+        owner = con.execute("SELECT owner FROM projects WHERE id=?", (project_id,)).fetchone()[0]
+        out = _versioning(con, project_id)
+    quota.invalidate_quota_cache(owner)
+    if b.git:
+        project_git.schedule(project_id)
+    return out
+
+
+@router.post("/api/projects/{project_id}/snapshots/{sid}/{action}")
+async def git_version(project_id: str, sid: str, action: str, req: Request, user: str = Depends(deps.me)) -> dict:
+    """Commit a version that has no commit yet, or push one that the remote does not have."""
+    from backend.services import project_git, projects
+    if action not in ("commit", "push"):
+        raise HTTPException(404, "Not found")
+    deps.limited(req, "snapshots")
+    con = db.connect()
+    try:
+        projects.require(con, project_id, user, owner=True)
+        s = _versioning(con, project_id)
+        if not con.execute("SELECT 1 FROM project_snapshots WHERE id=? AND project_id=?", (sid, project_id)).fetchone():
+            raise HTTPException(404, "Version not found")
+    finally:
+        con.close()
+    if not s["git"] or (action == "push" and not s["remote"]):
+        raise HTTPException(400, "Turn on Git and set a remote first" if action == "push" else "Turn on Git first")
+    try:
+        status = await asyncio.to_thread(project_git.run_now, project_git.commit_version if action == "commit" else project_git.push_version, project_id, sid)
+    except TimeoutError as e:
+        raise HTTPException(504, "Git timed out") from e
+    if status:
+        raise HTTPException(409, status)
+    return {"ok": True}
