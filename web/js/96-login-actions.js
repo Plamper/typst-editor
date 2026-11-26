@@ -218,6 +218,7 @@ async function importUpload(f) {
       const response = await fetch('/api/docs/import-zip', { method: 'POST', body })
       if (!response.ok) throw new Error(expMsg(await response.text()))
       const result = await response.json()
+      upBusy = false // the import is done: opening and repainting must not swallow the next upload
       shut.delete('project:' + result.project_id); saveShut()
       if (result.id) await openDoc(result.id)
       await sidebar(); return
