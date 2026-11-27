@@ -20,11 +20,28 @@ from playwright.sync_api import expect, sync_playwright  # noqa: E402
 expect.set_options(timeout=15_000)  # assertion waits match the ctx action timeout (expect default is only 5s)
 
 
+def pytest_addoption(parser):
+    parser.addoption("--shard", default="", help="Run shard i/N (1-based), e.g. --shard=1/3")
+
+
+def pytest_collection_modifyitems(config, items):
+    spec = config.getoption("--shard")
+    if not spec:
+        return
+    idx_s, total_s = spec.split("/", 1)
+    idx, total = int(idx_s), int(total_s)
+    if not (1 <= idx <= total):
+        raise pytest.UsageError(f"invalid --shard={spec!r}")
+    items[:] = [item for i, item in enumerate(items) if i % total == idx - 1]
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
     report = outcome.get_result()
     setattr(item, 'rep_' + report.when, report)
+    if report.when == "call" and report.failed:
+        report.sections.append(("server log tail", _server_tail(100)))
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,16 +58,6 @@ def _server_tail(n: int = 100) -> str:
         return f"<server log unreadable: {e}>"
 
 
-def pytest_runtest_logreport(report):
-    if report.when == "call" and report.failed:
-        tail = _server_tail(100)
-        print(f"\n[server-log-tail last 100 lines]\n{tail}\n[/server-log-tail]")
-        try:
-            report.sections.append(("server log tail", tail))
-        except Exception:
-            pass
-
-
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -60,14 +67,16 @@ def _free_port() -> int:
 @pytest.fixture(scope="session")
 def base_url(tmp_path_factory):
     global _SERVER_LOG_PATH
+    from backend.config import _RATE_KEYS
+
     data = tmp_path_factory.mktemp("e2e-data")
     port = _free_port()
     env = {**os.environ, "DATA_DIR": str(data), "REGISTRATION": "open", "PYTHONUNBUFFERED": "1",
            # All smoke tests share one egress IP, hence one per-IP rate-limit bucket
-           # (production clients have distinct IPs). Raise the chatty list/poll
-           # budget so the suite can't 429 itself; app limits stay untouched.
-           "RATE_CREATE_PER_MIN": "1000", "RATE_FILES_LIST_PER_MIN": "1000", "RATE_SIDEBAR_PER_MIN": "1000",
-           "RATE_AUTH_PER_MIN": "1000", "RATE_REGISTER_PER_HOUR": "1000"}
+           # (production clients have distinct IPs). Raise every rate bucket
+           # so the suite can't 429 itself; app limits stay untouched.
+           "RATE_REGISTER_PER_HOUR": "1000",
+           **{f"RATE_{k}_PER_MIN": "1000" for k in _RATE_KEYS}}
     _SERVER_LOG_PATH = data / "server.log"
     # NOTE: never stdout=PIPE here without a reader: once the pipe buffer
     # (64KB on GH runners) fills, uvicorn blocks on its next access-log
@@ -107,19 +116,35 @@ def base_url(tmp_path_factory):
         logf.close()
 
 
-@pytest.fixture()
-def browser():
-    # NOTE: function-scoped (fresh browser per test, not per session): a
-    # session-shared browser accumulates WASM/compiler/canvas memory across
-    # contexts and late-suite navigations stall past the 15s goto timeout
-    # even with a healthy server (CI test_6, local 8th-navigation retries).
+_BROWSER_RECYCLE = 10
+
+
+@pytest.fixture(scope="session")
+def _playwright_browser():
+    # Recycle Chromium every _BROWSER_RECYCLE tests instead of per-test cold starts:
+    # avoids WASM/canvas memory creep across a full session while cutting ~90% of
+    # browser launch overhead.
+    state = {"browser": None, "uses": 0}
     with sync_playwright() as p:
-        try:
-            b = p.chromium.launch()
-        except Exception as e:  # browser binary missing
-            pytest.fail(f"no Playwright browser available: {e}")
-        yield b
-        b.close()
+        def get():
+            if state["browser"] is None or state["uses"] >= _BROWSER_RECYCLE or not state["browser"].is_connected():
+                if state["browser"] is not None:
+                    state["browser"].close()
+                try:
+                    state["browser"] = p.chromium.launch()
+                except Exception as e:  # browser binary missing
+                    pytest.fail(f"no Playwright browser available: {e}")
+                state["uses"] = 0
+            state["uses"] += 1
+            return state["browser"]
+        yield get
+        if state["browser"] is not None:
+            state["browser"].close()
+
+
+@pytest.fixture()
+def browser(_playwright_browser):
+    return _playwright_browser()
 
 
 @pytest.fixture()

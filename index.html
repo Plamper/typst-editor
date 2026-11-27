@@ -4463,7 +4463,7 @@ async function sidebarFresh() { // after a write: a refresh that was already run
   return sidebar()
 }
 async function refreshSidebar() {
-  const id = ++sideN
+  const id = ++sideN, opened = openN
   let d
   try {
     d = await api('GET', '/api/docs')
@@ -4486,7 +4486,7 @@ async function refreshSidebar() {
   if (sideResourcesDirty) { sideResourcesDirty = false; await resSync() }
   if (document.body.classList.contains('dnd-active')) { window.__sidebarDeferred = true; return } // a refresh already in flight must not repaint mid-drag
   lastOwn = d.own; lastShared = d.shared; lastTrash = d.trash
-  if (docId && docRole && ![...d.own, ...d.shared, ...d.trash].some(x => x.id === docId)) closeView()
+  if (opened === openN && docId && docRole && ![...d.own, ...d.shared, ...d.trash].some(x => x.id === docId)) closeView()
   refreshDocRole(d)
   const held = sideFocusKey() // the repaint replaces the focused row action: keyboard focus moves to the same action of the new row
   paintOwn(); paintTrash(d.trash); paintShared(d.shared); paintSecs(); paintTabs()
@@ -4512,7 +4512,12 @@ function sideFocusBack(held) {
   const attr = 'data-' + held.k.replace(/[A-Z]/g, c => '-' + c.toLowerCase())
   const row = [...document.querySelectorAll('aside [' + attr + ']')].find(r => r.dataset[held.k] === held.v)
   const btn = row && row.querySelector('[data-side-menu]')
-  if (btn && (!document.activeElement || document.activeElement === document.body)) btn.focus({ preventScroll: true })
+  if (btn && (!document.activeElement || document.activeElement === document.body)) {
+    const had = row.classList.contains('menu-open')
+    if (!had) row.classList.add('menu-open') // row actions are visibility:hidden until focused
+    btn.focus({ preventScroll: true })
+    if (!had) row.classList.remove('menu-open')
+  }
 }
 function refreshDocRole(d) {
   if (!docId) return

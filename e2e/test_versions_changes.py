@@ -13,6 +13,8 @@ def _setup(page, name):
     page.reload()
     page.wait_for_function("window.__booted === true")
     page.locator("aside .doc.sub", has_text="Main").first.click()
+    expect(page.locator("#title")).to_have_text("Main")
+    expect(page.locator("#wsTxt")).to_contain_text("Live")
     return doc["id"], pid
 
 

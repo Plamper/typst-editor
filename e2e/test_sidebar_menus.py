@@ -417,7 +417,8 @@ def test_move_into_a_subfolder_and_copy_to_another_project(page):
     menu.locator("button").filter(has_text="Move to").first.hover()
     page.locator("#submenu button").filter(has_text="In this project").click()
     expect(page.locator("#mHead")).to_have_text("In this project")
-    page.locator("#modal button").filter(has_text="ziel").first.click()
+    with page.expect_response(lambda r: r.url.endswith("/folder") and r.request.method == "POST" and r.ok):
+        page.locator("#modal button").filter(has_text="ziel").first.click()
     expect(page.locator("#modal")).to_be_hidden()
     docs = page.request.get(f"/api/projects/{pid}").json()["documents"]
     assert [(d["title"], d["folder"]) for d in docs if d["title"] == "Transfer source"] == [("Transfer source", "ziel")]
@@ -430,7 +431,8 @@ def test_move_into_a_subfolder_and_copy_to_another_project(page):
     expect(page.locator("#mHead")).to_have_text("Target folder in Transfer target")
     page.locator("#modal button").filter(has_text="ablage").first.click()
     expect(page.locator("#mHead")).to_contain_text("Target path")  # copy keeps the title until a conflict needs a new one
-    page.click("#mYes")
+    with page.expect_response(lambda r: r.url.endswith("/transfer") and r.request.method == "POST" and r.ok):
+        page.click("#mYes")
     expect(page.locator("#modal")).to_be_hidden()
     copied = page.request.get(f"/api/projects/{target_pid}").json()["documents"]
     assert [(d["title"], d["folder"]) for d in copied if d["title"] == "Transfer source"] == [("Transfer source", "ablage")]

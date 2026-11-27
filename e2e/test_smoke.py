@@ -17,7 +17,7 @@ def _png_1x1() -> bytes:
 
 
 def test_1_register_and_login(page):
-    register(page, "e2e_alice")
+    register(page, "e2e_alice", via_ui=True)
     page.context.clear_cookies()  # drop the session, then sign in again
     login(page, "e2e_alice")
 
