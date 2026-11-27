@@ -20,6 +20,21 @@ from playwright.sync_api import expect, sync_playwright  # noqa: E402
 expect.set_options(timeout=15_000)  # assertion waits match the ctx action timeout (expect default is only 5s)
 
 
+def pytest_addoption(parser):
+    parser.addoption("--shard", default="", help="Run shard i/N (1-based), e.g. --shard=1/3")
+
+
+def pytest_collection_modifyitems(config, items):
+    spec = config.getoption("--shard")
+    if not spec:
+        return
+    idx_s, total_s = spec.split("/", 1)
+    idx, total = int(idx_s), int(total_s)
+    if not (1 <= idx <= total):
+        raise pytest.UsageError(f"invalid --shard={spec!r}")
+    items[:] = [item for i, item in enumerate(items) if i % total == idx - 1]
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield

@@ -13,12 +13,17 @@ def _goto_home(page: Page) -> None:
     page.wait_for_function("window.__booted === true")
 
 
-def register(page: Page, name: str, pw: str = "pass1234pass") -> None:
-    _goto_home(page)
-    page.click("#mode")  # switch "Sign in" -> "Sign up"
-    page.fill("#u", name)
-    page.fill("#p", pw)
-    page.click("#go")
+def register(page: Page, name: str, pw: str = "pass1234pass", *, via_ui: bool = False) -> None:
+    if via_ui:
+        _goto_home(page)
+        page.click("#mode")  # switch "Sign in" -> "Sign up"
+        page.fill("#u", name)
+        page.fill("#p", pw)
+        page.click("#go")
+    else:
+        response = page.request.post("/api/register", data={"username": name, "password": pw})
+        assert response.ok, response.text()
+        _goto_home(page)
     expect(page.locator("#app")).to_be_visible()
 
 
@@ -38,6 +43,7 @@ def create_doc(page: Page, title: str = "New document") -> None:
     page.click("#mYes")
     expect(page.locator("#title")).to_have_text(title)
     expect(page.locator("#cm .cm-content")).to_be_visible()
+    expect(page.locator("#cm .cm-content")).to_have_attribute("contenteditable", "true")
 
 
 def type_source(page: Page, text: str) -> None:
