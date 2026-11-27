@@ -361,7 +361,12 @@ def test_icon_toolbar_font_size_and_document_draft_label(page):
     expect(page.locator('#wsTxt')).to_have_text('Live')
     assert page.locator('#insertMore').inner_text() == ''
     size = page.locator('#cmWrap').evaluate("node => parseInt(node.style.getPropertyValue('--ed'))")
-    page.locator('#fPlus').click()
+    page.locator('#fontBtn').click()
+    slider = page.locator('#menu .mRange input[type=range]')
+    expect(slider).to_be_visible()
+    slider.focus()
+    page.keyboard.press('ArrowRight')
+    page.keyboard.press('Escape')
     assert page.locator('#cmWrap').evaluate("node => parseInt(node.style.getPropertyValue('--ed'))") == size + 1
     page.locator('#suggestionToggle').click()
     expect(page.locator('#cm .cm-content')).to_have_attribute('contenteditable', 'true')
@@ -483,8 +488,8 @@ def test_review_across_empty_document_and_resource_toggle_preserve_view(page):
     page.wait_for_function('!window.changeSession')
     page.locator('#own .doc .t').filter(has_text='sources.bib').click()
     expect(page.locator('#title')).to_have_text('sources.bib')
-    expect(page.locator('#fMinus')).to_be_visible()
-    expect(page.locator('#fPlus')).to_be_visible()
+    expect(page.locator('#tools')).to_be_visible()
+    expect(page.locator('#fontBtn')).to_be_hidden()  # graphical bibliography: no editor font to set
     page.locator('#suggestionToggle').click()
     page.wait_for_function('!!window.changeSession')
     expect(page.locator('body')).not_to_have_class(re.compile(r'\bfile-view\b'))  # a file tab keeps the document preview

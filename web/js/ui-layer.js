@@ -155,6 +155,7 @@
         it(t('menu.issues'), null, { href: 'https://github.com/fl-grtg/typst-editor/issues', ext: true })
       ]
     },
+    font: fontItems, // toolbar font button: one slider in place of the old size steps
     export: function () { return [head(t($('dlTyp').dataset.kind === 'file' ? 'menu.dlFileHead' : 'menu.dlHead'))].concat(exportItems()) },
     all: function () {
       return [head(t('menu.fileH'))].concat(DEF.file(), [head(t('menu.editH'))], DEF.edit(), [head(t('menu.viewH'))], DEF.view(), [head(t('menu.helpH'))], DEF.help())
@@ -418,7 +419,7 @@
   }
   function place(anchor, align, rect) {
     var r = rect || anchor.getBoundingClientRect(), w = menu.offsetWidth, h2 = menu.offsetHeight
-    var left = align === 'right' ? r.right - w : r.left
+    var left = align === 'right' ? r.right - w : align === 'center' ? r.left + r.width / 2 - w / 2 : r.left
     left = Math.max(8, Math.min(left, window.innerWidth - w - 8))
     var top = r.bottom + 6
     if (top + h2 > window.innerHeight - 8) { // rows near the bottom dock: open upwards when there is room
@@ -449,7 +450,7 @@
     openFor = anchor; items = list; openAlign = align
   }
   function open(anchor, name) {
-    show(anchor, DEF[name] ? DEF[name]() : [], name, name === 'export' ? 'right' : 'left')
+    show(anchor, DEF[name] ? DEF[name]() : [], name, name === 'export' ? 'right' : name === 'font' ? 'center' : 'left')
   }
   window.showMenuAt = function (anchor, list, align) { // anchored menu for tabs and other row-level actions
     show(anchor, list, 'anchored', align || 'left')
@@ -536,7 +537,7 @@
   addEventListener('blur', function () { close(false) })
   var side = $('side')
   if (side) side.addEventListener('transitionend', function (e) { if (openFor && e.propertyName === 'width') place(openFor, openAlign) }) // sidebar toggle moved the anchor
-  document.querySelectorAll('#menubar [data-menu], #exportBtn, #insertMore').forEach(function (b) {
+  document.querySelectorAll('#menubar [data-menu], #exportBtn, #insertMore, #fontBtn').forEach(function (b) {
     b.addEventListener('keydown', function (e) {
       if ((e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') && openFor !== b) { e.preventDefault(); open(b, b.dataset.menu); focusItem(0) }
     })
