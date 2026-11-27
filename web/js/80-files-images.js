@@ -502,21 +502,6 @@ $('imgPick').onchange = async () => {
   } catch (e) { toast(e.message) }
   imgIns = false; queueRender()
 }
-$('editWrap').addEventListener('dragover', e => e.preventDefault()) // drop on editor = upload like manager
-$('editWrap').addEventListener('drop', async e => {
-  e.preventDefault()
-  if (!docId || docRole === 'reviewer' || !e.dataTransfer.files.length) return
-  let last = ''
-  for (const f of e.dataTransfer.files) {
-    try {
-      if (TEXT_UP.test(f.name)) { last = await upText(f) || last; continue }
-      const name = await upFile(f)
-      if (name && /\.(png|jpe?g|svg|gif|webp|avif|bmp|ico|pdf)$/i.test(name)) insImage(name)
-    } catch (err) { toast(err.message) }
-  }
-  if (last) switchTab(last) // text drop: show file at once
-  queueRender()
-})
 cm.contentDOM.addEventListener('paste', async e => { // paste screenshot/image: upload + #image() at cursor
   const imgs = [...((e.clipboardData && e.clipboardData.files) || [])].filter(f => /^image\//.test(f.type))
   if (!imgs.length || !docId || tplName || openedTrashed || docRole === 'reviewer') return

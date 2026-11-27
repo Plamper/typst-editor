@@ -397,6 +397,12 @@ const syncLineField = StateField.define({
   update: (v, tr) => { for (const e of tr.effects) if (e.is(setSyncLine)) v = e.value; return v.map(tr.changes) },
   provide: f => EditorView.decorations.from(f),
 })
+const setDropPreview = StateEffect.define() // editor drop: a short glow on the text a drop wrote
+const dropField = StateField.define({
+  create: () => Decoration.none,
+  update: (v, tr) => { for (const e of tr.effects) if (e.is(setDropPreview)) v = e.value; return v.map(tr.changes) },
+  provide: f => EditorView.decorations.from(f),
+})
 const setPeer = StateEffect.define() // remote cursor: colored bar, no blink
 const peerField = StateField.define({
   create: () => Decoration.none,

@@ -591,11 +591,11 @@ header button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px
 #tabs button.tab { display: inline-flex; align-items: center; gap: 7px; padding: 2px 12px; min-height: 36px; border-radius: 0; background: none; border: 0; box-shadow: none; color: var(--sub); font: 500 12.5px/1.35 var(--ui); }
 #tabs .tabw.on button.tab { background: none; color: var(--text); font-weight: 600; }
 #tabs .tabw:hover button.tab { color: var(--text); background: var(--hover); }
-#tabs .ti { flex: none; width: 15px; height: 15px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font: 700 8px/1 var(--mono); letter-spacing: -.2px; text-transform: uppercase; color: var(--on-ink); background: var(--faint); }
-#tabs .ti::before { content: attr(data-kind); }
-#tabs .ti[data-kind="typ"] { background: var(--acc); }
-#tabs .ti[data-kind="bib"] { background: #c47a12; }
-#tabs .ti[data-kind="csv"] { background: #2f9e5b; }
+#tabs .ti, .editorDrop .ti { flex: none; width: 15px; height: 15px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font: 700 8px/1 var(--mono); letter-spacing: -.2px; text-transform: uppercase; color: var(--on-ink); background: var(--faint); }
+#tabs .ti::before, .editorDrop .ti::before { content: attr(data-kind); }
+#tabs .ti[data-kind="typ"], .editorDrop .ti[data-kind="typ"] { background: var(--acc); }
+#tabs .ti[data-kind="bib"], .editorDrop .ti[data-kind="bib"] { background: #c47a12; }
+#tabs .ti[data-kind="csv"], .editorDrop .ti[data-kind="csv"] { background: #2f9e5b; }
 #tabs .tn { max-width: 200px; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; padding: 1px 0; } /* descenders (main.typ, test.typ) must not clip */
 #tabs .te { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font: 700 10px/16px var(--ui); text-align: center; }
 #tabs button.tx { display: none; align-self: center; margin-left: -8px; margin-right: 4px; min-width: 20px; min-height: 20px; padding: 0 3px; border-radius: 10px; color: var(--faint); background: none; border: 0; box-shadow: none; }
@@ -604,7 +604,7 @@ header button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px
 #tabs .tsp { flex: 1; }
 #tabs button.tab:focus-visible, #tabs button.tx:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
 @media (max-width: 720px) { #tabs button.tab { min-height: 40px; } #tabs button.tx { display: inline-flex; align-items: center; } }
-#tabs .ti { width: auto; min-width: 17px; padding: 0 3px; height: 15px; font-size: 8.5px; }
+#tabs .ti, .editorDrop .ti { width: auto; min-width: 17px; padding: 0 3px; height: 15px; font-size: 8.5px; }
 
 #tools .type-hidden { display: none !important; }
 #tools .fileTools button { padding: 0 5px; min-width: 28px; width: 28px; }
@@ -805,6 +805,19 @@ aside .doc .package-accept-action { visibility: visible; }
 #cmWrap .cm-suggestion.cm-hl-claim, #cmWrap .cm-draft-change.cm-hl-claim { background: color-mix(in srgb, var(--editor) 68%, #955ae1); cursor: pointer; }
 
 .bibList button.bibEntryPending { color: #9560d5; box-shadow: inset 3px 0 #9560d5; }
+/* Drop into the editor: an accent caret (images) or insertion line glides to the drop spot, a chip names the text it writes, and that text glows once it is in */
+.editorDrop { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; animation: dropIn .12s ease-out; }
+.editorDrop .edCaret, .editorDrop .edChip { position: absolute; left: 0; top: 0; }
+.editorDrop .edCaret { height: 2px; margin-top: -1px; border-radius: 2px; background: var(--acc); }
+.editorDrop .edCaret::before { content: ''; position: absolute; left: -4px; top: -3px; width: 4px; height: 4px; border: 2px solid var(--acc); border-radius: 50%; background: var(--editor); }
+.editorDrop.inline .edCaret { width: 2px; margin: 0 0 0 -1px; }
+.editorDrop.inline .edCaret::before { display: none; }
+.editorDrop .edChip { display: inline-flex; align-items: center; gap: 7px; max-width: min(420px, 70%); padding: 4px 9px 4px 5px; background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r-sm); box-shadow: var(--sh-pop); }
+.editorDrop .edChip code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sub); font: 12px/1.4 var(--mono); }
+.editorDrop.on .edCaret, .editorDrop.on .edChip { transition: transform .09s cubic-bezier(.2, .8, .2, 1), width .09s ease-out; }
+#cmWrap .cm-dropGlow { animation: dropGlow 1.2s ease-out; }
+@keyframes dropIn { from { opacity: 0; } }
+@keyframes dropGlow { from { background: var(--acc-soft); } to { background: transparent; } }
 /* ==========================================================================
    Preview
    ========================================================================== */
@@ -2272,6 +2285,12 @@ const syncLineField = StateField.define({
   update: (v, tr) => { for (const e of tr.effects) if (e.is(setSyncLine)) v = e.value; return v.map(tr.changes) },
   provide: f => EditorView.decorations.from(f),
 })
+const setDropPreview = StateEffect.define() // editor drop: a short glow on the text a drop wrote
+const dropField = StateField.define({
+  create: () => Decoration.none,
+  update: (v, tr) => { for (const e of tr.effects) if (e.is(setDropPreview)) v = e.value; return v.map(tr.changes) },
+  provide: f => EditorView.decorations.from(f),
+})
 const setPeer = StateEffect.define() // remote cursor: colored bar, no blink
 const peerField = StateField.define({
   create: () => Decoration.none,
@@ -2432,7 +2451,7 @@ const cmExtensions = [keymap.of([ // first: highest priority before minimalSetup
       ...foldKeymap]), // F10: fold shortcuts alongside completion keys
     minimalSetup, languageComp.of(typstSupport), Prec.high(syntaxHighlighting(typstTheme)), typstSupport.language.data.of({ autocomplete: typstComplete }), wrapComp.of(wrapOn ? EditorView.lineWrapping : []), tabComp.of([EditorState.tabSize.of(tabW), indentUnit.of(' '.repeat(tabW))]),
     autocompletion({ defaultKeymap: false }), closeBrackets(), bracketMatching(), hoverTooltip(hoverAll), // F10 bracket-match; vendor Typst source + project source (files/labels/bib); Enter stays newline, Tab/Shift-Tab and Ctrl-Space come from the shortcut registry; arrows navigate
-    editableComp.of(EditorView.editable.of(true)), spellComp.of([]), hlComp.of(hlField), peerField, findField, errLineField, syncLineField,
+    editableComp.of(EditorView.editable.of(true)), spellComp.of([]), hlComp.of(hlField), peerField, findField, errLineField, syncLineField, dropField,
     linter(null, { tooltipFilter: () => [] }), // F1: compiler errors only (setDiagnostics below); null source: lint never overwrites them, positions map across edits; no lint tooltip (line hover shows the message, no aim needed), no gutter lane
     spellCode, markField, lineNumbers(), foldGutter({ markerDOM: open => { const s = document.createElement('span'); s.className = 'foldMk ' + (open ? 'fold-open' : 'fold-closed'); s.title = open ? t('editor.fold') : t('editor.unfold'); s.innerHTML = open ? '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6l4.5 4.5L12.5 6"/></svg>' : '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5L10.5 8 6 12.5"/></svg>'; return s } }), // F10 fold lane right of numbers: hover-revealed chevrons, folded stays visible
     EditorView.theme({ '&': { height: '100%' }, '.cm-scroller': { overflow: 'auto' }, '.cm-content': { padding: '12px 0' } }),
@@ -6355,21 +6374,6 @@ $('imgPick').onchange = async () => {
   } catch (e) { toast(e.message) }
   imgIns = false; queueRender()
 }
-$('editWrap').addEventListener('dragover', e => e.preventDefault()) // drop on editor = upload like manager
-$('editWrap').addEventListener('drop', async e => {
-  e.preventDefault()
-  if (!docId || docRole === 'reviewer' || !e.dataTransfer.files.length) return
-  let last = ''
-  for (const f of e.dataTransfer.files) {
-    try {
-      if (TEXT_UP.test(f.name)) { last = await upText(f) || last; continue }
-      const name = await upFile(f)
-      if (name && /\.(png|jpe?g|svg|gif|webp|avif|bmp|ico|pdf)$/i.test(name)) insImage(name)
-    } catch (err) { toast(err.message) }
-  }
-  if (last) switchTab(last) // text drop: show file at once
-  queueRender()
-})
 cm.contentDOM.addEventListener('paste', async e => { // paste screenshot/image: upload + #image() at cursor
   const imgs = [...((e.clipboardData && e.clipboardData.files) || [])].filter(f => /^image\//.test(f.type))
   if (!imgs.length || !docId || tplName || openedTrashed || docRole === 'reviewer') return
@@ -11108,6 +11112,119 @@ new MutationObserver(paintCsv).observe($('tabs'), { childList: true })
 new MutationObserver(paintCsv).observe($('title'), { childList: true })
 new MutationObserver(paintCsv).observe(cm.contentDOM, { attributes: true, attributeFilter: ['contenteditable'] })
 paintCsv()
+// Editor drops: one fitting project file, private module or upload lands where it is dropped, with its Typst line.
+const IMAGE_EXT = /\.(png|jpe?g|gif|svg|webp|pdf)$/i // what #image() reads
+function editorDropOpen() { // a .typ text in the editor that this user may change
+  return !!docId && !tplName && !openedTrashed && docRole !== 'reviewer' && tabKind(activeFile) === 'typ' &&
+    !$('cmWrap').hidden && cm.state.facet(EditorView.editable)
+}
+function editorDropFits(data) { // one entry only; project paths resolve from the open document's project alone
+  if (!data?.entry || data.items || data.trashed) return false
+  if (data.personal) return data.entry.kind === 'resource' && !!docProject && !docResReadonly
+  const name = data.entry.name
+  return data.project === docProject && data.entry.kind === 'file' && name !== activeFile && (IMAGE_EXT.test(name) || FONT_EXT.test(name) || TEXT_EXT.test(name))
+}
+function editorDropLine(data) { // what the drop writes, shown in the chip at the drop spot
+  return data.personal ? resLine({ name: data.entry.name }) : mediaInsert(data.entry.name)
+}
+function editorDropAt(e, inline) { // images go where the pointer is, line statements to the nearest line boundary
+  if (inline) return { at: cm.posAtCoords({ x: e.clientX, y: e.clientY }, false), inline }
+  const block = cm.lineBlockAtHeight(e.clientY - cm.documentTop), doc = cm.state.doc
+  const after = e.clientY > cm.documentTop + block.top + block.height / 2
+  return { at: after ? Math.min(block.to + 1, doc.length) : block.from, inline }
+}
+let editorDropMark = null, editorDropSpot = null, editorGlowT = 0
+function editorDropShow(e, inline, text, kind) { // a caret (inline) or insertion line, with a chip of the text it writes; text never shifts while dragging
+  const { at } = editorDropAt(e, inline), c = cm.coordsAtPos(at, 1)
+  if (!c) return editorDropHide()
+  editorDropSpot = { at, inline }
+  const wrap = $('editWrap').getBoundingClientRect(), box = cm.contentDOM.getBoundingClientRect(), doc = cm.state.doc
+  const fresh = !editorDropMark
+  if (fresh) {
+    editorDropMark = el('div', 'editorDrop')
+    editorDropMark.append(el('span', 'edCaret'), el('span', 'edChip'))
+    $('editWrap').appendChild(editorDropMark)
+  }
+  const [caret, chip] = editorDropMark.children
+  if (chip.dataset.text !== text) {
+    const icon = el('span', 'ti'); icon.dataset.kind = kind
+    chip.replaceChildren(icon, el('code', null, text)); chip.dataset.text = text
+  }
+  editorDropMark.classList.toggle('inline', inline)
+  const below = !inline && at === doc.length && doc.length && doc.sliceString(at - 1, at) !== '\n' // a line after the last one goes under it
+  const x = (inline ? c.left : box.left + 1) - wrap.left, y = (inline ? c.top : below ? c.bottom : c.top) - wrap.top
+  caret.style.transform = `translate(${x}px, ${y}px)`
+  caret.style.width = inline ? '' : Math.max(0, box.width - 20) + 'px'
+  caret.style.height = inline ? c.bottom - c.top + 'px' : ''
+  const cw = chip.offsetWidth, cx = Math.max(8, Math.min(x - 6, wrap.width - cw - 8)) // just under the spot, inside the editor
+  const cy = y + (inline ? c.bottom - c.top : 0) + 6
+  chip.style.transform = `translate(${cx}px, ${cy}px)`
+  if (fresh) requestAnimationFrame(() => editorDropMark?.classList.add('on')) // glide from here on, the first spot appears in place
+}
+function editorDropHide() {
+  editorDropMark?.remove(); editorDropMark = null; editorDropSpot = null
+}
+function editorDropGlow(from, to) { // the inserted text lights up once and fades, so the eye finds it
+  clearTimeout(editorGlowT)
+  if (to <= from) return
+  cm.dispatch({ effects: setDropPreview.of(Decoration.set(Decoration.mark({ class: 'cm-dropGlow' }).range(from, to))) })
+  editorGlowT = setTimeout(() => cm.dispatch({ effects: setDropPreview.of(Decoration.none) }), 1200)
+}
+function editorDropInsert(at, text, inline) {
+  const doc = cm.state.doc, lead = !inline && at === doc.length && doc.length && doc.sliceString(at - 1, at) !== '\n'
+  const ins = inline ? text : lead ? '\n' + text : text + '\n'
+  cm.dispatch({ changes: { from: at, insert: ins }, selection: { anchor: at + ins.length } })
+  cm.focus()
+  editorDropGlow(at + (lead ? 1 : 0), at + (lead ? 1 : 0) + text.length)
+}
+const editorDropTypes = e => e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes(SIDEBAR_DRAG)
+function editorDropOver(e) { // capture phase: CodeMirror would paste a dropped file's bytes as text
+  if (!editorDropTypes(e)) return // text drags inside the editor stay with CodeMirror
+  e.stopPropagation()
+  const files = e.dataTransfer.types.includes('Files')
+  if (!files && !(editorDropOpen() && editorDropFits(sidebarDragData))) { editorDropHide(); return } // no preventDefault: the pointer shows the drop is refused
+  e.preventDefault(); e.dataTransfer.dropEffect = 'copy'
+  const items = e.dataTransfer.items // an upload only shows its spot when it is one image: everything else is just uploaded
+  if (!editorDropOpen() || files && (items?.length !== 1 || !/^(image\/|application\/pdf$)/.test(items[0].type))) { editorDropHide(); return }
+  if (files) { editorDropShow(e, true, '#image(…)', (items[0].type.split('/')[1] || '').replace('svg+xml', 'svg').replace('jpeg', 'jpg')); return }
+  const name = sidebarDragData.entry.name
+  editorDropShow(e, !sidebarDragData.personal && IMAGE_EXT.test(name), editorDropLine(sidebarDragData), tabKind(name))
+}
+$('editWrap').addEventListener('dragover', editorDropOver, true)
+$('editWrap').addEventListener('dragenter', editorDropOver, true)
+$('editWrap').addEventListener('dragleave', e => { if (!$('editWrap').contains(e.relatedTarget)) editorDropHide() })
+document.addEventListener('dragend', editorDropHide)
+$('editWrap').addEventListener('drop', async e => {
+  if (!editorDropTypes(e)) return
+  e.preventDefault(); e.stopPropagation()
+  const spot = editorDropSpot // the spot the mark showed, even if the pointer slipped on release
+  editorDropHide()
+  if (!docId || docRole === 'reviewer') return
+  if (!e.dataTransfer.files.length) {
+    const data = JSON.parse(e.dataTransfer.getData(SIDEBAR_DRAG) || 'null')
+    if (!editorDropOpen() || !editorDropFits(data)) return
+    const { at, inline } = spot || editorDropAt(e, !data.personal && IMAGE_EXT.test(data.entry.name))
+    if (!data.personal) { editorDropInsert(at, mediaInsert(data.entry.name), inline); return }
+    const tpl = myTpl.find(r => r.name === data.entry.name)
+    if (!tpl) { toast(t('files.tplGone')); return }
+    cm.dispatch({ selection: { anchor: at } }) // the module line goes in at the cursor once the copy is in the project
+    try { await insertPersonalResource(tpl) } catch (error) { toast(error.message) }
+    editorDropGlow(at, cm.state.selection.main.head - 1)
+    return
+  }
+  const single = e.dataTransfer.files.length === 1 && editorDropOpen()
+  if (single) cm.dispatch({ selection: { anchor: (spot || editorDropAt(e, true)).at } })
+  let last = ''
+  for (const f of e.dataTransfer.files) {
+    try {
+      if (TEXT_UP.test(f.name)) { last = await upText(f) || last; continue }
+      const name = await upFile(f)
+      if (name && single && IMAGE_EXT.test(name)) { const at = cm.state.selection.main.from; insImage(name); editorDropGlow(at, cm.state.selection.main.head) }
+    } catch (err) { toast(err.message) }
+  }
+  if (last) switchTab(last) // text drop: show file at once
+  queueRender()
+}, true)
 const fileLanguages = { typ: typstSupport, json: CMV.json(), yaml: CMV.yaml(), yml: CMV.yaml(), xml: CMV.xml(), csl: CMV.xml(), toml: CMV.StreamLanguage.define(CMV.toml) }
 const fileStatus = el('div', 'fileStatus'); fileStatus.hidden = true; $('leftCol').insertBefore(fileStatus, $('editWrap'))
 const bibPanel = el('div', 'bibEditor'); bibPanel.hidden = true; $('editWrap').append(bibPanel)
