@@ -537,6 +537,7 @@ function updateFileView() {
   const filename = tplName || (activeFile ? tabName(activeFile) : (docTitle || 'document').replace(/\.typ$/i, '') + '.typ')
   const extension = filename.split('.').pop().toLowerCase()
   paintImageFile(filename)
+  $('fontBtn').classList.toggle('type-hidden', $('cmWrap').hidden) // font slider belongs to the source view, not the rendered files
   $('dlTyp').dataset.extension = extension
   $('dlTyp').dataset.kind = file ? 'file' : 'document'
   $('dlTyp').textContent = '.' + extension

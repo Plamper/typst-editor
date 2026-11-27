@@ -155,6 +155,7 @@
         it(t('menu.issues'), null, { href: 'https://github.com/fl-grtg/typst-editor/issues', ext: true })
       ]
     },
+    font: fontItems, // toolbar font button: one slider in place of the old size steps
     export: function () { return [head(t($('dlTyp').dataset.kind === 'file' ? 'menu.dlFileHead' : 'menu.dlHead'))].concat(exportItems()) },
     all: function () {
       return [head(t('menu.fileH'))].concat(DEF.file(), [head(t('menu.editH'))], DEF.edit(), [head(t('menu.viewH'))], DEF.view(), [head(t('menu.helpH'))], DEF.help())
@@ -536,7 +537,7 @@
   addEventListener('blur', function () { close(false) })
   var side = $('side')
   if (side) side.addEventListener('transitionend', function (e) { if (openFor && e.propertyName === 'width') place(openFor, openAlign) }) // sidebar toggle moved the anchor
-  document.querySelectorAll('#menubar [data-menu], #exportBtn, #insertMore').forEach(function (b) {
+  document.querySelectorAll('#menubar [data-menu], #exportBtn, #insertMore, #fontBtn').forEach(function (b) {
     b.addEventListener('keydown', function (e) {
       if ((e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') && openFor !== b) { e.preventDefault(); open(b, b.dataset.menu); focusItem(0) }
     })

@@ -17,6 +17,8 @@
 #tools .fmt .glyph.m { font: 500 13px/1 var(--mono); }
 #tools .tsp { flex: 1; }
 #tools .grp { display: inline-flex; align-items: center; gap: 2px; }
+#tools #fontBtn .aa { font: 700 15px/1 var(--ui); letter-spacing: -.5px; }
+#tools #fontBtn .aa .small { font-size: 10px; }
 #tools #imgBtn, #tools #tplBtn, #tools #symBtn, #tools #citeLibrary, #tools #colWrap { display: none !important; }
 #tools #fmtDoc { display: none; }
 #tools .colBtn { position: relative; width: 30px; height: 30px; flex: none; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; border-radius: var(--r-sm); color: var(--text); cursor: pointer; transition: background-color .12s ease; }

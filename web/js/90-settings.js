@@ -640,8 +640,7 @@ $('vSplit').onclick = () => setView('split')
 $('vRead').onclick = () => setView('read')
 // editor font + preview zoom (edSize/pvZoom declared above)
 function setEd(v) { edSize = Math.max(ED_MIN, Math.min(ED_MAX, Math.round(v))); applyEd(); saveSet() }
-function stepEd(d) { setEd(edSize + d) }
-window.editorFont = { min: ED_MIN, max: ED_MAX, step: ED_STEP, get: () => edSize, set: setEd } // View menu slider mirrors the Settings row
+window.editorFont = { min: ED_MIN, max: ED_MAX, step: ED_STEP, get: () => edSize, set: setEd } // the slider rows mirror the Settings value
 function setPv(v) { // explicit % leaves fit modes, slots follow at once (not via the zoomV observer only)
   if (pvZoomMode !== 'pct') pvModeSet('pct')
   pvZoom = Math.max(PV_MIN, Math.min(PV_MAX, Math.round(v)))
@@ -662,11 +661,9 @@ function applyPv() {
   document.querySelectorAll('#preview canvas').forEach(sizeCanvas)
   paintSteps()
 }
-function paintSteps() { // dead clicks give no feedback: disable at the bounds (settings popover shows the value, toolbar has no readout)
+function paintSteps() { // dead clicks give no feedback: disable the zoom buttons at the bounds (font slider shows its value)
   try {
-    const fM = $('fMinus'), fP = $('fPlus'), zM = $('zMinus'), zP = $('zPlus')
-    if (fM) fM.disabled = edSize <= ED_MIN
-    if (fP) fP.disabled = edSize >= ED_MAX
+    const zM = $('zMinus'), zP = $('zPlus')
     if (zM) zM.disabled = pvZoom <= PV_MIN
     if (zP) zP.disabled = pvZoom >= PV_MAX
   } catch (e) {}
@@ -2334,8 +2331,6 @@ function sizeCanvas(c) { // CSS width from zoom only, never touch backing (canva
   c.style.maxWidth = document.body.classList.contains('read') ? (8.2 * pvZoom) + 'px' : 'none' // none: zoom may exceed container, preview scrolls
   c.style.height = 'auto'
 }
-$('fMinus').onclick = () => stepEd(-ED_STEP)
-$('fPlus').onclick = () => stepEd(ED_STEP)
 $('zMinus').onclick = () => stepPv(-PV_STEP)
 $('zPlus').onclick = () => stepPv(PV_STEP)
 $('fitBtn').onclick = fitPv
