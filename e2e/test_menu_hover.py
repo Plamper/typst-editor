@@ -113,7 +113,6 @@ def test_row_actions_stay_visible_but_not_tinted_while_a_menu_is_open(page):
     response = page.request.post("/api/docs/create", data={"title": "Row actions refresh", "content": ""})
     assert response.ok, response.text()
     expect(page.locator("#own .doc .t", has_text="Row actions refresh")).to_be_visible()  # the refresh replaced the row under the menu
-    page.wait_for_timeout(200)  # background transition is .12s
 
     hover = _token(page, "--hover")
     buttons = row.locator("button.mini")
@@ -121,9 +120,9 @@ def test_row_actions_stay_visible_but_not_tinted_while_a_menu_is_open(page):
     active = row.locator('button[data-side-menu][aria-expanded="true"]')
     for i in range(buttons.count()):
         expect(buttons.nth(i)).to_be_visible()  # all row actions stay visible
-    assert active.evaluate("el => getComputedStyle(el).backgroundColor") == hover["bg"]  # only the open one keeps the tint
+    expect(active).to_have_css("background-color", hover["bg"])  # only the open one keeps the tint
     for i in range(buttons.count()):
         button = buttons.nth(i)
         if button.get_attribute("data-side-menu") is not None:
             continue
-        assert button.evaluate("el => getComputedStyle(el).backgroundColor") == "rgba(0, 0, 0, 0)"
+        expect(button).to_have_css("background-color", "rgba(0, 0, 0, 0)")
