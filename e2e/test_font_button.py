@@ -16,6 +16,10 @@ def test_font_button_opens_slider(page):
     expect(page.locator('#fontBtn')).to_be_visible()
     expect(page.locator('#fontBtn')).to_have_attribute('aria-label', 'Editor font size')
     page.locator('#fontBtn').click()
+    button = page.locator('#fontBtn').bounding_box()
+    popup = page.locator('#menu').bounding_box()
+    assert abs((button['x'] + button['width'] / 2) - (popup['x'] + popup['width'] / 2)) <= 2
+    assert popup['y'] >= button['y'] + button['height']
     slider = page.locator('#menu .mRange input[type=range]')
     expect(slider).to_have_attribute('aria-label', 'Editor font size')
     expect(slider).to_have_value('14')

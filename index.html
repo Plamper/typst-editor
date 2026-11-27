@@ -16302,7 +16302,7 @@ openLinePop = line => {
   }
   function place(anchor, align, rect) {
     var r = rect || anchor.getBoundingClientRect(), w = menu.offsetWidth, h2 = menu.offsetHeight
-    var left = align === 'right' ? r.right - w : r.left
+    var left = align === 'right' ? r.right - w : align === 'center' ? r.left + r.width / 2 - w / 2 : r.left
     left = Math.max(8, Math.min(left, window.innerWidth - w - 8))
     var top = r.bottom + 6
     if (top + h2 > window.innerHeight - 8) { // rows near the bottom dock: open upwards when there is room
@@ -16333,7 +16333,7 @@ openLinePop = line => {
     openFor = anchor; items = list; openAlign = align
   }
   function open(anchor, name) {
-    show(anchor, DEF[name] ? DEF[name]() : [], name, name === 'export' ? 'right' : 'left')
+    show(anchor, DEF[name] ? DEF[name]() : [], name, name === 'export' ? 'right' : name === 'font' ? 'center' : 'left')
   }
   window.showMenuAt = function (anchor, list, align) { // anchored menu for tabs and other row-level actions
     show(anchor, list, 'anchored', align || 'left')
