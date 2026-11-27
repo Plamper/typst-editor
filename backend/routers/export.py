@@ -78,7 +78,7 @@ def export_zip(req: Request, background: BackgroundTasks, user: str = Depends(de
 
 def _export_zip(req: Request, background: BackgroundTasks, user: str) -> Response:
     """Full backup: every own project as projects/<id>/ (documents as <folder>/<Title>.typ next to the
-    project files at their paths, so each folder compiles unpacked) plus templates/."""
+    project files at their paths, so each folder compiles unpacked, and its .git when it has Git history) plus templates/."""
     from backend.services import project_files
 
     prune_old_exports()
@@ -132,6 +132,10 @@ def _export_zip(req: Request, background: BackgroundTasks, user: str) -> Respons
                     add(z, name, project_files.store.get(f["project_id"], f["path"]))
                 except OSError as e:
                     log.warning("export write gone %s: %s", name, e)
+            from backend.services import project_git
+            for pid in sorted({d["project_id"] for d in docs} | {f["project_id"] for f in files}):
+                for name, content in project_git.export_files(pid).items():
+                    add(z, "projects/" + pid + "/" + name, content)
             for t in tpls:
                 raw = (t["name"] or "").strip()
                 stem, dot, ext = raw.rpartition(".")

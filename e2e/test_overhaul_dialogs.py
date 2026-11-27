@@ -90,5 +90,6 @@ def test_history_diff_compares_main_when_attachment_tab_is_open(page):
     expect(page.locator("#cm .cm-content")).to_contain_text("Completely different attachment")
     expect(page.locator("#histBtn")).to_be_visible()
     page.click("#histBtn")
-    page.locator("#histPop .srow button").filter(has_text="Compare").first.click()
+    page.locator("#histPop .srow .histMore").first.click()
+    page.get_by_role("menuitem", name="Compare").click()
     expect(page.locator(".chgCard")).to_contain_text("No differences")  # change screen: nothing differs from the checkpoint

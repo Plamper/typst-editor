@@ -14,7 +14,7 @@ This folder holds the documentation for Typst Editor, a self-hosted, collaborati
 
 ### Using the app
 
-6. [Using the editor](usage/using-the-editor.md): projects, documents and files, roles, review and proposals, checkpoints, export.
+6. [Using the editor](usage/using-the-editor.md): projects, documents and files, roles, review and proposals, versions, export.
 7. [Agents and MCP](usage/agents-and-mcp.md): API keys, key modes, connecting Claude Code, OpenCode and other MCP clients.
 
 ### Working on the code

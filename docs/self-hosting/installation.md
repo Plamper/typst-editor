@@ -2,7 +2,7 @@
 
 [Back to the documentation index](../README.md)
 
-Typst Editor ships as a single container image: `ghcr.io/fl-grtg/typst-editor:main`. It contains the Python backend, the prebuilt frontend and the Typst CLI used for server-side rendering and export. All state (SQLite database, uploaded files, invite code) lives in one data directory, `/app/data` inside the container.
+Typst Editor ships as a single container image: `ghcr.io/fl-grtg/typst-editor:main`. It contains the Python backend, the prebuilt frontend, the Typst CLI used for server-side rendering and export, and `git` for projects that save their versions as Git commits. All state (SQLite database, uploaded files, invite code) lives in one data directory, `/app/data` inside the container.
 
 ## Requirements
 
@@ -103,6 +103,7 @@ Notes:
 
 - Keep `--workers 1`. Live sync keeps its rooms in memory, so the server refuses to start with more than one worker.
 - Install the Typst CLI (the version pinned as `TYPST_VERSION` in the [`Dockerfile`](../../Dockerfile)) and put it on `PATH`. Without it, server-side export and rendering for agents are unavailable. Editing and the in-browser preview still work.
+- Install `git` if projects should be able to save their versions as Git commits. Without it, that setting is unavailable.
 - Without Docker, the invite code is not generated for you. Set `REGISTRATION_INVITE_TOKEN` in `config.toml` or the environment before creating accounts.
 - For development with auto-reload, see [Development](../development/development.md).
 

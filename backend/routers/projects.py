@@ -257,6 +257,10 @@ def export_project_zip(project_id: str, req: Request, user: str = Depends(deps.m
             write(posixpath.join(doc['folder'], render._export_stem(doc['title']) + '.typ'), texts[doc['id']].encode())
         for f in project['files']:
             write(f['path'], project_files.read(project_id, f['path']))
+        if project['role'] != 'guest':  # the history holds every file, guests may only see some
+            from backend.services import project_git
+            for name, content in project_git.export_files(project_id).items():
+                write(name, content)
         if skipped:
             archive.writestr('SKIPPED.txt', 'Files left out (same name as another file):\n' + '\n'.join(skipped) + '\n')
     return Response(output.getvalue(), media_type='application/zip', headers={'Content-Disposition': f'attachment; filename="project-{project_id}.zip"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})

@@ -651,10 +651,28 @@ def _migrate_v34(con: sqlite3.Connection) -> None:
     con.execute("DROP TABLE IF EXISTS project_resources")
 
 
+def _migrate_v35(con: sqlite3.Connection) -> None:
+    # Version settings per project in their own table: the projects row goes to every member
+    # (SELECT * in the sidebar payload), the Git token must not.
+    con.execute("""CREATE TABLE IF NOT EXISTS project_versioning (
+ project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+ auto_minutes INTEGER NOT NULL DEFAULT 30, auto_keep INTEGER NOT NULL DEFAULT 15,
+ auto INTEGER NOT NULL DEFAULT 1, git INTEGER NOT NULL DEFAULT 0, git_head TEXT NOT NULL DEFAULT '',
+ remote TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT 'main', token TEXT NOT NULL DEFAULT '', -- encrypted, see project_git.seal
+ push INTEGER NOT NULL DEFAULT 0, push_status TEXT NOT NULL DEFAULT '', pushed_at TEXT NOT NULL DEFAULT '', pushed_hash TEXT NOT NULL DEFAULT ''
+)""")
+    if "git_email" not in _cols(con, "users"):
+        con.execute("ALTER TABLE users ADD COLUMN git_email TEXT NOT NULL DEFAULT ''")
+    cols = _cols(con, "project_snapshots")
+    for name in ("summary", "editors", "commit_hash"):
+        if name not in cols:
+            con.execute(f"ALTER TABLE project_snapshots ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+
+
 _MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_v1, _migrate_v2, _migrate_v3, _migrate_v4,
     _migrate_v5, _migrate_v6, _migrate_v7, _migrate_v8, _migrate_v9, _migrate_v10,
-    _migrate_v11, _migrate_v12, _migrate_v13, _migrate_v14, _migrate_v15, _migrate_v16, _migrate_v17, _migrate_v18, _migrate_v19, _migrate_v20, _migrate_v21, _migrate_v22, _migrate_v23, _migrate_v24, _migrate_v25, _migrate_v26, _migrate_v27, _migrate_v28, _migrate_v29, _migrate_v30, _migrate_v31, _migrate_v32, _migrate_v33, _migrate_v34,
+    _migrate_v11, _migrate_v12, _migrate_v13, _migrate_v14, _migrate_v15, _migrate_v16, _migrate_v17, _migrate_v18, _migrate_v19, _migrate_v20, _migrate_v21, _migrate_v22, _migrate_v23, _migrate_v24, _migrate_v25, _migrate_v26, _migrate_v27, _migrate_v28, _migrate_v29, _migrate_v30, _migrate_v31, _migrate_v32, _migrate_v33, _migrate_v34, _migrate_v35,
 )
 
 

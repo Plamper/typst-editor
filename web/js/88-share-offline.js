@@ -145,7 +145,7 @@ $('shareBtn').onclick = e => {
   if (showPop('sharePop')) loadShares()
 }
 document.addEventListener('click', e => {
-  if (e.target.closest('#modal,#toast')) return // dialogs and the undo toast own their clicks: undo must not close a popover
+  if (e.target.closest('#modal,#toast,#menu,#submenu,[role^=menuitem]')) return // dialogs, the undo toast and a row menu opened from a popover own their clicks (a menu row is already detached when this runs)
   for (const p of Object.keys(POP_BTN)) { // click outside closes (one loop not 5 blocks)
     const box = $(p), triggers = popTriggers(p)
     if (box && box.style.display !== 'none' && ![...triggers].some(t => t.contains(e.target)) && !box.contains(e.target)) {

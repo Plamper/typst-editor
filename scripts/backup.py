@@ -30,7 +30,7 @@ def main() -> None:
                "age --encrypt -r <recipient> -o <file>.age <file>  or:  gpg --symmetric --cipher-algo AES256 <file>",
     )
     ap.add_argument("--keep", type=int, default=7, help="Keep the newest N backups (default: 7).")
-    ap.add_argument("--include-files", dest="include_files", action=argparse.BooleanOptionalAction, default=True, help="Also archive DATA_DIR/files next to the DB (default: on).")
+    ap.add_argument("--include-files", dest="include_files", action=argparse.BooleanOptionalAction, default=True, help="Also archive DATA_DIR/files and DATA_DIR/git next to the DB (default: on).")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     cfg = config.load()
@@ -54,10 +54,10 @@ def main() -> None:
     if ok != "ok":
         raise SystemExit("integrity_check failed: %s" % dest)
     if a.include_files:
-        files = cfg.DATA_DIR / "files"
         with tarfile.open(fdest, "w:gz") as tar:
-            if files.is_dir():
-                tar.add(files, arcname="files")
+            for name in ("files", "git"):  # git: project Git mirrors (history beyond the kept versions)
+                if (cfg.DATA_DIR / name).is_dir():
+                    tar.add(cfg.DATA_DIR / name, arcname=name)
         _chmod_600(fdest)
     for pattern in ("app-*.db", "app-*-files.tar.gz"):
         olds = sorted(bdir.glob(pattern))

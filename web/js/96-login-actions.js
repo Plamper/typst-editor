@@ -179,7 +179,7 @@ async function zipDocuments(f, project = '') { // every .typ of the ZIP with a c
   const body = new FormData(); body.append('f', f)
   const response = await fetch('/api/zip-preview', { method: 'POST', body })
   if (!response.ok) throw new Error(expMsg(await response.text()))
-  const { entries, suggested, included_by: includedBy = {}, others = [] } = await response.json()
+  const { entries, suggested, included_by: includedBy = {}, others = [], git = {} } = await response.json()
   const box = el('div', 'mBody zipDocs')
   box.append(el('p', 'mText', t(entries.length ? 'docs.zipDocsNote' : 'docs.zipNoTyp')))
   const list = el('div', 'zipList')
@@ -199,6 +199,8 @@ async function zipDocuments(f, project = '') { // every .typ of the ZIP with a c
     const names = others.slice(0, 3).join(', ') + (others.length > 3 ? ', …' : '')
     box.append(el('p', 'mNote', t(others.length === 1 ? 'docs.zipOtherOne' : 'docs.zipOtherMany', { n: others.length, names })))
   }
+  if (!project && git.remote) box.append(el('p', 'mNote', t('docs.zipGitRemote', { remote: git.remote, branch: git.branch }))) // a new project keeps the ZIP's Git history and remote
+  else if (!project && git.history) box.append(el('p', 'mNote', t('docs.zipGitHistory')))
   const head = project ? t('docs.zipInto', { name: f.name, project }) : t('docs.zipNew', { name: f.name.replace(/\.zip$/i, '') })
   if (!await ask(head, { noInput: true, body: box, ok: t('docs.zipImport') })) return null
   return checks.filter(c => c.checked).map(c => c.value)
@@ -216,6 +218,7 @@ async function importUpload(f) {
       const response = await fetch('/api/docs/import-zip', { method: 'POST', body })
       if (!response.ok) throw new Error(expMsg(await response.text()))
       const result = await response.json()
+      upBusy = false // the import is done: opening and repainting must not swallow the next upload
       shut.delete('project:' + result.project_id); saveShut()
       if (result.id) await openDoc(result.id)
       await sidebar(); return

@@ -16,6 +16,7 @@ from backend import auth, config, db, deps, sync
 from backend.constants import MAX_PW, MIN_PW, NAME_RE
 from backend.schemas import (
     AvatarSet,
+    GitEmail,
     KeyCreate,
     KeyUpdate,
     Login,
@@ -258,10 +259,11 @@ def get_me(req: Request, user: str = Depends(deps.me)) -> dict:
     pw_enabled = not config.load().DISABLE_PASSWORD_LOGIN
     con = db.connect()
     try:
-        r = con.execute("SELECT hash, avatar, spell_language FROM users WHERE name=?", (user,)).fetchone()
+        r = con.execute("SELECT hash, avatar, spell_language, git_email FROM users WHERE name=?", (user,)).fetchone()
         return {"user": user, "hasAvatar": bool(r and r["avatar"]),
                 "has_password": bool(pw_enabled and (auth.has_password(r["hash"]) if r else True)),
                 "spell_language": r["spell_language"] if r else "auto",
+                "git_email": r["git_email"] if r else "",
                 "storage": {"used": quota_svc.user_bytes(user, con), "limit": quota_svc.user_cap(user, con),
                             "migration_allowance": quota_svc.migration_allowance(user, con)}}
     finally:
@@ -274,6 +276,14 @@ def save_preferences(b: SpellPreference, req: Request, user: str = Depends(deps.
     with db.tx() as con:
         con.execute("UPDATE users SET spell_language=? WHERE name=?", (b.spell_language, user))
     return {"spell_language": b.spell_language}
+
+
+@router.post("/api/me/git-email")
+def save_git_email(b: GitEmail, req: Request, user: str = Depends(deps.me)) -> dict:
+    deps.limited(req, "auth")
+    with db.tx() as con:
+        con.execute("UPDATE users SET git_email=? WHERE name=?", (b.git_email, user))
+    return {"git_email": b.git_email}
 
 
 def _key_role(role: str, cap: str) -> str:
@@ -437,7 +447,7 @@ async def rename_me(b: NameChange, req: Request, user: str = Depends(deps.me)) -
     try:
         with db.tx() as con:
             row = con.execute(
-                "SELECT hash, avatar, oidc_issuer, oidc_sub, migration_bytes, spell_language FROM users WHERE name=?",
+                "SELECT hash, avatar, oidc_issuer, oidc_sub, migration_bytes, spell_language, git_email FROM users WHERE name=?",
                 (user,),
             ).fetchone()
             if not row:
@@ -447,10 +457,10 @@ async def rename_me(b: NameChange, req: Request, user: str = Depends(deps.me)) -
                 raise HTTPException(400, "Rename failed")
             con.execute("UPDATE users SET oidc_issuer='', oidc_sub='' WHERE name=?", (user,))
             con.execute(
-                "INSERT INTO users (name, hash, avatar, oidc_issuer, oidc_sub, migration_bytes, spell_language) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO users (name, hash, avatar, oidc_issuer, oidc_sub, migration_bytes, spell_language, git_email) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 (new, row["hash"], row["avatar"], row["oidc_issuer"], row["oidc_sub"],
-                 row["migration_bytes"], row["spell_language"]),
+                 row["migration_bytes"], row["spell_language"], row["git_email"]),
             )
             con.execute("UPDATE sessions SET username=? WHERE username=?", (new, user))
             con.execute("UPDATE docs SET owner=? WHERE owner=?", (new, user))
@@ -471,6 +481,8 @@ async def rename_me(b: NameChange, req: Request, user: str = Depends(deps.me)) -
             # package the user authored.
             con.execute("UPDATE suggestion_packages SET author=? WHERE author=?", (new, user))
             con.execute("UPDATE project_snapshots SET author=? WHERE author=?", (new, user))
+            con.execute("UPDATE project_snapshots SET editors=TRIM(REPLACE(','||editors||',', ','||?||',', ','||?||','), ',') "
+                        "WHERE instr(','||editors||',', ','||?||',')>0", (user, new, user))
             con.execute("UPDATE trash_entries SET owner=? WHERE owner=?", (new, user))
             con.execute("DELETE FROM users WHERE name=?", (user,))
     except sqlite3.OperationalError as e:

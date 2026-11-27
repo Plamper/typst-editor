@@ -93,9 +93,8 @@ async function openChanges({ url, sid, list = [], onClose = null }) {
   const head = el('div', 'chgHead'), sum = el('span', 'chgSum')
   const sel = el('select', 'chgSince'); sel.setAttribute('aria-label', t('changes.since'))
   const opt = (v, txt) => { const o = el('option', null, txt); o.value = v; sel.appendChild(o) }
-  const snapName = s => s.label === 'Before restore' ? t('history.autoRestore') : s.label || (s.kind === 'auto' ? t('history.autoName') : t('history.unnamed'))
   if (watch?.base) opt(watch.base, t('changes.lastSeen') + (watch.seen_at ? ' · ' + ago(watch.seen_at) : ''))
-  list.filter(s => s.id !== watch?.base).forEach(s => opt(s.id, snapName(s) + ' · ' + ago(s.created_at)))
+  list.filter(s => s.id !== watch?.base).forEach(s => opt(s.id, (s.label ? versionName(s) + ' · ' : '') + dayLabel(s.created_at) + ', ' + versionTime(s.created_at)))
   if (![...sel.options].some(o => o.value === sid)) opt(sid, '…')
   sel.value = sid
   const x = icoBtn(null, ICO_X); x.title = t('common.close'); x.setAttribute('aria-label', t('common.close')); x.onclick = close

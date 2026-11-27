@@ -69,7 +69,7 @@ Rate limits are counted per client and endpoint group. All values are requests p
 | `RATE_PW_PER_MIN` | `10` | Password changes |
 | `RATE_INVITE_PER_MIN` | `10` | Invite creations |
 | `RATE_SHARE_PER_MIN` | `10` | Share changes |
-| `RATE_SNAPSHOTS_PER_MIN` | `60` | Checkpoint reads and writes |
+| `RATE_SNAPSHOTS_PER_MIN` | `60` | Version reads and writes |
 | `RATE_CREATE_PER_MIN` | `20` | Document creations |
 | `RATE_DUPLICATE_PER_MIN` | `10` | Document duplications |
 | `RATE_AVATAR_PER_MIN` | `10` | Avatar uploads |

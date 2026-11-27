@@ -27,10 +27,14 @@ def _entries(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     return entries
 
 
+def _is_git(name: str) -> bool:
+    return name.startswith(".git/")
+
+
 def _typ_texts(archive: zipfile.ZipFile) -> dict[str, str]:
     out = {}
     for e in _entries(archive):
-        if e.filename.lower().endswith(".typ") and e.file_size <= MAX_TXT:
+        if e.filename.lower().endswith(".typ") and e.file_size <= MAX_TXT and not _is_git(e.filename):
             with archive.open(e) as stream:
                 out[e.filename] = stream.read(MAX_TXT + 1).decode("utf-8", errors="replace")
     return out
@@ -42,7 +46,8 @@ def zip_preview(data: bytes) -> dict:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             texts = _typ_texts(archive)
-            others = sorted(e.filename for e in _entries(archive) if e.filename not in texts)
+            others = sorted(e.filename for e in _entries(archive) if e.filename not in texts and not _is_git(e.filename))
+            git = {e.filename[5:]: archive.read(e) for e in _entries(archive) if e.filename in (".git/config", ".git/HEAD") and e.file_size <= 65536}
     except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError, EOFError) as e:
         raise HTTPException(400, "Invalid or unsupported ZIP") from e
     included_by: dict[str, str] = {}
@@ -51,8 +56,14 @@ def zip_preview(data: bytes) -> dict:
             target = resources.resolve(posixpath.dirname(name), m.group(1))
             if target in texts and target != name:
                 included_by.setdefault(target, name)
-    return {"entries": sorted(texts), "suggested": sorted(n for n in texts if n not in included_by),
-            "included_by": included_by, "others": others}
+    from backend.services.project_git import remote_of
+
+    out = {"entries": sorted(texts), "suggested": sorted(n for n in texts if n not in included_by),
+           "included_by": included_by, "others": others}
+    if git:  # a project ZIP with its .git: a new project takes over history, remote and branch
+        remote, branch = remote_of(git)
+        out["git"] = {"history": True, "remote": remote, "branch": branch if remote else ""}
+    return out
 
 
 def listed(raw: str) -> list[str]:
@@ -66,8 +77,9 @@ def listed(raw: str) -> list[str]:
     return value
 
 
-def read_project_zip(data: bytes) -> list[tuple[str, bytes]]:
-    """Every file of the ZIP at its path, validated (paths, count, sizes, UTF-8 texts)."""
+def read_project_zip(data: bytes, git: dict[str, bytes] | None = None) -> list[tuple[str, bytes]]:
+    """Every file of the ZIP at its path, validated (paths, count, sizes, UTF-8 texts). A top-level .git/ never
+    becomes project files: its entries go to `git` (path below .git/ -> bytes) when given, else they are dropped."""
     if len(data) > UPLOAD_MAX:
         raise HTTPException(413, "ZIP too large (max 10 MB)")
     try:
@@ -78,6 +90,15 @@ def read_project_zip(data: bytes) -> list[tuple[str, bytes]]:
                 name = item.filename
                 if name.startswith("/") or "\\" in name or ".." in PurePosixPath(name).parts or stat.S_ISLNK(item.external_attr >> 16):
                     raise HTTPException(400, "Unsafe ZIP path")
+                if _is_git(name):
+                    with archive.open(item) as stream:
+                        content = stream.read(UPLOAD_MAX + 1)
+                    actual_total += len(content)
+                    if len(content) > UPLOAD_MAX or actual_total > EXPORT_MAX:
+                        raise HTTPException(413, "Uncompressed ZIP data too large")
+                    if git is not None:
+                        git[name[5:]] = content
+                    continue
                 if not name or safe_name(name) != name or name.casefold() in seen:
                     raise HTTPException(400, "Invalid or duplicate ZIP path")
                 seen.add(name.casefold())
@@ -108,7 +129,8 @@ def import_project_zip(user: str, data: bytes, documents: list[str], *, folder: 
     from backend.routers.project_folders import folder_path
 
     folder = folder_path(folder) if folder.strip("/") else ""
-    files = read_project_zip(data)
+    git: dict[str, bytes] = {}
+    files = read_project_zip(data, git)
     names = {n for n, _ in files}
     if any(d not in names or not d.lower().endswith(".typ") for d in documents):
         raise HTTPException(400, "A chosen document is not a .typ file of the ZIP")
@@ -155,6 +177,9 @@ def import_project_zip(user: str, data: bytes, documents: list[str], *, folder: 
         project_files.undo(backups)
         raise
     quota.invalidate_quota_cache(owner)
+    if git and not project_id:  # a whole project with its Git history: keep history, remote and branch
+        from backend.services import project_git
+        project_git.adopt(pid, git)
     projects.notify(pid)
     notify_sidebar(user)
     return {"project_id": pid, "documents": created, "id": created[0] if created else "", "files": len(files) - len(docs)}

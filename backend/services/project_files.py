@@ -309,7 +309,7 @@ def move_preview(project_id: str, path: str, target: str, user: str) -> dict:
     path, target = clean(path, new=False), _target(path, target)
     con = db.connect()
     try:
-        projects.require(con, project_id, user, edit=True)
+        projects.require(con, project_id, user, edit=True, note=False)
         row = _current(con, project_id, path, None, True)
         return {"path": target, "version": row["version"], "references": referrers(con, project_id, path),
                 "changes": ref_changes(con, project_id, {path: target})}

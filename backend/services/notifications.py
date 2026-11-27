@@ -25,16 +25,28 @@ DEFAULT_LEVEL = "proposals"
 MENTION = re.compile(r"(?<![\w@])@([\w-]{1,64})")
 
 _last_editor: dict[str, str] = {}  # best effort: who wrote to a project last (no self-notification)
+_writers: dict[str, set[str]] = {}  # best effort: who wrote since the project's last version
 
 
 def note_editor(project_id: str, user: str) -> None:
     if len(_last_editor) > 5000:
         _last_editor.clear()
     _last_editor[project_id] = user
+    note_writer(project_id, user)
+
+
+def note_writer(project_id: str, user: str) -> None:
+    if len(_writers) > 5000:
+        _writers.clear()
+    _writers.setdefault(project_id, set()).add(user)
 
 
 def last_editor(project_id: str) -> str:
     return _last_editor.get(project_id, "")
+
+
+def take_writers(project_id: str) -> list[str]:
+    return sorted(_writers.pop(project_id, set()))
 
 
 def create_notification(recipient: str, ntype: str, doc_id: str, text: str, project_id: str = "",

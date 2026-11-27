@@ -581,7 +581,7 @@ def test_acceptance_releases_files_and_package_locks_before_project_history(c, m
     package = submit(c, project, [document_change(document, "Original", [("Original", "Accepted")])])
     checkpoints = []
 
-    def checkpoint(doc_id):
+    def checkpoint(doc_id, **_kw):
         for name in ("files:" + project, "packages:" + project):
             lock = _named_lock(name)
             assert lock.acquire(blocking=False), "History would deadlock on acceptance lock: " + name
